@@ -4,6 +4,7 @@
 //! no I/O, no model, no ambient time.
 
 pub mod evidence;
+pub mod forgetting;
 pub mod mention_gate;
 pub mod record_identity;
 pub mod salience;
