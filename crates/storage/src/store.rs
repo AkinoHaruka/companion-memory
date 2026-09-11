@@ -10,11 +10,14 @@
 //! corrupted or hand-edited value would otherwise silently re-scope a record
 //! into someone else's memory.
 
+use std::collections::HashMap;
+
+use companion_memory_kernel::domain::predicates::MentionMode;
 use companion_memory_kernel::domain::types::{
     Claim, ClaimStatus, Episode, Inference, RelationshipScope, Salience,
 };
-use companion_memory_kernel::domain::predicates::MentionMode;
 use companion_memory_kernel::domain::types::{EpisodeStatus, InferenceAxis, InferenceState};
+use companion_memory_kernel::rules::forgetting::SuppressionSet;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::migrations::{apply_migrations, MigrationState};
@@ -457,6 +460,71 @@ impl Store {
             [key.as_str()],
             |row| row.get(0),
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // Reconstructing the kernel's suppression representation
+    // -----------------------------------------------------------------------
+
+    /// Load the suppression set for a scope in the shape the kernel's rules take.
+    ///
+    /// The kernel decides what forgetting means; this decides how stored rows
+    /// become that decision's input. Keeping the translation here rather than in
+    /// the kernel is what lets the kernel stay free of SQL while remaining the
+    /// single authority on what a suppression set contains.
+    ///
+    /// Rows whose `kind` is not recognised are skipped rather than failing the
+    /// load. One unreadable suppression row must not make a person's whole
+    /// history inaccessible.
+    pub fn load_suppression_set(
+        &self,
+        scope: &RelationshipScope,
+    ) -> rusqlite::Result<SuppressionSet> {
+        let mut set = SuppressionSet::default();
+        for (kind, target) in self.suppression_entries(scope)? {
+            match kind.as_str() {
+                "record" => {
+                    set.suppressed.insert(target);
+                }
+                "predicate" => {
+                    set.suppressed_predicates.insert(target);
+                }
+                "entity" => {
+                    set.suppressed_entities.insert(target);
+                }
+                // "all" carries no target; the stored row is the flag.
+                "all" => {
+                    set.all = true;
+                }
+                _ => {}
+            }
+        }
+        Ok(set)
+    }
+
+    /// Load forgotten content as a map the kernel's guard can consult.
+    ///
+    /// The kernel expects **label to fingerprint**, and the orientation matters:
+    /// with the pair the other way round the guard compares a fingerprint
+    /// against a human-readable label, the two can never be equal, and it never
+    /// fires. Nothing about that failure is visible at either call site — the
+    /// suppression row is written, the map is populated, and forgotten content
+    /// comes back. The integration test is what pins the direction.
+    ///
+    /// Without this map at all, `would_resurrect` could refuse whole predicates
+    /// or entities but not a single sentence, so a re-extraction of the same
+    /// fact would be written straight back — the hole the fingerprint exists to
+    /// close.
+    pub fn load_suppressed_fingerprints(
+        &self,
+        scope: &RelationshipScope,
+    ) -> rusqlite::Result<HashMap<String, String>> {
+        Ok(self
+            .suppressed_fingerprints(scope)?
+            .into_iter()
+            // Stored as (fingerprint, label); the kernel keys by label.
+            .map(|(fingerprint, label)| (label, fingerprint))
+            .collect())
     }
 }
 

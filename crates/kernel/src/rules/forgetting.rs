@@ -139,14 +139,32 @@ impl From<&ForgetTarget> for ForgetTarget {
     }
 }
 
-/// A normalised fingerprint of record text, for exact-match scanning.
+/// A normalised fingerprint of a record value, for exact-match scanning.
 ///
-/// This delegates to [`normalize_for_comparison`], so case and runs of
-/// whitespace do not change the fingerprint. It deliberately does not stem,
-/// find synonyms or otherwise make a semantic claim: exact matching is safe to
-/// act on, while a token-overlap guess belongs in [`find_suspected_residue`].
-pub fn fingerprint(text: &str) -> String {
-    normalize_for_comparison(&serde_json::Value::String(text.to_owned()))
+/// Takes the value rather than a string so that there is exactly **one**
+/// canonical form. An earlier signature took `&str` and wrapped it in a JSON
+/// string before normalising, which quoted it, while [`would_resurrect`]
+/// normalised the value directly. The two produced different fingerprints for
+/// the same content, so a suppressed record could be written straight back: the
+/// guard compared two strings that could never be equal, and neither function
+/// looked wrong on its own.
+///
+/// Delegates to [`normalize_for_comparison`], so case and runs of whitespace do
+/// not change the result. It deliberately does not stem, find synonyms or
+/// otherwise make a semantic claim: exact matching is safe to act on, while a
+/// token-overlap guess belongs in [`find_suspected_residue`].
+pub fn fingerprint(value: &serde_json::Value) -> String {
+    normalize_for_comparison(value)
+}
+
+/// The fingerprint of content that is plain text.
+///
+/// The convenience form for callers holding prose — a narrative, a message body
+/// — where the wrapping is mechanical. Prefer [`fingerprint`] wherever a
+/// `serde_json::Value` is already in hand, so the canonical form stays visible
+/// at the call site.
+pub fn fingerprint_text(text: &str) -> String {
+    fingerprint(&serde_json::Value::String(text.to_owned()))
 }
 
 /// A record whose text still contains a suppressed fingerprint exactly.
@@ -201,7 +219,7 @@ pub fn find_exact_residue<'a>(
             continue;
         }
 
-        let candidate_fingerprint = fingerprint(candidate.text);
+        let candidate_fingerprint = fingerprint_text(candidate.text);
         if candidate_fingerprint.is_empty() {
             continue;
         }
@@ -289,7 +307,7 @@ pub fn find_suspected_residue<'a>(
 
 /// Split text into deterministic lexical tokens without a segmentation model.
 fn tokens(text: &str) -> HashSet<String> {
-    let normalised = fingerprint(text);
+    let normalised = fingerprint_text(text);
     let mut tokens = HashSet::new();
     let mut ascii_run = String::new();
     let mut non_ascii_run = Vec::new();
@@ -484,12 +502,18 @@ pub fn would_resurrect(
         return None;
     }
 
-    ordered_fingerprint_entries(suppressed_fingerprints)
-        .into_iter()
-        .find(|(_, suppressed_fingerprint)| {
-            !suppressed_fingerprint.is_empty() && value_fingerprint == *suppressed_fingerprint
-        })
-        .map(|(matched_id, _)| ResurrectionReason::FingerprintMatch {
+    // The map holds **label -> fingerprint**, and the orientation is
+    // load-bearing. Reversed, this compares a fingerprint against a
+    // human-readable label, the two can never be equal, and the guard silently
+    // never fires while every suppression row still looks correct. The storage
+    // loader converts its rows into exactly this orientation, and the
+    // integration test pins the direction.
+    suppressed_fingerprints
+        .iter()
+        .filter(|(_, fingerprint)| !fingerprint.is_empty() && value_fingerprint == **fingerprint)
+        .map(|(label, _)| label.as_str())
+        .min()
+        .map(|matched_id| ResurrectionReason::FingerprintMatch {
             matched_id: matched_id.to_owned(),
         })
 }
@@ -517,10 +541,11 @@ pub enum ResurrectionReason {
 }
 
 /// Clamp an untrusted confidence into the mathematical confidence interval.
-fn clamp_unit(value: f64) -> f64 {
-    if value.is_nan() {
+fn clamp_unit(value: f64) -> f64 {    if value.is_nan() {
         0.0
     } else {
         value.clamp(0.0, 1.0)
     }
 }
+
+

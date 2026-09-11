@@ -24,7 +24,7 @@ use companion_memory_kernel::domain::types::{
 use companion_memory_kernel::rules::evidence::{
     is_collapsed, live_evidence, may_support_user_inference, EvidenceResolution,
 };
-use companion_memory_kernel::rules::forgetting::{fingerprint, SuppressionSet};
+use companion_memory_kernel::rules::forgetting::{fingerprint_text, SuppressionSet};
 use companion_memory_kernel::rules::inference::{clamp_confidence, apply_review};
 use companion_memory_kernel::rules::mention_gate::{
     claim_mention, effective_surface_level, mention_gate, MentionCues, MentionInput,
@@ -200,9 +200,9 @@ fn feedback_is_a_pure_function_of_the_starting_projection() {
 #[test]
 fn fingerprints_are_stable() {
     let text = "  The dog was sick that night.  ";
-    let first = fingerprint(text);
+    let first = fingerprint_text(text);
     for _ in 0..50 {
-        assert_eq!(fingerprint(text), first);
+        assert_eq!(fingerprint_text(text), first);
     }
 }
 

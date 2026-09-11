@@ -10,8 +10,9 @@ use companion_memory_kernel::domain::types::{
 };
 use companion_memory_kernel::rules::evidence::EvidenceResolution;
 use companion_memory_kernel::rules::forgetting::{
-    derived_disposition, find_exact_residue, find_suspected_residue, fingerprint, would_resurrect,
-    DerivedDisposition, ForgetTarget, ResurrectionReason, SuppressionSet, TextCandidate,
+    derived_disposition, find_exact_residue, find_suspected_residue, fingerprint, fingerprint_text,
+    would_resurrect, DerivedDisposition, ForgetTarget, ResurrectionReason, SuppressionSet,
+    TextCandidate,
 };
 use serde_json::json;
 
@@ -186,12 +187,12 @@ fn records_suppression_matches_exactly_the_named_ids() {
 #[test]
 fn fingerprint_is_stable_for_case_and_whitespace_but_not_different_text() {
     assert_eq!(
-        fingerprint("  I   Design\nFor Work "),
-        fingerprint("i design for work")
+        fingerprint_text("  I   Design\nFor Work "),
+        fingerprint_text("i design for work")
     );
     assert_ne!(
-        fingerprint("I design for work"),
-        fingerprint("I teach painting")
+        fingerprint_text("I design for work"),
+        fingerprint_text("I teach painting")
     );
 }
 
@@ -199,7 +200,7 @@ fn fingerprint_is_stable_for_case_and_whitespace_but_not_different_text() {
 fn exact_residue_finds_copied_text_but_not_unrelated_text() {
     let suppressed_fingerprints = HashMap::from([(
         "claim-forgotten".to_owned(),
-        fingerprint("I loved the blue lake"),
+        fingerprint_text("I loved the blue lake"),
     )]);
     let candidates = [
         TextCandidate {
@@ -226,7 +227,7 @@ fn exact_residue_finds_copied_text_but_not_unrelated_text() {
 fn suspected_residue_reports_threshold_matches_loudest_first() {
     let suppressed_fingerprints = HashMap::from([(
         "forgotten-1".to_owned(),
-        fingerprint("I am anxious about work deadlines"),
+        fingerprint_text("I am anxious about work deadlines"),
     )]);
     let candidates = [
         TextCandidate {
@@ -442,7 +443,7 @@ fn would_resurrect_reports_predicate_entity_all_and_fingerprint_reasons() {
     );
 
     let fingerprints =
-        HashMap::from([("claim-forgotten".to_owned(), fingerprint("Forgotten value"))]);
+        HashMap::from([("claim-forgotten".to_owned(), fingerprint_text("Forgotten value"))]);
     assert_eq!(
         would_resurrect(
             "identity.occupation",
@@ -460,7 +461,7 @@ fn would_resurrect_reports_predicate_entity_all_and_fingerprint_reasons() {
 #[test]
 fn would_resurrect_returns_none_for_a_value_that_was_not_forgotten() {
     let fingerprints =
-        HashMap::from([("claim-forgotten".to_owned(), fingerprint("Forgotten value"))]);
+        HashMap::from([("claim-forgotten".to_owned(), fingerprint_text("Forgotten value"))]);
 
     assert_eq!(
         would_resurrect(
@@ -482,7 +483,8 @@ fn i4_round_trip_refuses_to_write_the_identical_forgotten_value() {
     let suppression = SuppressionSet::from(ForgetTarget::Records {
         source_ids: vec![forgotten_id.into()],
     });
-    let fingerprints = HashMap::from([(forgotten_id.to_owned(), fingerprint(forgotten_text))]);
+    let fingerprints =
+        HashMap::from([(forgotten_id.to_owned(), fingerprint(&forgotten_value))]);
 
     assert_eq!(
         would_resurrect(
@@ -495,5 +497,62 @@ fn i4_round_trip_refuses_to_write_the_identical_forgotten_value() {
         Some(ResurrectionReason::FingerprintMatch {
             matched_id: forgotten_id.into()
         }),
+    );
+}
+
+#[test]
+fn the_fingerprint_guard_fires_without_a_record_level_suppression() {
+    // The round-trip test above cannot see this branch: a `Records` target
+    // matches on the record id first, so the fingerprint comparison is never
+    // reached and an orientation mistake in it stays invisible. This test
+    // suppresses nothing by id, so the only way to get a match is the
+    // fingerprint path itself — which is the path that stops a *later
+    // extraction* from writing the same sentence back.
+    let forgotten_text = "I live in Shanghai";
+    let forgotten_value = json!(forgotten_text);
+    // Keyed by a label and holding the fingerprint, which is the orientation the
+    // storage loader produces.
+    let fingerprints =
+        HashMap::from([("the place they live".to_owned(), fingerprint(&forgotten_value))]);
+
+    assert_eq!(
+        would_resurrect(
+            "identity.location",
+            &forgotten_value,
+            None,
+            &SuppressionSet::default(),
+            &fingerprints,
+        ),
+        Some(ResurrectionReason::FingerprintMatch {
+            matched_id: "the place they live".into()
+        }),
+    );
+
+    // A value that was never forgotten still passes.
+    assert_eq!(
+        would_resurrect(
+            "identity.location",
+            &json!("I moved to Hangzhou"),
+            None,
+            &SuppressionSet::default(),
+            &fingerprints,
+        ),
+        None,
+    );
+
+    // And the reversed orientation must NOT match, which is what makes the
+    // orientation load-bearing rather than incidental.
+    let reversed =
+        HashMap::from([(fingerprint(&forgotten_value), "the place they live".to_owned())]);
+    assert_eq!(
+        would_resurrect(
+            "identity.location",
+            &forgotten_value,
+            None,
+            &SuppressionSet::default(),
+            &reversed,
+        ),
+        None,
+        "a reversed map compares a fingerprint against a label and cannot match"
     );
 }
