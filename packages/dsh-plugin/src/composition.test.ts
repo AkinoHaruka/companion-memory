@@ -212,8 +212,7 @@ describe('mounting on real services', () => {
     );
   });
 
-  it('registers a memory tool the model can call', async () => {
-    const mounted = await mountAdapter();
+  it('registers a memory tool the model can call', async () => {    const mounted = await mountAdapter();
     mounted.kernel.remember(mounted.scope, {
       id: 'g1',
       text: 'wants to move to Hangzhou',
@@ -235,6 +234,49 @@ describe('mounting on real services', () => {
     const rendered = tool!.output.render({}, value as never);
     expect(rendered[0]).toMatchObject({ type: 'text' });
     expect((rendered[0] as { text: string }).text).toContain('wants to move to Hangzhou');
+
+    await mounted.dispose();
+  });
+
+  it('reaches the conversation condition into the assembled prompt', async () => {
+    // Clause (6) end to end: the condition is recorded, recalled by the pre-step
+    // handler, and visible to the model. Before this the type and the table both
+    // existed with nothing reading or writing them, which is the same shape as
+    // the dead emotion layer this design set out to replace.
+    const mounted = await mountAdapter();
+    await mounted.kernel.setState(
+      mounted.scope,
+      { affect: ['tired'], apparentNeed: 'listen', topic: 'a deadline' },
+      NOW,
+    );
+
+    // Nothing before the warm: the condition is per turn, not per profile.
+    expect(modelVisible(await mounted.ctx.systemPrompt.assemble())).not.toContain('current_turn');
+
+    await createPreStep(currentMount()!)('still going', NOW);
+
+    const text = modelVisible(await mounted.ctx.systemPrompt.assemble());
+    expect(text).toContain('<current_turn');
+    expect(text).toContain('tired');
+    expect(text).toContain('need="listen"');
+    // And it carries its framing, not just its content.
+    expect(text).toContain('not a fact about the user');
+    expect(text).toContain('do not carry them into later conversations');
+
+    await mounted.dispose();
+  });
+
+  it('withholds an expired condition from the prompt', async () => {
+    const mounted = await mountAdapter();
+    await mounted.kernel.setState(mounted.scope, { affect: ['furious'] }, NOW);
+
+    // A later turn, well past the default window.
+    const later = '2026-06-12T12:00:00Z';
+    await createPreStep(currentMount()!)('still going', later);
+
+    const text = modelVisible(await mounted.ctx.systemPrompt.assemble());
+    expect(text).not.toContain('furious');
+    expect(text).not.toContain('<current_turn');
 
     await mounted.dispose();
   });

@@ -61,9 +61,47 @@ export interface WarmResult {
   stable: string;
   /** Records to place in this turn's context, already filtered and ranked. */
   candidates: ContextCandidate[];
+  /**
+   * The conversation's present condition: affect, need, topic.
+   *
+   * Not memory. It has a lifetime measured in turns or hours and must not become
+   * durable, which is why it travels separately from `candidates` — a caller
+   * that treated these as records would promote today's mood into a fact about
+   * the person.
+   */
+  now?: TurnState;
   /** The ledger revision these results were built from. */
   revision: number;
 }
+
+/**
+ * The conversation's present condition.
+ *
+ * Mirrors the kernel's `RuntimeState`, narrowed to what changes a reply.
+ */
+export interface TurnState {
+  /** Affect labels for the moment. */
+  affect?: readonly string[];
+  /** What the user appears to need right now. */
+  apparentNeed?: ApparentNeed;
+  /** What is being discussed. */
+  topic?: string;
+}
+
+/**
+ * What the user appears to need, as the kernel classifies it.
+ *
+ * A suggestion for the companion's stance rather than an instruction. The reply
+ * states it as a possibility because a misread need, asserted confidently, is
+ * worse than no reading at all.
+ */
+export type ApparentNeed =
+  | 'listen'
+  | 'validate'
+  | 'clarify'
+  | 'support'
+  | 'problem_solve'
+  | 'neutral';
 
 /**
  * The memory operations the adapter performs.
@@ -88,6 +126,15 @@ export interface MemoryKernel {
    * implementation's business; the adapter only reports that a turn happened.
    */
   observe(scope: MemoryScope, messages: readonly ObservedMessage[], now: string): Promise<ObservedOutcome>;
+
+  /**
+   * Record the conversation's present condition.
+   *
+   * Separate from `observe` because it is a different kind of statement: what
+   * the user seems to be feeling now, rather than what is true about them.
+   * Merging the two is how a transient mood becomes a durable fact.
+   */
+  setState(scope: MemoryScope, state: TurnState, now: string): Promise<void>;
 
   /**
    * Answer a direct question the model asked through a tool.

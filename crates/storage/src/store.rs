@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use companion_memory_kernel::domain::predicates::MentionMode;
 use companion_memory_kernel::domain::types::{
-    Claim, ClaimStatus, Episode, Inference, RelationshipScope, Salience,
+    Claim, ClaimStatus, Episode, Inference, RelationshipScope, RuntimeState, Salience,
 };
 use companion_memory_kernel::domain::types::{EpisodeStatus, InferenceAxis, InferenceState};
 use companion_memory_kernel::rules::forgetting::SuppressionSet;
@@ -449,7 +449,8 @@ impl Store {
         table: &str,
     ) -> rusqlite::Result<i64> {
         let table = match table {
-            "claims" | "episodes" | "inferences" | "suppression" | "audit_events" => table,
+            "claims" | "episodes" | "inferences" | "suppression" | "audit_events"
+            | "runtime_state" => table,
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(other.to_string()));
             }
@@ -459,6 +460,106 @@ impl Store {
             &format!("SELECT COUNT(*) FROM {table} WHERE scope_key = ?1"),
             [key.as_str()],
             |row| row.get(0),
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // RuntimeState — deliberately not memory
+    // -----------------------------------------------------------------------
+
+    /// Store the conversation's present condition.
+    ///
+    /// One row per relationship, replaced rather than accumulated: this is the
+    /// current condition, not a history of conditions. The session trajectory
+    /// inside it is what carries the shape of the session, and that is promoted
+    /// to an episode's emotional arc at the end rather than kept here.
+    ///
+    /// A record whose `expires_at` has already passed is still written. Refusing
+    /// it would make the caller guess whether the state was rejected or merely
+    /// stale, and the row is what lets a later reader say which.
+    pub fn put_runtime_state(&self, state: &RuntimeState) -> rusqlite::Result<()> {
+        let key = ScopeKey::of(&state.scope);
+        self.connection.execute(
+            "INSERT OR REPLACE INTO runtime_state (
+                scope_key, current_affect_json, current_topic, apparent_need,
+                conversation_mode, active_entities_json, unresolved_turn_intent,
+                trajectory_json, expires_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                key.as_str(),
+                json_opt(&state.current_affect)?,
+                state.current_topic,
+                state.apparent_need,
+                state.conversation_mode,
+                json_opt(&state.active_entities)?,
+                state.unresolved_turn_intent,
+                json_opt(&state.session_trajectory)?,
+                state.expires_at,
+                state.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Read the present condition, ignoring it when it has expired.
+    ///
+    /// Expiry is applied on read rather than by deleting, for two reasons. A
+    /// sweeper that only runs periodically would leave a window where stale
+    /// state is live, and a state that expires *because the conversation moved
+    /// on* is worth being able to inspect afterwards when asking why the
+    /// companion stopped reacting to something.
+    ///
+    /// A caller that wants to know whether anything was ever recorded, or that a
+    /// record has gone stale, can use [`Store::runtime_state_raw`].
+    pub fn get_runtime_state(
+        &self,
+        scope: &RelationshipScope,
+        now: &str,
+    ) -> rusqlite::Result<Option<RuntimeState>> {
+        let stored = self.runtime_state_raw(scope)?;
+        Ok(stored.filter(|state| state.expires_at.as_str() > now))
+    }
+
+    /// Read the present condition including an expired one, for diagnostics.
+    pub fn runtime_state_raw(
+        &self,
+        scope: &RelationshipScope,
+    ) -> rusqlite::Result<Option<RuntimeState>> {
+        let key = ScopeKey::of(scope);
+        self.connection
+            .query_row(
+                "SELECT current_affect_json, current_topic, apparent_need, conversation_mode,
+                        active_entities_json, unresolved_turn_intent, trajectory_json,
+                        expires_at, updated_at
+                 FROM runtime_state WHERE scope_key = ?1",
+                [key.as_str()],
+                |row| {
+                    Ok(RuntimeState {
+                        scope: scope.clone(),
+                        current_affect: json_optional(row.get(0)?, "current_affect")?,
+                        current_topic: row.get(1)?,
+                        apparent_need: row.get(2)?,
+                        conversation_mode: row.get(3)?,
+                        active_entities: json_optional(row.get(4)?, "active_entities")?,
+                        unresolved_turn_intent: row.get(5)?,
+                        session_trajectory: json_optional(row.get(6)?, "session_trajectory")?,
+                        expires_at: row.get(7)?,
+                        updated_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// Delete a relationship's state outright.
+    ///
+    /// For profile deletion and for an explicit reset, where the point is that
+    /// nothing about the conversation's condition should carry over.
+    pub fn clear_runtime_state(&self, scope: &RelationshipScope) -> rusqlite::Result<usize> {
+        let key = ScopeKey::of(scope);
+        self.connection.execute(
+            "DELETE FROM runtime_state WHERE scope_key = ?1",
+            [key.as_str()],
         )
     }
 

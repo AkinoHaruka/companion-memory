@@ -327,5 +327,6 @@ export {
   renderOverlay,
   renderQueryResult,
   renderStable,
+  renderTurnState,
   renderedIds,
 } from './render.js';

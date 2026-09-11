@@ -30,6 +30,7 @@ import type {
   MentionLevel,
   ObservedMessage,
   ObservedOutcome,
+  TurnState,
   WarmResult,
 } from './memory.js';
 import { profileKey } from './turn-cache.js';
@@ -62,14 +63,54 @@ function normalize(text: string): string {
   return text.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/**
+ * Whether a condition stamped `expiresAt` is still in force at `now`.
+ *
+ * An unparseable instant on either side counts as expired. That is the safe
+ * direction: a malformed deadline makes the reading vanish rather than persist,
+ * and a missing reading is a reply shaped only by what the user just said.
+ */
+function isLive(expiresAt: string, now: string): boolean {
+  const expiry = Date.parse(expiresAt);
+  const instant = Date.parse(now);
+  if (Number.isNaN(expiry) || Number.isNaN(instant)) return false;
+  return expiry > instant;
+}
+
 /** How many candidates one turn may carry, matching the kernel's surfacing pool. */
 const DEFAULT_CEILING = 8;
+
+/** How long a condition stays live, when the caller does not say. */
+const DEFAULT_STATE_HOURS = 4;
+
+/**
+ * The instant a condition recorded at `now` stops applying.
+ *
+ * Parsed from the ISO 8601 instant rather than read from a clock, so a test can
+ * drive expiry with a fixed timestamp and the result is reproducible. A `now`
+ * that cannot be parsed yields the same instant, which makes the state expire
+ * immediately instead of silently living forever — the failure that would let a
+ * stale reading persist.
+ */
+function defaultStateExpiry(now: string): string {
+  const parsed = Date.parse(now);
+  if (Number.isNaN(parsed)) return now;
+  return new Date(parsed + DEFAULT_STATE_HOURS * 3_600_000).toISOString();
+}
 
 /** An in-memory memory implementation, for tests and as a working default. */
 export class InMemoryKernel implements MemoryKernel {
   private readonly records = new Map<string, MemoryRecord[]>();
   private readonly suppressed = new Map<string, Set<string>>();
   private readonly stable = new Map<string, string>();
+  /**
+   * The present condition per profile, with the instant it expires.
+   *
+   * Held alongside its deadline so a stale reading is withheld rather than
+   * served. That is the whole reason this layer is separate from records: a
+   * condition that outlives its moment becomes a claim about the person.
+   */
+  private readonly state = new Map<string, { state: TurnState; expiresAt: string }>();
   private revision = 0;
 
   /** Add or replace a record for a profile. */
@@ -114,7 +155,7 @@ export class InMemoryKernel implements MemoryKernel {
     return this.records.get(profileKey(scope)) ?? [];
   }
 
-  async warm(scope: MemoryScope, currentMessage: string): Promise<WarmResult> {
+  async warm(scope: MemoryScope, currentMessage: string, now: string): Promise<WarmResult> {
     const key = profileKey(scope);
     const message = normalize(currentMessage);
     const records = this.records.get(key) ?? [];
@@ -125,11 +166,41 @@ export class InMemoryKernel implements MemoryKernel {
       .slice(0, DEFAULT_CEILING)
       .map((record) => ({ id: record.id, text: record.text, mention: record.mention }));
 
+    // A condition past its deadline is withheld rather than served. Serving it
+    // would let last week's mood shape this week's reply, and nothing in the
+    // output would look wrong.
+    //
+    // Compared as instants, not as strings. Lexicographic ordering cannot tell a
+    // malformed expiry from a valid one, so a bad timestamp would compare as
+    // "still live" and the reading would persist indefinitely.
+    const held = this.state.get(key);
+    const live = held && isLive(held.expiresAt, now) ? held.state : undefined;
+
     return {
       stable: this.stable.get(key) ?? '',
       candidates,
+      ...(live ? { now: live } : {}),
       revision: this.revision,
     };
+  }
+
+  async setState(scope: MemoryScope, state: TurnState, now: string): Promise<void> {
+    // Default lifetime is the session, expressed as an absolute instant so a
+    // later read can decide freshness without consulting a clock of its own.
+    const expiresAt = defaultStateExpiry(now);
+    this.state.set(profileKey(scope), { state, expiresAt });
+    this.revision += 1;
+  }
+
+  /** The live condition for a profile, for assertions. */
+  currentState(scope: MemoryScope, now: string): TurnState | undefined {
+    const held = this.state.get(profileKey(scope));
+    return held && isLive(held.expiresAt, now) ? held.state : undefined;
+  }
+
+  /** Clear the condition, as a profile reset would. */
+  clearState(scope: MemoryScope): void {
+    this.state.delete(profileKey(scope));
   }
 
   async observe(

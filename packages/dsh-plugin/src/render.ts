@@ -19,7 +19,13 @@
  * is fixed. That is what lets the prompt providers be synchronous.
  */
 
-import type { ContextCandidate, MentionLevel, WarmResult } from './memory.js';
+import type {
+  ApparentNeed,
+  ContextCandidate,
+  MentionLevel,
+  TurnState,
+  WarmResult,
+} from './memory.js';
 
 /** Escape text so it cannot close the framing tags or introduce markup. */
 export function escapeText(value: string): string {
@@ -77,6 +83,76 @@ export function renderStable(result: WarmResult): string {
 }
 
 /**
+ * Render the conversation's present condition.
+ *
+ * Three distinctions are load-bearing, because collapsing any of them is how a
+ * state reading becomes an assertion about the person.
+ *
+ * The affect is framed as a **reading, not a fact**. It came from tone and
+ * wording, so the block says so and tells the model to revise it on evidence. A
+ * companion that opens with "you sound exhausted" because a classifier said so
+ * is diagnosing rather than listening.
+ *
+ * The need is framed as a **stance to try, not an instruction**. A misread need
+ * held confidently is worse than no reading, because the user then has to
+ * correct the companion before reaching what they actually wanted.
+ *
+ * The whole block is framed as **this conversation only**. It is the one part of
+ * the context with no durability, and a model that took it as a fact about the
+ * user would carry today's tiredness into how it treats them next month.
+ */
+export function renderTurnState(state: TurnState, revision: number): string {
+  const affect = state.affect?.filter((label) => label.trim().length > 0) ?? [];
+  const need = state.apparentNeed;
+  const topic = state.topic?.trim();
+
+  if (affect.length === 0 && !need && !topic) return '';
+
+  const lines = [
+    `<current_turn revision="${revision}">`,
+    `  <context_policy>${escapeText(STATE_IS_TRANSIENT)}</context_policy>`,
+  ];
+
+  if (affect.length > 0) {
+    lines.push(`  <affect confidence="reading">${escapeText(affect.join(', '))}</affect>`);
+  }
+  if (topic) {
+    lines.push(`  <topic>${escapeText(topic)}</topic>`);
+  }
+  if (need) {
+    lines.push(
+      `  <suggested_stance need="${escapeText(need)}">${escapeText(STANCE[need])}</suggested_stance>`,
+    );
+  }
+
+  lines.push('</current_turn>');
+  return lines.join('\n');
+}
+
+/**
+ * What the turn's condition may not be used for.
+ *
+ * The middle sentence is the one that matters. Without it a model has no reason
+ * not to open by naming the feeling it was handed, which is exactly the
+ * behaviour this layer would otherwise introduce.
+ */
+const STATE_IS_TRANSIENT =
+  'This describes the present conversation only and is not a fact about the user. ' +
+  'It expires. Do not state these readings back as conclusions about the person, ' +
+  'and do not carry them into later conversations.';
+
+/** The stance each need suggests, in the model's own language. */
+const STANCE: Record<ApparentNeed, string> = {
+  listen: 'They most likely want to be heard before anything is solved. Do not offer solutions yet.',
+  validate: 'Acknowledge what they are feeling before adding anything of your own.',
+  clarify: 'Something is ambiguous. Ask one question rather than assuming an answer.',
+  support: 'Offer company and steadiness rather than analysis.',
+  problem_solve:
+    'They appear to want help thinking it through. Ask before assuming the constraints.',
+  neutral: 'No particular need detected. Respond to what was actually asked.',
+};
+
+/**
  * Render this turn's relevant records.
  *
  * Split into two groups by what the model is allowed to do with them, because a
@@ -89,7 +165,8 @@ export function renderOverlay(result: WarmResult): string {
     (candidate) => candidate.mention === 'background_only',
   );
 
-  if (speakable.length === 0 && background.length === 0) return '';
+  const stateBlock = result.now ? renderTurnState(result.now, result.revision) : '';
+  if (speakable.length === 0 && background.length === 0) return stateBlock;
 
   const lines = [`<companion_memory revision="${result.revision}">`];
 
@@ -110,7 +187,8 @@ export function renderOverlay(result: WarmResult): string {
   }
 
   lines.push('</companion_memory>');
-  return lines.join('\n');
+  const memoryBlock = lines.join('\n');
+  return stateBlock ? `${stateBlock}\n${memoryBlock}` : memoryBlock;
 }
 
 /**

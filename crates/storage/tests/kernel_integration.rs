@@ -16,7 +16,7 @@
 use companion_memory_kernel::domain::predicates::MentionMode;
 use companion_memory_kernel::domain::types::{
     Claim, ClaimStatus, EvidenceRef, EvidenceSourceType, Inference, InferenceAxis, InferenceState,
-    Provenance, RelationshipScope, Salience, Speaker,
+    Provenance, RelationshipScope, RuntimeState, Salience, SessionTrajectoryPoint, Speaker,
 };
 use companion_memory_kernel::rules::evidence::{is_collapsed, live_evidence, EvidenceResolution};
 use companion_memory_kernel::rules::forgetting::{
@@ -543,4 +543,144 @@ fn directly_suppressing_an_inference_withholds_it_regardless_of_its_evidence() {
         matches!(disposition, DerivedDisposition::Withheld),
         "a directly suppressed inference is withheld even with live evidence, got {disposition:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeState — the non-memory layer
+// ---------------------------------------------------------------------------
+
+fn runtime_state(expires_at: &str) -> RuntimeState {
+    RuntimeState {
+        scope: scope(),
+        current_affect: Some(vec!["tired".into(), "frustrated".into()]),
+        current_topic: Some("a work deadline".into()),
+        apparent_need: Some("listen".into()),
+        conversation_mode: Some("unwinding".into()),
+        active_entities: Some(vec!["person-9".into()]),
+        unresolved_turn_intent: Some("wants to vent before deciding anything".into()),
+        session_trajectory: Some(vec![SessionTrajectoryPoint {
+            at_turn: 1,
+            affect: vec!["tired".into()],
+            topic: "work".into(),
+        }]),
+        expires_at: expires_at.into(),
+        updated_at: NOW.into(),
+    }
+}
+
+#[test]
+fn runtime_state_survives_a_round_trip() {
+    // The layer existed as a type and a table with nothing reading or writing
+    // it, which is the same shape as the dead emotion layer this design set out
+    // to replace. A round trip is the minimum evidence that it is wired.
+    let store = store();
+    let original = runtime_state("2026-06-10T18:00:00Z");
+    store.put_runtime_state(&original).expect("write");
+
+    let read = store
+        .get_runtime_state(&scope(), NOW)
+        .expect("read")
+        .expect("present");
+    assert_eq!(read, original);
+}
+
+#[test]
+fn an_expired_state_is_not_returned_but_is_still_inspectable() {
+    // "I'm so done with today" must stop shaping the reply once it is over. The
+    // row is kept so that a later question about why the companion stopped
+    // reacting has an answer.
+    let store = store();
+    store
+        .put_runtime_state(&runtime_state("2026-06-10T11:00:00Z"))
+        .expect("write");
+
+    assert!(
+        store.get_runtime_state(&scope(), NOW).expect("read").is_none(),
+        "an expired state must not be served"
+    );
+    let raw = store.runtime_state_raw(&scope()).expect("read raw");
+    assert!(raw.is_some(), "the row is still there for diagnostics");
+    assert_eq!(raw.unwrap().current_affect.unwrap(), vec!["tired", "frustrated"]);
+}
+
+#[test]
+fn a_state_expiring_exactly_now_is_already_over() {
+    // Boundary condition: the transition happens at the stamped instant, not
+    // after it. Getting this backwards extends every state by one turn.
+    let store = store();
+    store.put_runtime_state(&runtime_state(NOW)).expect("write");
+    assert!(store.get_runtime_state(&scope(), NOW).expect("read").is_none());
+}
+
+#[test]
+fn writing_runtime_state_replaces_rather_than_accumulating() {
+    // It is the present condition, not a history of conditions. A second write
+    // for one relationship must leave exactly one row, or the session's shape
+    // would be read from whichever row happened to win.
+    let store = store();
+    store
+        .put_runtime_state(&runtime_state("2026-06-10T18:00:00Z"))
+        .expect("write");
+
+    let mut later = runtime_state("2026-06-10T20:00:00Z");
+    later.current_topic = Some("something else entirely".into());
+    store.put_runtime_state(&later).expect("write");
+
+    assert_eq!(
+        store.count_in_scope(&scope(), "runtime_state").expect("count"),
+        1
+    );
+    assert_eq!(
+        store
+            .get_runtime_state(&scope(), NOW)
+            .expect("read")
+            .expect("present")
+            .current_topic
+            .as_deref(),
+        Some("something else entirely")
+    );
+}
+
+#[test]
+fn runtime_state_does_not_cross_scopes() {
+    let store = store();
+    store
+        .put_runtime_state(&runtime_state("2026-06-10T18:00:00Z"))
+        .expect("write");
+
+    let other = RelationshipScope {
+        service_id: "svc".into(),
+        owner_user_id: "u2".into(),
+        companion_profile_id: "p1".into(),
+    };
+    assert!(store.get_runtime_state(&other, NOW).expect("read").is_none());
+    assert!(store.runtime_state_raw(&other).expect("read raw").is_none());
+}
+
+#[test]
+fn clearing_runtime_state_removes_it() {
+    // For a profile reset, where the point is that nothing about the
+    // conversation's condition carries over.
+    let store = store();
+    store
+        .put_runtime_state(&runtime_state("2026-06-10T18:00:00Z"))
+        .expect("write");
+    assert_eq!(store.clear_runtime_state(&scope()).expect("clear"), 1);
+    assert!(store.runtime_state_raw(&scope()).expect("read raw").is_none());
+}
+
+#[test]
+fn transient_state_never_becomes_a_claim() {
+    // The property the whole layer exists for: "I'm so done with today" changes
+    // the present condition and nothing durable. If a state write could produce
+    // a claim, the long-term memory would be poisoned by whichever mood happened
+    // to be recorded.
+    let store = store();
+    store
+        .put_runtime_state(&runtime_state("2026-06-10T18:00:00Z"))
+        .expect("write");
+
+    assert_eq!(store.active_claims(&scope()).expect("read").len(), 0);
+    assert_eq!(store.active_episodes(&scope()).expect("read").len(), 0);
+    assert_eq!(store.inferences(&scope()).expect("read").len(), 0);
 }

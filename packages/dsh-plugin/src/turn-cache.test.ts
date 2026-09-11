@@ -13,6 +13,8 @@ import type { MemoryKernel, MemoryScope, WarmResult } from './memory.js';
 import { InMemoryKernel } from './in-memory-kernel.js';
 import { TurnCache, WarmCoalescer, profileKey } from './turn-cache.js';
 
+const NOW = '2026-06-10T12:00:00Z';
+
 function scope(user = 'u1', profile = 'p1'): MemoryScope {
   return { serviceId: 'svc', ownerUserId: user, companionProfileId: profile };
 }
@@ -147,8 +149,8 @@ describe('InMemoryKernel', () => {
     memory.remember(scope('u1'), { id: 'r1', text: 'likes herons', mention: 'freely_mentionable', terms: ['heron'] });
     memory.remember(scope('u2'), { id: 'r2', text: 'likes trains', mention: 'freely_mentionable', terms: ['train'] });
 
-    const first = await memory.warm(scope('u1'), 'saw a heron');
-    const second = await memory.warm(scope('u2'), 'saw a heron');
+    const first = await memory.warm(scope('u1'), 'saw a heron', NOW);
+    const second = await memory.warm(scope('u2'), 'saw a heron', NOW);
     expect(first.candidates.map((c) => c.id)).toEqual(['r1']);
     expect(second.candidates).toEqual([]);
   });
@@ -156,14 +158,14 @@ describe('InMemoryKernel', () => {
   it('surfaces a record only when a term matches the turn', async () => {
     const memory = new InMemoryKernel();
     memory.remember(scope(), { id: 'r1', text: 'likes herons', mention: 'freely_mentionable', terms: ['heron'] });
-    expect((await memory.warm(scope(), 'what is for dinner')).candidates).toEqual([]);
-    expect((await memory.warm(scope(), 'I saw a Heron today')).candidates).toHaveLength(1);
+    expect((await memory.warm(scope(), 'what is for dinner', NOW)).candidates).toEqual([]);
+    expect((await memory.warm(scope(), 'I saw a Heron today', NOW)).candidates).toHaveLength(1);
   });
 
   it('never surfaces a record marked never_surface', async () => {
     const memory = new InMemoryKernel();
     memory.remember(scope(), { id: 'secret', text: 'a hospital stay', mention: 'never_surface', terms: ['hospital'] });
-    expect((await memory.warm(scope(), 'about the hospital')).candidates).toEqual([]);
+    expect((await memory.warm(scope(), 'about the hospital', NOW)).candidates).toEqual([]);
   });
 
   it('reports honestly that observing a turn commits nothing', async () => {
@@ -181,7 +183,7 @@ describe('InMemoryKernel', () => {
     expect(memory.suppress(scope(), 'e1')).toBe(true);
 
     expect(memory.wouldResurrect(scope(), '  The Dog Was Sick That Night ')).toBe(true);
-    expect((await memory.warm(scope(), 'how is the dog')).candidates).toEqual([]);
+    expect((await memory.warm(scope(), 'how is the dog', NOW)).candidates).toEqual([]);
     expect(memory.all(scope())).toEqual([]);
   });
 
@@ -212,9 +214,54 @@ describe('InMemoryKernel', () => {
 
   it('stamps a revision that changes when memory changes', async () => {
     const memory = new InMemoryKernel();
-    const before = (await memory.warm(scope(), 'anything')).revision;
+    const before = (await memory.warm(scope(), 'anything', NOW)).revision;
     memory.remember(scope(), { id: 'r1', text: 'x', mention: 'freely_mentionable', terms: ['x'] });
-    const after = (await memory.warm(scope(), 'anything')).revision;
+    const after = (await memory.warm(scope(), 'anything', NOW)).revision;
     expect(after).not.toBe(before);
+  });
+});
+
+describe('InMemoryKernel turn state', () => {
+  it('is withheld once it has expired', async () => {
+    // The property that makes this layer safe: a stale reading must not shape a
+    // later reply, and nothing in the output would look wrong if it did.
+    const memory = new InMemoryKernel();
+    await memory.setState(scope(), { affect: ['tired'], apparentNeed: 'listen' }, NOW);
+
+    const fresh = await memory.warm(scope(), 'anything', NOW);
+    expect(fresh.now?.affect).toEqual(['tired']);
+
+    const later = await memory.warm(scope(), 'anything', '2026-06-11T12:00:00Z');
+    expect(later.now).toBeUndefined();
+  });
+
+  it('does not leak into the candidate records', async () => {
+    // The condition must never arrive as a remembered record: that is exactly
+    // how a transient mood becomes a durable fact.
+    const memory = new InMemoryKernel();
+    await memory.setState(scope(), { affect: ['tired'] }, NOW);
+    const warmed = await memory.warm(scope(), 'anything', NOW);
+    expect(warmed.candidates).toEqual([]);
+  });
+
+  it('is per profile', async () => {
+    const memory = new InMemoryKernel();
+    await memory.setState(scope('u1'), { affect: ['tired'] }, NOW);
+    expect((await memory.warm(scope('u2'), 'anything', NOW)).now).toBeUndefined();
+  });
+
+  it('can be cleared', async () => {
+    const memory = new InMemoryKernel();
+    await memory.setState(scope(), { affect: ['tired'] }, NOW);
+    memory.clearState(scope());
+    expect((await memory.warm(scope(), 'anything', NOW)).now).toBeUndefined();
+  });
+
+  it('expires immediately on an unparseable instant rather than living forever', async () => {
+    // The safe direction: a bad timestamp makes the reading vanish instead of
+    // persisting indefinitely.
+    const memory = new InMemoryKernel();
+    await memory.setState(scope(), { affect: ['tired'] }, 'not-a-timestamp');
+    expect((await memory.warm(scope(), 'anything', NOW)).now).toBeUndefined();
   });
 });
