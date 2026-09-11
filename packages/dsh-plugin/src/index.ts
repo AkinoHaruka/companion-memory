@@ -33,6 +33,7 @@ import z from '@deepseek-ai/schemastery';
 // those services did not exist, which is how the mistake presents: a plugin that
 // looks correct and cannot mount.
 import type {} from '@deepseek-ai/dsh-system-prompt';
+import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt';
 import type {} from '@deepseek-ai/dsh-tools';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
@@ -88,23 +89,30 @@ const DEFAULT_OVERLAY_ORDER = 700;
 const DEFAULT_TOOL_NAME = 'companion_memory';
 
 /**
- * The kernel this deployment uses.
+ * Build the plugin for one memory implementation.
  *
- * Set once before the plugin mounts, because the host constructs plugins from
- * configuration alone and the implementation is a composition-root decision.
- * Kept as module state rather than a hidden default so that "no kernel" is a
- * loud failure at mount time instead of a plugin that quietly does nothing.
- */
-let configured: MemoryKernel | undefined;
-
-/**
- * Choose the memory implementation.
+ * The kernel is a factory argument rather than module state. An earlier version
+ * kept it in a module-level variable that a mount and its pre-step handler each
+ * read separately, and they disagreed: a mount created with an explicit kernel
+ * handed its handler `undefined`, which then returned early so the plugin
+ * silently remembered nothing. Passing it once, here, removes the class of bug
+ * rather than the instance.
  *
- * Call before mounting. The kernel owns the rules and the storage; this package
- * owns only the adapter, so it cannot pick one for you.
+ * @param kernel - the memory implementation this deployment uses.
+ * @returns a cordis function plugin to mount with `ctx.plugin`.
  */
-export function configureMemory(kernel: MemoryKernel): void {
-  configured = kernel;
+export function createCompanionMemory(kernel: MemoryKernel): {
+  name: string;
+  inject: string[];
+  Config: typeof Config;
+  apply: (ctx: Context, config: CompanionMemoryConfig) => void;
+} {
+  return {
+    name,
+    inject: [...inject],
+    Config,
+    apply: (ctx, config) => applyWith(ctx, config, kernel),
+  };
 }
 
 /** The caches, owned per mount. */
@@ -114,32 +122,49 @@ export interface MemoryMount {
   /** The coalescer the pre-step hook uses. */
   readonly coalescer: WarmCoalescer;
   /** The scope this mount serves. */
-  readonly scope: MemoryScope;
-}
-
-/** The mount from the most recent `apply`, for the pre-step hook to use. */
-let mounted: MemoryMount | undefined;
-
-/** The mount produced by the last `apply`, for tests and diagnostics. */
-export function currentMount(): MemoryMount | undefined {
-  return mounted;
+  readonly relationship: MemoryScope;
+  /** The memory implementation this mount uses. */
+  readonly kernel: MemoryKernel;
 }
 
 /**
- * Mount the adapter.
+ * The mount produced by the last `apply`.
  *
- * Registers the three synchronous-facing contributions. The pre-step hook is
- * registered separately by {@link preStep} because its payload type lives in the
- * agent package and this function is otherwise independent of the loop.
+ * A record of the most recent mount, for diagnostics and for wiring the
+ * pre-step handler. It is deliberately **not** how either finds its state: a
+ * second mount in one process would overwrite this, and a handler holding it
+ * would then warm the wrong profile. {@link createPreStep} closes over its own
+ * mount instead.
+ *
+ * Known limitation: with several mounts alive at once this returns only the most
+ * recent, so a caller wiring pre-step for two agents at the same time would get
+ * the wrong one for the first. A composition that mounts more than one
+ * relationship should keep the fork it got from `ctx.plugin` and derive the
+ * mount from it rather than reading this.
  */
-export function apply(ctx: Context, config: CompanionMemoryConfig): void {
-  const kernel = configured;
-  if (!kernel) {
-    throw new Error(
-      'companion-memory: no kernel configured; call configureMemory() before mounting',
-    );
-  }
+let lastMount: MemoryMount | undefined;
 
+/** The mount produced by the last `apply`, for diagnostics. */
+export function currentMount(): MemoryMount | undefined {
+  return lastMount;
+}
+
+/**
+ * Mount the adapter onto a context.
+ *
+ * Exported for a composition root that already has a kernel in hand. Prefer
+ * {@link createCompanionMemory} with `ctx.plugin`, which scopes the
+ * contributions to that mount so disposing it removes them.
+ *
+ * @param ctx - the cordis context to contribute to.
+ * @param config - deployment settings, including which relationship this serves.
+ * @param kernel - the memory implementation.
+ */
+export function applyWith(
+  ctx: Context,
+  config: CompanionMemoryConfig,
+  kernel: MemoryKernel,
+): void {
   const scope: MemoryScope = {
     serviceId: config.serviceId,
     ownerUserId: config.ownerUserId,
@@ -148,7 +173,8 @@ export function apply(ctx: Context, config: CompanionMemoryConfig): void {
 
   const cache = new TurnCache();
   const coalescer = new WarmCoalescer();
-  mounted = { cache, coalescer, scope };
+  const mount: MemoryMount = { cache, coalescer, relationship: scope, kernel };
+  lastMount = mount;
 
   // Every registration goes through ctx.effect so disposal removes it. The
   // registries return their own disposers; wrapping them here means fiber
@@ -242,42 +268,58 @@ export function apply(ctx: Context, config: CompanionMemoryConfig): void {
 }
 
 /**
- * Recall memory for a step about to be admitted.
+ * Build the recall handler for a mount.
  *
- * Separate from {@link apply} so the loop's payload type stays out of the
- * registration code, and so a test can drive it without constructing an agent.
+ * The host registers the returned function on `agent/pre-step`, where it runs
+ * before the step's prompt is assembled. It is a factory rather than a free
+ * function so the handler closes over *its own* mount: a second mount in one
+ * process would otherwise leave an earlier handler warming the wrong profile,
+ * which is silent because both profiles return plausible memory.
+ *
+ * The kernel comes from the mount, so a mount created with an explicit kernel
+ * cannot hand its handler a different one.
  *
  * The result is published only on success. A failed read leaves the cache
- * untouched, which makes the turn render no memory rather than the previous
- * turn's — the failure mode that would otherwise be invisible, because stale
- * memory looks exactly like correct memory.
+ * untouched, so the turn renders no memory rather than the previous turn's —
+ * the failure that would otherwise be invisible, because stale memory looks
+ * exactly like correct memory.
+ *
+ * @param mount - the mount produced by {@link apply}.
+ * @returns a function that recalls memory for one step.
  */
-export async function recallForStep(
+export function createPreStep(
   mount: MemoryMount,
-  currentMessage: string,
-  now: string,
-): Promise<void> {
-  const kernel = configured;
-  if (!kernel) return;
-
-  const warmed = await mount.coalescer.run(mount.scope, () =>
-    kernel.warm(mount.scope, currentMessage, now),
-  );
-  mount.cache.publish(mount.scope, warmed);
+): (currentMessage: string, now: string) => Promise<void> {
+  return async (currentMessage, now) => {
+    const warmed = await mount.coalescer.run(mount.relationship, () =>
+      mount.kernel.warm(mount.relationship, currentMessage, now),
+    );
+    mount.cache.publish(mount.relationship, warmed);
+  };
 }
 
-/** Record a step's messages, if the mount exists. */
-export async function observeStep(
+/**
+ * Build the observer for a mount.
+ *
+ * Kept beside {@link createPreStep} so both handlers share one lifecycle and one
+ * way of finding their kernel.
+ *
+ * @param mount - the mount produced by {@link apply}.
+ * @returns a function that reports one step's messages.
+ */
+export function createObserver(
   mount: MemoryMount,
+): (
   messages: readonly { role: 'user' | 'assistant'; text: string; id: string }[],
   now: string,
-): Promise<void> {
-  const kernel = configured;
-  if (!kernel) return;
-  await kernel.observe(mount.scope, messages, now);
+) => Promise<void> {
+  return async (messages, now) => {
+    await mount.kernel.observe(mount.relationship, messages, now);
+  };
 }
 
 export { InMemoryKernel, type MemoryRecord } from './in-memory-kernel.js';
+export type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt';
 export { TurnCache, WarmCoalescer, profileKey } from './turn-cache.js';
 export * from './memory.js';
 export {
