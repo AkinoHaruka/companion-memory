@@ -49,25 +49,23 @@ implementation on exactly the invariant you care about is worse than none.
 | Storage: schema, migrations, scope-isolated queries | done |
 | DSH adapter: rendering, warm cache, tool, config | done |
 | DSH adapter: composition test on live services | done |
+| Kernel↔store integration: write, recall, supersede, forget | done |
 | DSH adapter: pre-step registered on `agent/pre-step` in a real loop | not started |
 | RuntimeState wiring | not started |
-| Kernel↔store end-to-end test | not started |
 
-Test totals: kernel 109, storage 24, DSH adapter 47.
+Test totals: kernel 110, storage 40, DSH adapter 47.
 
-The composition test mounts the adapter with `ctx.plugin` against the real
-`SystemPrompt` and `ToolRuntime` and asserts that a warmed record reaches the
-rendered prompt. It found a real defect on its first run: the pre-step factory
-resolved its kernel separately from the mount, so a mount given an explicit
-kernel still handed its handler nothing and the section rendered empty forever.
-That is the case a typecheck cannot catch and a unit test of either half passes
-straight through.
+Two integration suites now exist because unit suites pass while a seam is wrong.
+The DSH composition test found that a mount given an explicit kernel handed its
+pre-step handler nothing, so the plugin rendered empty forever. The kernel↔store
+suite found that the two crates disagreed about fingerprint orientation, so the
+resurrection guard compared a fingerprint against a human-readable label and
+never fired — and that the kernel's own round-trip test had been passing
+vacuously, matching on the record id before the fingerprint branch was reached.
 
 What remains unverified is narrower but still real: that the loop calls
-`agent/pre-step` before prompt assembly for the same step. The composition test
-runs the handler by hand, so it proves the pieces connect, not that the host
-invokes them in that order. Wiring pre-step into a real agent loop is listed as
-not started rather than implied.
+`agent/pre-step` before prompt assembly for the same step, and that RuntimeState
+reaches the host at all. Both are listed as not started rather than implied.
 
 ## Conventions
 
