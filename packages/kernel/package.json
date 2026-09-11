@@ -1,0 +1,20 @@
+{
+  "name": "@companion-memory/kernel",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pure memory decision kernel: predicate registry, cardinality dispatch, evidence graph, mention gate, scoring. No I/O, no LLM, no host coupling.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
