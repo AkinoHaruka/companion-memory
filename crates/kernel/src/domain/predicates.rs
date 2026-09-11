@@ -20,6 +20,7 @@
 // comment. The types themselves carry docs; their variants deliberately do not.
 #![allow(missing_docs)]
 
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 use crate::domain::predicate_keys::{
@@ -80,26 +81,32 @@ impl ValueKind {
 }
 
 /// How a record may be surfaced. See DESIGN.md §3.6.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// Ordered from quietest to loudest so that "gates may only ever make a record
+/// quieter" is expressible as a minimum over levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MentionMode {
+    /// Never surfaced at all.
+    NeverSurface,
     /// Only shapes tone and word choice; must never be recited.
     BackgroundOnly,
     /// May be recited when the user refers to it or the topic implies it.
     MentionIfUserCues,
     /// May be raised without a cue.
     FreelyMentionable,
-    /// Never surfaced at all.
-    NeverSurface,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Sensitivity {
     Low,
     Medium,
     High,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Lifetime {
     Permanent,
     Session,
@@ -107,7 +114,7 @@ pub enum Lifetime {
 }
 
 /// One row of the registry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PredicateSpec {
     pub key: PredicateKey,
     pub domain: Domain,
