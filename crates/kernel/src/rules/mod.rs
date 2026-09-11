@@ -5,6 +5,7 @@
 
 pub mod evidence;
 pub mod forgetting;
+pub mod inference;
 pub mod mention_gate;
 pub mod record_identity;
 pub mod salience;

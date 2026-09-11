@@ -29,7 +29,7 @@ pub fn clamp_confidence(value: f64, acknowledged: bool) -> f64 {
         // conservative, auditable result for an unusable confidence.
         0.0
     } else {
-        value.max(0.0).min(1.0)
+        value.clamp(0.0, 1.0)
     };
 
     if acknowledged {
