@@ -38,6 +38,7 @@ import type {} from '@deepseek-ai/dsh-tools';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import type { MemoryKernel, MemoryScope } from './memory.js';
+import { loopPreStep, observedMessages, type LoopMessage } from './loop-adapter.js';
 import { renderOverlay, renderQueryResult, renderStable } from './render.js';
 import { TurnCache, WarmCoalescer } from './turn-cache.js';
 
@@ -318,7 +319,52 @@ export function createObserver(
   };
 }
 
+/**
+ * The handlers the host registers on the agent loop.
+ *
+ * Provided as a pair because they share the mount and the instant source. A
+ * composition root registers `preStep` on `agent/pre-step` and `observe` where
+ * it records turns, without reaching into this package's internals.
+ */
+export interface LoopHandlers {
+  /**
+   * Register on `agent/pre-step`. Recalls memory for the step about to be
+   * admitted.
+   *
+   * Takes the payload's admitted messages rather than a string, and extracts the
+   * current turn's text itself, because that extraction is where a mistake is
+   * silent — see `./loop-adapter`.
+   */
+  preStep: (messages: readonly LoopMessage[]) => Promise<void>;
+  /** Report a step's messages so the kernel can observe them. */
+  observe: (messages: readonly LoopMessage[], now: string) => Promise<void>;
+}
+
+/**
+ * Build the loop handlers for a mount.
+ *
+ * @param mount - the mount produced by {@link apply} or `ctx.plugin`.
+ * @param now - supplies the current instant, injectable so a test is reproducible.
+ * @returns the handlers to register on the agent loop.
+ */
+export function createLoopHandlers(
+  mount: MemoryMount,
+  now: () => string = () => new Date().toISOString(),
+): LoopHandlers {
+  const recall = createPreStep(mount);
+  const observe = createObserver(mount);
+  return {
+    preStep: loopPreStep(recall, now),
+    observe: async (messages, instant) => observe(observedMessages(messages), instant),
+  };
+}
+
 export { InMemoryKernel, type MemoryRecord } from './in-memory-kernel.js';
+export {
+  latestUserText,
+  observedMessages,
+  type LoopMessage,
+} from './loop-adapter.js';
 export type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt';
 export { TurnCache, WarmCoalescer, profileKey } from './turn-cache.js';
 export * from './memory.js';

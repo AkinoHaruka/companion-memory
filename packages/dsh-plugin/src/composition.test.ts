@@ -16,10 +16,11 @@
 import { Context } from '@deepseek-ai/cordis';
 import SystemPrompt, { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt';
 import ToolRuntime from '@deepseek-ai/dsh-tools';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createCompanionMemory,
+  createLoopHandlers,
   createPreStep,
   currentMount,
   InMemoryKernel,
@@ -277,6 +278,104 @@ describe('mounting on real services', () => {
     const text = modelVisible(await mounted.ctx.systemPrompt.assemble());
     expect(text).not.toContain('furious');
     expect(text).not.toContain('<current_turn');
+
+    await mounted.dispose();
+  });
+});
+
+describe('the loop handlers a composition root registers', () => {
+  it('recalls from a DSH-shaped payload and reaches the prompt', async () => {
+    // The whole path as the host would drive it: the loop hands over admitted
+    // messages, the adapter extracts the current turn, the pre-step handler
+    // recalls, and the result reaches an assembled prompt. Nothing here reaches
+    // into the plugin's internals, which is the point — this is the surface a
+    // composition root actually calls.
+    const mounted = await mountAdapter();
+    mounted.kernel.remember(mounted.scope, {
+      id: 'g1',
+      text: 'Is trying to finish a thesis this year.',
+      mention: 'freely_mentionable',
+      terms: ['thesis'],
+    });
+
+    const handlers = createLoopHandlers(currentMount()!, () => NOW);
+    await handlers.preStep([
+      { role: 'user', content: [{ type: 'text', text: 'how is the thesis going' }] },
+    ]);
+
+    const text = modelVisible(await mounted.ctx.systemPrompt.assemble());
+    expect(text).toContain('Is trying to finish a thesis this year.');
+
+    await mounted.dispose();
+  });
+
+  it('recalls against the current turn rather than the companion last reply', async () => {
+    // A batch can end with the companion's own message. Querying with that would
+    // surface memories about what the companion said, which is a plausible
+    // result the user would never think to report.
+    const mounted = await mountAdapter();
+    mounted.kernel.remember(mounted.scope, {
+      id: 'about-user',
+      text: 'the user asked about the thesis',
+      mention: 'freely_mentionable',
+      terms: ['thesis'],
+    });
+    mounted.kernel.remember(mounted.scope, {
+      id: 'about-companion',
+      text: 'the companion mentioned the weather',
+      mention: 'freely_mentionable',
+      terms: ['weather'],
+    });
+
+    const handlers = createLoopHandlers(currentMount()!, () => NOW);
+    await handlers.preStep([
+      { role: 'user', content: [{ type: 'text', text: 'how is the thesis going' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'the weather is nice today' }] },
+    ]);
+
+    const text = modelVisible(await mounted.ctx.systemPrompt.assemble());
+    expect(text).toContain('the user asked about the thesis');
+    expect(text).not.toContain('the companion mentioned the weather');
+
+    await mounted.dispose();
+  });
+
+  it('does not fail the turn when the kernel throws', async () => {
+    // The host's contract: a hook failure must not stop the turn. Asserted
+    // through the registered surface rather than the helper, so a future change
+    // that lets the error escape is caught here.
+    const mounted = await mountAdapter();
+    const warm = vi
+      .spyOn(mounted.kernel, 'warm')
+      .mockRejectedValue(new Error('store unreachable'));
+    const handlers = createLoopHandlers(currentMount()!, () => NOW);
+
+    await expect(
+      handlers.preStep([{ role: 'user', content: [{ type: 'text', text: 'anything' }] }]),
+    ).resolves.toBeUndefined();
+
+    expect(warm).toHaveBeenCalled();
+    warm.mockRestore();
+    await mounted.dispose();
+  });
+
+  it('records both sides of the conversation through the observer', async () => {
+    const mounted = await mountAdapter();
+    const observe = vi.spyOn(mounted.kernel, 'observe');
+    const handlers = createLoopHandlers(currentMount()!, () => NOW);
+
+    await handlers.observe(
+      [
+        { role: 'user', content: [{ type: 'text', text: 'I am tired' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'that sounds hard' }] },
+        { role: 'system', content: [{ type: 'text', text: 'instructions' }] },
+      ],
+      NOW,
+    );
+
+    expect(observe).toHaveBeenCalledTimes(1);
+    const [, messages] = observe.mock.calls[0]!;
+    expect(messages.map((message) => message.role)).toEqual(['user', 'assistant']);
 
     await mounted.dispose();
   });
