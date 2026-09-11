@@ -47,8 +47,19 @@ implementation on exactly the invariant you care about is worse than none.
 | Forgetting: suppression, residue scan, derived recompute | done |
 | Inference lifecycle (confidence cap, review) | done |
 | Storage: schema, migrations, scope-isolated queries | done |
+| DSH adapter: rendering, warm cache, tool, config | done |
+| DSH adapter: pre-step registration on a live context | not started |
 | RuntimeState wiring | not started |
-| DSH plugin | not started |
+| Kernel↔store end-to-end test | not started |
+
+Test totals: kernel 109, storage 24, DSH adapter 40.
+
+The adapter's own typecheck runs against the real `@deepseek-ai/*` packages, so
+the API usage is verified even where the behaviour is not yet exercised on a live
+context. What that does **not** prove is that the plugin mounts, that `pre-step`
+runs before prompt assembly for the same step, or that a warm result reaches a
+real request — those need a composition test and are listed as not started
+rather than implied by a green typecheck.
 
 ## Conventions
 
