@@ -51,9 +51,10 @@ implementation on exactly the invariant you care about is worse than none.
 | DSH adapter: composition test on live services | done |
 | Kernel↔store integration: write, recall, supersede, forget | done |
 | RuntimeState: storage, adapter interface, rendering, expiry | done |
-| DSH adapter: pre-step registered on `agent/pre-step` in a real loop | not started |
+| DSH adapter: loop-payload adapter and registered handler pair | done |
+| Booting a real DSH agent loop to prove invocation order | not started |
 
-Test totals: kernel 110, storage 47, DSH adapter 67.
+Test totals: kernel 110, storage 47, DSH adapter 84.
 
 Two integration suites exist because unit suites pass while a seam is wrong. The
 DSH composition test found that a mount given an explicit kernel handed its
@@ -66,14 +67,16 @@ vacuously, matching on the record id before the fingerprint branch was reached.
 RuntimeState is the layer this design replaced a dead one to get. Its type and
 table existed for several rounds with nothing reading or writing them, which is
 exactly the failure it was meant to fix, so its wiring is asserted end to end: a
-condition recorded, recalled by the pre-step handler, rendered into the prompt
-with its framing, and withheld once expired.
+condition recorded, recalled, rendered into the prompt with its framing, and
+withheld once expired.
 
-What remains unverified is narrower but still real: that the loop calls
-`agent/pre-step` before prompt assembly for the same step. The composition test
-runs the handler by hand, so it shows the pieces connect rather than that the
-host invokes them in that order. Wiring into a real agent loop needs a booted
-profile and is listed as not started rather than implied by a green suite.
+The composition tests drive the registered handlers with DSH-shaped payloads, so
+the extraction of the current turn from a message batch and the rendering into an
+assembled prompt are both exercised. What is still unverified is narrower than
+that sentence sounds: no test boots a real agent loop, so nothing here proves the
+host invokes pre-step before assembly for the same step, or that a composed
+profile loads this plugin at all. Both need a booted profile rather than a
+hand-assembled context, and are listed as not started instead of implied.
 
 ## Conventions
 
