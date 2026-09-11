@@ -9,10 +9,6 @@ importers:
   .: {}
 
   packages/dsh-plugin:
-    dependencies:
-      '@companion-memory/kernel':
-        specifier: workspace:*
-        version: link:../kernel
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2
@@ -32,15 +28,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: 0.1.5-rc.1
         version: 0.1.5-rc.1(0d6aa20a890d75eb09b8c26e93934bc2)
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.11
-        version: 4.1.11(vite@8.3.0)
-
-  packages/kernel:
-    devDependencies:
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.2
+        version: 3.18.2
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
