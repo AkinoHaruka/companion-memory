@@ -15,10 +15,8 @@ argument errors recorded there explain why the schema looks the way it does.
 ## Layout
 
 ```
-crates/kernel/        Rust — the decision logic, and the real implementation
+crates/kernel/        Rust — the decision logic, and the implementation
                       No I/O, no model, no host dependency, no ambient time.
-packages/kernel/      TypeScript — the verified prototype of the same domain
-                      and rules, kept as the behavioural reference for the port.
 packages/dsh-plugin/  DeepSeek Harness adapter (not yet written)
 scripts/              Tooling, including the Codex delegation helper.
 ```
@@ -27,19 +25,28 @@ The kernel performs no I/O and calls no model, which is what makes it
 exhaustively testable. Extraction, narration, consolidation and host wiring stay
 in the adapter, because those need a model and a session.
 
+A TypeScript prototype of the same domain and rules was developed first and then
+deleted. The reason is worth recording, because "keep the prototype as a
+reference" is usually good advice: it had its own test suite, the suite passed,
+and the code was still **behaviourally wrong where the tests did not look** — it
+accepted any string as a `Date`, so the rule that prose must never overwrite a
+resolved instant was not actually enforced. A reference that disagrees with the
+implementation on exactly the invariant you care about is worse than none.
+
 ## Status
 
 | Area | State |
 |---|---|
 | Predicate vocabulary + registry (46 predicates) | done |
 | Record identity: cardinality, supersede, type compatibility | done |
-| Mention gate | in progress |
-| Evidence graph and suppression | not started |
+| Mention gate | done |
+| Evidence graph and suppression | done |
+| Salience, scoring and promotion thresholds | done |
+| Forgetting: suppression, residue scan, derived recompute | done |
+| Inference lifecycle (confidence cap, review) | in progress |
+| RuntimeState wiring | not started |
 | Storage and migration | not started |
 | DSH plugin | not started |
-
-The TypeScript prototype is further along than the Rust port. It passes 67 tests
-and is the specification the port is checked against.
 
 ## Conventions
 
