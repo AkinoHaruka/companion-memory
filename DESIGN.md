@@ -393,7 +393,7 @@ now        ：RuntimeState + 到点触发事项（已预授权）               
 | I6 | 「无反馈」不改变任何记录的 `importance`（幂等） | `tests/salience.rs` ✅ |
 | I7 | `do_not_surface` 的记录**永不**出现在 `mention_if_user_cues` 以上级别 | `tests/mention_gate.rs` ✅ |
 | I8 | `inference_allowed: false` 的 predicate 不产生任何 Inference | `tests/evidence.rs` ✅ |
-| I9 | 同一输入重复执行产生相同结果（除显式时间戳） | 跨全部模块（待补） |
+| I9 | 同一输入重复执行产生相同结果（除显式时间戳） | `tests/determinism.rs` ✅ |
 | I10 | `boundary` 不参与 `candidate_score` 排序，只作为 gate | `tests/mention_gate.rs` + `tests/agreement.rs` + `tests/salience.rs` ✅ |
 | I11 | 未确认的 Inference `confidence <= 0.65` | `tests/inference.rs` ✅ |
 | I12 | `pattern` 类 Inference 超过复审期无新证据则自动降置信 | `tests/inference.rs` ✅ |
