@@ -6,3 +6,4 @@
 pub mod evidence;
 pub mod mention_gate;
 pub mod record_identity;
+pub mod salience;
