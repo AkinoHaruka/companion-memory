@@ -15,10 +15,12 @@ argument errors recorded there explain why the schema looks the way it does.
 ## Layout
 
 ```
-crates/kernel/        Rust — the decision logic, and the implementation
+crates/kernel/        Rust — the decision logic
                       No I/O, no model, no host dependency, no ambient time.
+crates/storage/       Rust — SQLite persistence. The only crate that touches a
+                      database; records what the kernel decided and reads it back.
 packages/dsh-plugin/  DeepSeek Harness adapter (not yet written)
-scripts/              Tooling, including the Codex delegation helper.
+scripts/              Tooling: the Codex delegation helper, the MSVC build wrapper.
 ```
 
 The kernel performs no I/O and calls no model, which is what makes it
@@ -43,9 +45,9 @@ implementation on exactly the invariant you care about is worse than none.
 | Evidence graph and suppression | done |
 | Salience, scoring and promotion thresholds | done |
 | Forgetting: suppression, residue scan, derived recompute | done |
-| Inference lifecycle (confidence cap, review) | in progress |
+| Inference lifecycle (confidence cap, review) | done |
+| Storage: schema, migrations, scope-isolated queries | done |
 | RuntimeState wiring | not started |
-| Storage and migration | not started |
 | DSH plugin | not started |
 
 ## Conventions
@@ -64,13 +66,26 @@ that names it. If a rule is worth writing down it is worth failing a build over.
 
 ## Verifying
 
+The kernel has no C dependency and builds anywhere Rust does:
+
 ```sh
 cargo test -p companion-memory-kernel
 cargo clippy -p companion-memory-kernel --all-targets -- -D warnings
-
-pnpm install
-pnpm -r test
 ```
+
+The storage crate vendors SQLite through `rusqlite`'s `bundled` feature, which
+compiles C source. On Windows that needs the MSVC toolchain on `PATH`, and
+Visual Studio being *installed* is not enough — `cl.exe` is only visible after
+`vcvars64.bat` has run. `scripts/cargo-msvc.ps1` does that in one process and
+forwards the cargo arguments:
+
+```sh
+.\scripts\cargo-msvc.ps1 -- test -p companion-memory-storage
+.\scripts\cargo-msvc.ps1 -- clippy --all-targets -- -D warnings
+```
+
+The `--` is required: without it PowerShell tries to bind `-p` to one of its own
+parameters.
 
 ## Delegating work to Codex
 
