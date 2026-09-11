@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kernel"]
+members = ["crates/kernel", "crates/storage"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,3 +12,5 @@ repository = "https://github.com/local/companion-memory"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+companion-memory-kernel = { path = "crates/kernel" }
