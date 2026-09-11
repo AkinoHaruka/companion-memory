@@ -393,13 +393,13 @@ now        ：RuntimeState + 到点触发事项（已预授权）               
 | I4 | 被 suppress 的证据**永不**复活；任何写入路径都无法重新引入 | `tests/evidence.rs`（待移植） |
 | I5 | `support_evidence` 全部被 suppress 的 Inference **自动失效**，无需显式删除 | `tests/evidence.rs`（待移植） |
 | I6 | 「无反馈」不改变任何记录的 `importance`（幂等） | `tests/salience.rs`（待写） |
-| I7 | `do_not_surface` 的记录**永不**出现在 `mention_if_user_cues` 以上级别 | `tests/mention_gate.rs` |
+| I7 | `do_not_surface` 的记录**永不**出现在 `mention_if_user_cues` 以上级别 | `tests/mention_gate.rs` ✅ |
 | I8 | `inference_allowed: false` 的 predicate 不产生任何 Inference | `tests/evidence.rs`（待移植） |
 | I9 | 同一输入重复执行产生相同结果（除显式时间戳） | 跨全部模块（待补） |
 | I10 | `boundary` 不参与 `candidate_score` 排序，只作为 gate | `tests/mention_gate.rs` + `tests/agreement.rs` ✅ |
 | I11 | 未确认的 Inference `confidence <= 0.65` | `tests/inference.rs`（待写） |
 | I12 | `pattern` 类 Inference 超过复审期无新证据则自动降置信 | `tests/inference.rs`（待写） |
-| I13 | 任何 `freely_mentionable` 以下级别的记录都不产生"主动复述" | `tests/mention_gate.rs` |
+| I13 | 任何 `freely_mentionable` 以下级别的记录都不产生"主动复述" | `tests/mention_gate.rs` ✅ |
 
 ### 5.1 移植过程中发现的两处额外缺陷
 

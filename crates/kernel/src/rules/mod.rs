@@ -3,5 +3,6 @@
 //! These are the kernel's logic. Each module owns one decision and is pure:
 //! no I/O, no model, no ambient time.
 
+pub mod evidence;
 pub mod mention_gate;
 pub mod record_identity;
