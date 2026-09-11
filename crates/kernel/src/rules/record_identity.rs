@@ -286,7 +286,7 @@ fn is_numeric(text: &str) -> bool {
         return false;
     }
     whole.bytes().all(|b| b.is_ascii_digit())
-        && fraction.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
+        && fraction.map_or(true, |f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Decide what a new statement does to the records already in its slot.

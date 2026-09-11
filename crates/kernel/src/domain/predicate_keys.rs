@@ -207,7 +207,7 @@ pub fn all_predicate_keys() -> Vec<PredicateKey> {
 pub fn is_predicate_key(value: &str) -> bool {
     PREDICATE_KEYS
         .iter()
-        .any(|group| group.iter().any(|key| *key == value))
+        .any(|group| group.contains(&value))
 }
 
 /// Split a predicate key into its domain and subject.

@@ -383,23 +383,37 @@ now        ：RuntimeState + 到点触发事项（已预授权）               
 
 ## 5. 不变量
 
-可测试，必须写成测试。
+可测试，必须写成测试。**落地位置**列记录它由哪个测试文件钉住——空着的就是还没兑现的。
 
-| # | 不变量 |
-|---|---|
-| I1 | `speaker: "assistant"` 的证据**永不**出现在任何 Inference 的 `support_evidence` 中 |
-| I2 | `misc` 域的记录**永不**触发 supersede |
-| I3 | supersede 只在 `cardinality` 为 `single` / `temporal_single` 时发生，且必须通过类型兼容检查 |
-| I4 | 被 suppress 的证据**永不**复活；任何写入路径都无法重新引入 |
-| I5 | `support_evidence` 全部被 suppress 的 Inference **自动失效**，无需显式删除 |
-| I6 | 「无反馈」不改变任何记录的 `importance`（幂等） |
-| I7 | `do_not_surface` 的记录**永不**出现在 `mention_if_user_cues` 以上级别 |
-| I8 | `inference_allowed: false` 的 predicate 不产生任何 Inference |
-| I9 | 同一输入重复执行产生相同结果（除显式时间戳） |
-| I10 | `boundary` 不参与 `candidate_score` 排序，只作为 gate |
-| I11 | 未确认的 Inference `confidence <= 0.65` |
-| I12 | `pattern` 类 Inference 超过复审期无新证据则自动降置信 |
-| I13 | 任何 `freely_mentionable` 以下级别的记录都不产生"主动复述" |
+| # | 不变量 | 落地位置 |
+|---|---|---|
+| I1 | `speaker: "assistant"` 的证据**永不**出现在任何 Inference 的 `support_evidence` 中 | `tests/evidence.rs`（待移植） |
+| I2 | `misc` 域的记录**永不**触发 supersede | `tests/record_identity.rs` ✅ |
+| I3 | supersede 只在 `cardinality` 为 `single` / `temporal_single` 时发生，且必须通过类型兼容检查 | `tests/record_identity.rs` ✅ |
+| I4 | 被 suppress 的证据**永不**复活；任何写入路径都无法重新引入 | `tests/evidence.rs`（待移植） |
+| I5 | `support_evidence` 全部被 suppress 的 Inference **自动失效**，无需显式删除 | `tests/evidence.rs`（待移植） |
+| I6 | 「无反馈」不改变任何记录的 `importance`（幂等） | `tests/salience.rs`（待写） |
+| I7 | `do_not_surface` 的记录**永不**出现在 `mention_if_user_cues` 以上级别 | `tests/mention_gate.rs` |
+| I8 | `inference_allowed: false` 的 predicate 不产生任何 Inference | `tests/evidence.rs`（待移植） |
+| I9 | 同一输入重复执行产生相同结果（除显式时间戳） | 跨全部模块（待补） |
+| I10 | `boundary` 不参与 `candidate_score` 排序，只作为 gate | `tests/mention_gate.rs` + `tests/agreement.rs` ✅ |
+| I11 | 未确认的 Inference `confidence <= 0.65` | `tests/inference.rs`（待写） |
+| I12 | `pattern` 类 Inference 超过复审期无新证据则自动降置信 | `tests/inference.rs`（待写） |
+| I13 | 任何 `freely_mentionable` 以下级别的记录都不产生"主动复述" | `tests/mention_gate.rs` |
+
+### 5.1 移植过程中发现的两处额外缺陷
+
+I3 在写 Rust 版时暴露了一个原设计没覆盖的洞，值得单独记：
+
+**`Date` 谓词原先接受任意字符串。** 于是 `"next Wednesday, sometime"` 被分类成合法 `Date`，
+类型兼容检查根本不会触发——**I3 的守卫等于不存在**。
+
+根因是"解析器产出的日期"和"自然语言散文"在类型上都是 `String`，只做类型检查区分不了。
+修法是**校验形状**：`Date` 值必须是 ISO 8601。解析不出日期的表述留在候选队列里，
+`raw_value` 保留用户原话，等解析器把它变成确定时刻。
+
+连锁后果：**"结构化值精化散文"这条路径不存在了**（散文根本进不了 `Date` 槽）。
+两个合法形状之间的精化仍在，比如 `2026-06` → `2026-06-10` → `2026-06-10T14:00:00Z`。
 
 ---
 
