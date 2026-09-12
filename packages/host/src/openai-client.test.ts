@@ -201,6 +201,55 @@ describe('OpenAI-compatible evaluation client', () => {
     expect(calls[1]?.body.reasoning).toEqual({ enabled: false });
   });
 
+  it('remembers a credential that refused response_format, so the cost is once per run', async () => {
+    // Recorded over a full run: every extraction call burned four attempts and
+    // about 25 seconds on a refusal that was permanent, before the fallback ran.
+    // Twenty turns of that is five minutes of the run spent re-learning the same
+    // fact.
+    const { fetchImpl, calls } = stubFetch([
+      () => new Response(JSON.stringify({ error: { message: 'Provider returned error', code: 400, metadata: { raw: 'model: x does not support feature: structured-outputs' } } }), { status: 400 }),
+      () => completion('{"items":[]}'),
+      () => completion('{"items":[]}'),
+    ]);
+    const client = createOpenAiCompatibleClient({
+      credentials: [{ baseUrl: 'https://openrouter.invalid/api/v1', apiKey: 'k', body: { reasoning: { enabled: false } } }],
+      model: 'inclusionai/ling-3.0-flash-sante:free', fetchImpl, retryBaseDelayMs: 1,
+    });
+
+    await client.chatJson(message, { maxTokens: 800 });
+    await client.chatJson(message, { maxTokens: 800 });
+
+    expect(calls).toHaveLength(3);
+    expect(calls[1]?.body.response_format).toBeUndefined();
+    expect(calls[2]?.body.response_format).toBeUndefined();
+  });
+
+  it('drops a credential whose day is over instead of asking it again', async () => {
+    // Measured: `free-models-per-day` with X-RateLimit-Remaining: 0, ten attempts
+    // of 25 seconds each, on a credential that could not recover until the next
+    // day. The run kept rotating into it.
+    const { fetchImpl, calls } = stubFetch([
+      () => new Response(JSON.stringify({ error: { message: 'Rate limit exceeded: free-models-per-day', code: 429 } }), { status: 429 }),
+      () => completion('那就好，能吃东西说明缓过来了。'),
+    ]);
+    const client = createOpenAiCompatibleClient({
+      credentials: [
+        { baseUrl: 'https://first.invalid/api/v1', apiKey: 'k1' },
+        { baseUrl: 'https://second.invalid/api/v1', apiKey: 'k2' },
+      ],
+      model: 'm', fetchImpl, retryBaseDelayMs: 1,
+    });
+
+    const reply = await client.chat(message, { maxTokens: 400 });
+
+    expect(reply.text).toBe('那就好，能吃东西说明缓过来了。');
+    expect(reply.route?.credential).toBe(1);
+    expect(calls.map((call) => call.url)).toEqual([
+      'https://first.invalid/api/v1/chat/completions',
+      'https://second.invalid/api/v1/chat/completions',
+    ]);
+  });
+
   it('sends provider body fields verbatim and reads a fenced JSON answer', async () => {
     const { fetchImpl, calls } = stubFetch([() => completion('```json\n{"items":[{"predicate":"identity.name"}]}\n```')]);
     const client = createOpenAiCompatibleClient({
