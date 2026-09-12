@@ -25,15 +25,24 @@ async function main(): Promise<void> {
   const workerCommand = process.env.COMPANION_MEMORY_WORKER_COMMAND
     ?? join(process.cwd(), 'target', 'debug', process.platform === 'win32' ? 'companion-memory-worker.exe' : 'companion-memory-worker');
   const mode = process.env.COMPANION_MEMORY_EVAL_MODE === 'acceptance' ? 'acceptance' : 'development';
+  // One directory per invocation. Scope names repeat between invocations, so a
+  // shared database would let the second run read the first run's memories while
+  // reporting itself as ten independent repetitions. The evaluator refuses a
+  // database that already holds records; this is what keeps that refusal from
+  // firing on the second honest run, and it also stops a new run from
+  // overwriting the previous run's per-repetition artifacts.
+  const invocationId = process.env.COMPANION_MEMORY_EVAL_RUN_ID?.trim()
+    || new Date().toISOString().replace(/[:.]/g, '-');
+  const runDirectory = join(process.cwd(), 'runs', 'oracle', invocationId);
   const summary = await runOracleEvaluation({
     client: await loadDshRouteClient(),
-    databasePath: join(process.cwd(), 'runs', 'oracle', 'oracle.db'),
+    databasePath: join(runDirectory, 'oracle.db'),
     workerCommand,
     runCount: mode === 'acceptance' ? 10 : 5,
-    outputDirectory: join(process.cwd(), 'runs', 'oracle'),
+    outputDirectory: runDirectory,
     includeProbes: true,
   });
-  process.stdout.write(`${JSON.stringify(summary.acceptance)}\n`);
+  process.stdout.write(`${JSON.stringify({ mode, runDirectory, ...summary.acceptance })}\n`);
   if (mode === 'acceptance' && !summary.acceptance.passed) process.exitCode = 1;
 }
 

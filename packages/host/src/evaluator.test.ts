@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -77,6 +77,36 @@ describe('Oracle evaluator causal artifacts', () => {
       expect(normalScore.passed).toBe(true);
       expect(summary.effectRates.gold_forced.name).toMatchObject({ passed: 2, total: 2, rate: 1 });
       expect(readFileSync(join(outputDirectory, 'oracle-summary.json'), 'utf8')).toContain('goldForcedCoreAtLeastEightOfTen');
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a database that already holds records', async () => {
+    // Repetitions are isolated by scope, so one database is safe for all ten
+    // runs of an invocation. It is not safe across invocations: profile ids are
+    // `normal-0`, `gold-retrieved-0` and so on, so a second invocation against
+    // the same file begins each repetition with the previous run's memories in
+    // place. Measured against the real worker, a second warm on an untouched
+    // scope returned one record the first invocation had left there — which is
+    // the longer-and-longer relationship the per-run suffixes exist to prevent,
+    // arriving through the one door they do not cover.
+    //
+    // The check is on the file rather than on its contents because that is what
+    // the runner can see before paying for a model call.
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'companion-memory-oracle-stale-'));
+    const databasePath = join(outputDirectory, 'oracle.db');
+    try {
+      writeFileSync(databasePath, 'previous invocation', 'utf8');
+      await expect(runOracleEvaluation({
+        client: fakeModel,
+        databasePath,
+        workerCommand: process.execPath,
+        workerArgs: ['-e', workerProgram, '--'],
+        runCount: 1,
+        outputDirectory,
+        sessions: script,
+      })).rejects.toThrow(/already holds records/);
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
     }

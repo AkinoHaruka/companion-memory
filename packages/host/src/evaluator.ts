@@ -1,6 +1,6 @@
 /** Oracle evaluation runner: normal, Gold retrieval, forced Gold, and counterfactual arms. */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { NOW, PROBES, SESSIONS, SUBJECT, type EffectType, type GoldCandidate, type GoldEpisode, type SessionScript, type UserTurn } from './script.js';
@@ -250,6 +250,19 @@ async function admit(
  * user request cannot confound an arm comparison.
  */
 export async function runOracleEvaluation(options: EvaluationOptions): Promise<OracleEvaluationSummary> {
+  // Repetitions inside one invocation are independent because each gets its own
+  // scope. Invocations are not: the scopes are named `normal-0`, `gold-forced-0`
+  // and so on, so a second invocation pointed at the same database starts every
+  // repetition with the previous invocation's memories already in place. Against
+  // the real worker a second warm on an untouched scope returned a record the
+  // first invocation had left there, which is the longer-and-longer relationship
+  // the per-run suffixes exist to prevent.
+  //
+  // A stale database therefore fails loudly rather than producing a run whose
+  // normal arm has been reading all along and whose gold arms were never needed.
+  if (existsSync(options.databasePath) && statSync(options.databasePath).size > 0) {
+    throw new Error(`oracle evaluation refuses a database that already holds records: ${options.databasePath}`);
+  }
   mkdirSync(options.outputDirectory, { recursive: true });
   const worker = new WorkerClient({
     command: options.workerCommand,
