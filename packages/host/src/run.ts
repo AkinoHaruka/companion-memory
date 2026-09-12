@@ -100,6 +100,10 @@ const SESSIONS: SessionScript[] = [
         intent: 'contradiction — supersede territory',
         text: '关于简短这点我改主意了，聊正事的时候你多讲一点，我需要细节。',
       },
+      {
+        intent: 'contradiction restated more plainly',
+        text: '我说的简短那个偏好不算数了。以后回答长一点没关系，尤其是我问工作的事。',
+      },
     ],
   },
   {
@@ -113,6 +117,10 @@ const SESSIONS: SessionScript[] = [
       {
         intent: 'a good day — must not be read as a personality change',
         text: '今天挺开心的，下午把方案过了，晚上去看了场演出。',
+      },
+      {
+        intent: 'contradiction, third session',
+        text: '再确认一次：回答的长度上我不需要简短了，详细一点更好。',
       },
     ],
   },

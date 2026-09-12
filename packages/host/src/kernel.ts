@@ -36,6 +36,8 @@ import type {
 } from '../../dsh-plugin/src/memory.js';
 import type { ContextCandidate, MentionLevel } from '../../dsh-plugin/src/memory.js';
 import { AgnesClient, type ChatMessage } from './agnes.js';
+import { admitAll } from './admission.js';
+import { specFor } from './predicates.js';
 import { HostStore, type StoredClaim, type StoredState } from './store.js';
 import { EXTRACTION_SYSTEM, consolidationPrompt, replySystemPrompt } from './prompts.js';
 
@@ -66,63 +68,6 @@ export function mentionFor(predicate: string): MentionLevel {
     if (predicate.startsWith(prefix)) return level;
   }
   return 'mention_if_user_cues';
-}
-
-/**
- * Predicates that hold several values at once.
- *
- * A set accumulates; everything else replaces whatever occupied its slot. This
- * mirrors `crates/kernel`'s `Cardinality`, and the duplication is deliberate
- * rather than an oversight: the cardinality table lives in the Rust registry,
- * the host runtime is TypeScript, and there is no generated binding between
- * them yet. What matters is that the *rule* is applied here — the first version
- * of this runtime wrote every extracted claim and never superseded anything,
- * which is this project's own documented failure mode reproduced in its own
- * host.
- *
- * A predicate missing from this list is treated as single-valued, because
- * failing toward replacement keeps one current value rather than accumulating
- * contradictions.
- */
-const MULTI_VALUED_PREDICATES = new Set([
-  'identity.location',
-  'identity.occupation',
-  'identity.role',
-  'identity.language',
-  'boundary.prohibition',
-  'boundary.topic_avoid',
-  'boundary.privacy_rule',
-  'communication.format',
-  'goal.long_term_objective',
-  'goal.current_focus',
-  'support.presence_style',
-  'support.when_distressed',
-  'ritual.recurring_activity',
-]);
-
-/**
- * Predicates a consolidation pass may use.
- *
- * The dream pass produces judgements rather than stated facts, so it draws on a
- * separate vocabulary: a derived `work.stress_pattern` is a legitimate belief,
- * while a derived `identity.name` would be the model inventing a fact the user
- * never stated. An earlier run stored `work.stress_pattern` unchecked, and
- * nothing in the runtime could say whether that was acceptable — which is the
- * same "unvalidated model output" hole the extraction side already closes.
- */
-const DERIVED_PREDICATES = new Set([
-  'pattern.recurring_theme',
-  'pattern.behavioural',
-  'pattern.emotional',
-  'disposition.trait',
-  'relational.dynamic',
-  'self.impression',
-  'principal.interest',
-]);
-
-/** Whether a predicate may be used by the consolidation pass. */
-export function isDerivedPredicate(predicate: string): boolean {
-  return DERIVED_PREDICATES.has(predicate);
 }
 
 /**
@@ -320,15 +265,33 @@ export class HostKernel implements MemoryKernel {
       episodes: 0,
     };
 
-    for (const raw of asArray(payload.claims)) {
+    // Read the relationship's active records once, then decide the whole batch
+    // in one pass. Deciding per claim against a fresh read would let two
+    // proposals for one single-valued slot both be written, which is the
+    // accumulation the rule exists to prevent.
+    const current = this.store.activeClaims(this.scope);
+    const proposals = asArray(payload.claims).flatMap((raw) => {
       const item = raw as Record<string, unknown>;
       const predicate = typeof item.predicate === 'string' ? item.predicate : '';
       const value = typeof item.value === 'string' ? item.value.trim() : '';
-      if (!predicate || !value) continue;
-      report.proposed += 1;
+      return predicate && value ? [{ predicate, value, confidence: clamp01(item.confidence) }] : [];
+    });
+    const admissions = admitAll(proposals, current);
+    report.proposed = proposals.length;
 
-      const fingerprint = normalize(value);
-      if (this.store.isSuppressed(this.scope, fingerprint)) {
+    for (const [index, admission] of admissions.entries()) {
+      const proposal = proposals[index]!;
+      const { predicate, value } = proposal;
+
+      if (!admission.store) {
+        // A restatement of something already held. Writing it again would churn
+        // the audit trail and lose the original's provenance.
+        if (admission.note === 'filed_as_misc' || admission.note === undefined) continue;
+        report.refused.push({ predicate, reason: admission.note });
+        continue;
+      }
+
+      if (this.store.isSuppressed(this.scope, normalize(value))) {
         // The resurrection guard. Suppression that only filters reads leaves the
         // next extraction free to write the same fact back, which is the whole
         // reason a fingerprint is stored rather than only a deletion.
@@ -336,31 +299,20 @@ export class HostKernel implements MemoryKernel {
         continue;
       }
 
-      const confidence = clamp01(item.confidence);
-      const importance = importanceFor(predicate, confidence);
       const id = `claim-${slug(predicate)}-${slug(value).slice(0, 40)}`;
 
-      // The slot decision, which the first version of this runtime did not make
-      // at all. Without it a user who changes their mind accumulates two
-      // contradicting records, and both reach the model on the next turn — one
-      // in the stable block and one in the relevant block, disagreeing inside a
-      // single prompt. A run showed exactly that.
-      if (!MULTI_VALUED_PREDICATES.has(predicate)) {
-        for (const existing of this.store.activeClaims(this.scope)) {
-          if (existing.predicate !== predicate) continue;
-          if (normalize(existing.value) === normalize(value)) continue;
-          this.store.supersedeClaim(this.scope, existing.id, now);
-          this.store.audit(
-            this.scope,
-            {
-              action: 'supersede',
-              recordKind: 'claim',
-              recordId: existing.id,
-              detail: `replaced by ${id}`,
-            },
-            now,
-          );
-        }
+      for (const displaced of admission.displaces) {
+        this.store.supersedeClaim(this.scope, displaced, now);
+        this.store.audit(
+          this.scope,
+          {
+            action: 'supersede',
+            recordKind: 'claim',
+            recordId: displaced,
+            detail: `replaced by ${id}`,
+          },
+          now,
+        );
       }
 
       this.store.putClaim(
@@ -371,8 +323,8 @@ export class HostKernel implements MemoryKernel {
           value,
           mention: mentionFor(predicate),
           sourceType: 'model_extraction',
-          confidence,
-          importance,
+          confidence: admission.predicate === predicate ? proposal.confidence : 0.3,
+          importance: importanceFor(predicate, proposal.confidence),
           status: 'active',
           rawValue: value,
           validFrom: now,
@@ -384,6 +336,9 @@ export class HostKernel implements MemoryKernel {
         { action: 'create', recordKind: 'claim', recordId: id, detail: predicate },
         now,
       );
+      if (admission.note === 'filed_as_misc') {
+        report.refused.push({ predicate, reason: 'filed as misc.unclassified' });
+      }
       report.stored += 1;
     }
 
@@ -498,7 +453,7 @@ export class HostKernel implements MemoryKernel {
       // `work.stress_pattern`, which no vocabulary declares, so nothing could
       // judge it. Refusing is the conservative direction: a belief that has no
       // place to live is not yet a belief the system can reason about.
-      if (!isDerivedPredicate(predicate)) {
+      if (specFor(predicate)?.source !== 'derived') {
         report.refused.push({
           value,
           reason: `predicate not in the derived vocabulary: ${predicate || '(missing)'}`,

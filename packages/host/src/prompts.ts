@@ -13,8 +13,16 @@
  */
 
 import type { MentionLevel } from '../../dsh-plugin/src/memory.js';
+import { DERIVED_PREDICATES, STATED_PREDICATES } from './predicates.js';
 
-/** The shape the extraction prompt asks for, so the caller and prompt agree. */
+/**
+ * The shape the extraction prompt asks for, so the caller and prompt agree.
+ *
+ * The predicate list is generated from the vocabulary rather than written out.
+ * A hand-written list drifts: the prompt keeps recommending keys the vocabulary
+ * has stopped declaring, the model produces them, admission files them under
+ * `misc`, and nothing anywhere says the two lists disagree.
+ */
 export const EXTRACTION_SYSTEM = [
   'You extract durable memory from one turn of a conversation between a person and a companion.',
   'Return JSON only, with this shape:',
@@ -27,14 +35,14 @@ export const EXTRACTION_SYSTEM = [
   'State is only how the person seems RIGHT NOW. It expires and must never be written as a claim.',
   '',
   'Use only these predicates:',
-  'identity.name, identity.location, identity.occupation, identity.role, identity.language,',
-  'boundary.prohibition, boundary.topic_avoid, boundary.privacy_rule,',
-  'communication.language, communication.format, communication.verbosity,',
-  'support.presence_style, support.when_distressed, support.advice_permission,',
-  'goal.long_term_objective, goal.current_focus,',
-  'open_loop.pending_action, open_loop.deadline,',
-  'ritual.recurring_activity, person.name, person.relation_label,',
-  'relationship.type, misc.unclassified',
+  STATED_PREDICATES.join(', '),
+  '',
+  'Choosing the predicate matters as much as the value. Three examples of getting it wrong:',
+  '- The PERSON\'S OWN name, pronouns or location is identity.*. Use person.* only for',
+  '  somebody else in their life. Two runs put the same name under each key.',
+  '- "不用一直问我感受" is about how to be supported, so it is a support preference,',
+  '  not a communication format.',
+  '- "别跟我提前任" forbids a topic, so it is boundary.topic_avoid, not a preference.',
   '',
   'Rules, in order of importance:',
   '1. Never write anything the companion said as a claim about the person. The companion is not evidence.',
@@ -42,10 +50,13 @@ export const EXTRACTION_SYSTEM = [
   '3. Never turn a joke, a hypothetical or a roleplay into a claim.',
   '4. One claim per topic. Do not restate the same fact several ways.',
   '5. If the turn contains nothing durable, return empty lists. An empty result is correct and expected.',
-  '6. Use misc.unclassified only when nothing else fits, and prefer a specific predicate.',
+  '6. If no listed predicate fits, use misc.unclassified rather than inventing a key.',
   '',
   'The person may write in any language. Keep their wording in `value`; do not translate it.',
 ].join('\n');
+
+/** The derived vocabulary, for the consolidation prompt to name. */
+export const CONSOLIDATION_PREDICATES: readonly string[] = DERIVED_PREDICATES;
 
 /**
  * The system prompt the companion speaks from.

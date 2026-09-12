@@ -48,6 +48,16 @@ const byStatus = db.prepare('SELECT status, COUNT(*) AS total FROM claims GROUP 
 process.stdout.write('\nclaims by status:\n');
 for (const row of byStatus) process.stdout.write(`  ${row.status}: ${row.total}\n`);
 
+process.stdout.write('\nthe supersede chain for any predicate that has one:\n');
+const chained = db
+  .prepare(
+    'SELECT predicate, value, status FROM claims ' +
+      'WHERE predicate IN (SELECT predicate FROM claims WHERE status = ? GROUP BY predicate) ' +
+      'ORDER BY predicate, status',
+  )
+  .all('superseded');
+for (const row of chained) process.stdout.write(`  [${row.status}] ${row.predicate}: ${row.value}\n`);
+
 const episodes = db.prepare('SELECT COUNT(*) AS total FROM episodes').get();
 process.stdout.write(`\nepisodes: ${episodes.total}\n`);
 
