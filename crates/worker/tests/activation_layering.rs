@@ -1,0 +1,381 @@
+//! How a plan's channels get populated.
+//!
+//! The five channels are the mechanism the whole eval rests on: `constraints`
+//! and `responseStyle` are meant to be standing, `continuity` carries open
+//! threads, `topicActivated` carries what the current message touches, and
+//! `deepRecall` is meant to carry records too important to leave out even when
+//! nothing cues them.
+//!
+//! These tests exist because a plan whose channels silently stay empty looks
+//! exactly like a plan with nothing to say, and a memory system that injects
+//! nothing produces replies indistinguishable from having no memory at all.
+
+mod harness;
+
+use harness::{admit_params, candidate, channels, scope, warm_params, Worker};
+use serde_json::json;
+
+/// A stand-in for what the extractor would have recorded.
+fn record(worker: &mut Worker, id: &str, predicate: &str, value: &str, at: &str) {
+    worker.send(
+        id,
+        "admit",
+        admit_params(
+            at,
+            "message-1",
+            value,
+            vec![candidate(id, predicate, value)],
+        ),
+    );
+}
+
+#[test]
+fn a_boundary_is_a_constraint_regardless_of_the_message() {
+    // A boundary is an obligation, not a candidate that competes for attention.
+    // Selecting it by keyword would mean the companion forgets a prohibition on
+    // exactly the turn where it matters.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "boundary-1",
+        "boundary.topic_avoid",
+        "别跟我提前任",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    let constraints = plan["constraints"].as_array().expect("constraints");
+    assert_eq!(constraints.len(), 1, "plan was {plan}");
+    assert_eq!(constraints[0]["recordId"], "claim-boundary-1");
+    assert_eq!(constraints[0]["surface"], "background_only");
+}
+
+#[test]
+fn a_stated_preference_is_a_standing_style() {
+    // Communication and support preferences shape every reply rather than being
+    // recalled when cued, which is what "standing" has to mean if it means
+    // anything.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "style-1",
+        "communication.verbosity",
+        "short",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send("warm", "warm", warm_params("讲个故事", "session-2", true));
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    assert_eq!(
+        plan["responseStyle"].as_array().expect("style").len(),
+        1,
+        "plan was {plan}"
+    );
+}
+
+#[test]
+fn a_topic_record_activates_only_when_the_message_touches_it() {
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "goal-1",
+        "goal.current_focus",
+        "准备十一月的考证考试",
+        "2026-09-12T00:00:00Z",
+    );
+    // Cueing on the whole run of characters, which is how the matcher works for
+    // text without word boundaries.
+    worker.send(
+        "warm-cued",
+        "warm",
+        warm_params("我还得继续准备十一月的考证考试", "session-2", true),
+    );
+    worker.send(
+        "warm-uncued",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", false),
+    );
+    let responses = worker.responses();
+
+    let cued = channels(&responses[1]);
+    assert_eq!(
+        cued["topicActivated"].as_array().expect("topic").len(),
+        1,
+        "a cued goal must activate, plan was {cued}"
+    );
+
+    let uncued = channels(&responses[2]);
+    assert!(
+        uncued["topicActivated"]
+            .as_array()
+            .expect("topic")
+            .is_empty(),
+        "an uncued goal must not activate, plan was {uncued}"
+    );
+}
+
+#[test]
+fn an_uncued_goal_reaches_no_channel_because_its_predicate_is_cue_gated() {
+    // The finding this test pins, stated as behaviour rather than as a guess at
+    // the code.
+    //
+    // `goal.long_term_objective` is registered `mention_if_user_cues`, so with no
+    // cue the gate denies it. The record is not a constraint and not a policy, so
+    // the remaining channels are `topicActivated` — which requires the cue — and
+    // `deepRecall` — which nothing populates. It therefore reaches the plan only
+    // as `doNotSurface`, and the model never sees it.
+    //
+    // Twenty-one of the forty-six predicates are cue-gated this way, including
+    // goals, people and relationships. So a companion cannot bring up a stated
+    // ambition the user has not just mentioned, which is a large part of what
+    // remembering someone is supposed to look like.
+    //
+    // Asserted as-is rather than as a requirement: the behaviour is deliberate in
+    // the registry, and whether to change it is a product decision. What is not
+    // deliberate is that `deepRecall` exists as the safety net for exactly this
+    // case and is never filled, which is why the silence is total rather than
+    // ranked.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "goal-1",
+        "goal.long_term_objective",
+        "攒钱去冰岛看极光",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    let visible = [
+        "constraints",
+        "responseStyle",
+        "continuity",
+        "topicActivated",
+        "deepRecall",
+    ]
+    .iter()
+    .map(|channel| plan[channel].as_array().expect(channel).len())
+    .sum::<usize>();
+
+    assert_eq!(
+        visible, 0,
+        "recorded behaviour: an uncued cue-gated goal is invisible. If this now \
+         fails, the activation layering changed and the number of cue-gated \
+         predicates should be reconsidered. Plan was {plan}"
+    );
+    assert_eq!(
+        plan["doNotSurface"].as_array().expect("withheld").len(),
+        1,
+        "the record must at least be accounted for as withheld, plan was {plan}"
+    );
+}
+
+#[test]
+fn an_uncued_freely_mentionable_goal_reaches_deep_recall() {
+    // The `deepRecall` channel works, which two of my own readings of the code
+    // got wrong: one predicted the branch was unreachable, the next predicted the
+    // match had no arm for an allowed record without a cue. Both were settled by
+    // running this rather than by reading more carefully, which is the point of
+    // writing it.
+    //
+    // `goal.current_focus` is `freely_mentionable` and important enough, so with
+    // no cue at all it still reaches the model as background. That is the
+    // behaviour a companion needs: something the user said that they have not
+    // just repeated stays available.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "focus-1",
+        "goal.current_focus",
+        "准备十一月的考证考试",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    let deep = plan["deepRecall"].as_array().expect("deep recall");
+    assert_eq!(deep.len(), 1, "plan was {plan}");
+    assert_eq!(deep[0]["recordId"], "claim-focus-1");
+    assert_eq!(deep[0]["surface"], "freely_mentionable");
+}
+
+#[test]
+fn the_cue_gate_is_what_hides_a_long_term_goal_not_a_missing_channel() {
+    // The contrast that isolates the cause. Same stored shape, same uncued
+    // message, same importance band — the only difference is that
+    // `goal.long_term_objective` is registered `mention_if_user_cues` while
+    // `goal.current_focus` is `freely_mentionable`. One reaches the model and the
+    // other does not.
+    //
+    // Twenty-one of the forty-six predicates are cue-gated, so this is not an
+    // edge case: an ambition, a person, or a relationship is invisible until the
+    // user's own words happen to touch it. Whether that is right is a product
+    // decision about which memories a companion is allowed to raise, and it is
+    // recorded here as behaviour because that decision had not been made
+    // explicitly.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "goal-1",
+        "goal.long_term_objective",
+        "攒钱去冰岛看极光",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    let visible = [
+        "constraints",
+        "responseStyle",
+        "continuity",
+        "topicActivated",
+        "deepRecall",
+    ]
+    .iter()
+    .map(|channel| plan[channel].as_array().expect(channel).len())
+    .sum::<usize>();
+
+    assert_eq!(
+        visible, 0,
+        "an uncued cue-gated goal became visible, so the layering or the registry \
+         changed. Plan was {plan}"
+    );
+    assert_eq!(
+        plan["doNotSurface"].as_array().expect("withheld").len(),
+        1,
+        "it must still be accounted for as withheld rather than dropped, plan was {plan}"
+    );
+}
+
+#[test]
+fn every_admitted_record_lands_in_exactly_one_channel() {
+    // A record that reaches no channel is invisible, and a record in two would
+    // be injected twice. Counting is the cheapest way to catch either, and it
+    // catches the case a per-channel assertion misses: a total that is neither
+    // zero nor the number of records.
+    let mut worker = Worker::start();
+    let boundary = "别跟我提前任";
+    let style = "short";
+    let goal = "攒钱去冰岛看极光";
+    record(
+        &mut worker,
+        "b1",
+        "boundary.topic_avoid",
+        boundary,
+        "2026-09-12T00:00:00Z",
+    );
+    record(
+        &mut worker,
+        "s1",
+        "communication.verbosity",
+        style,
+        "2026-09-12T00:00:01Z",
+    );
+    record(
+        &mut worker,
+        "g1",
+        "goal.long_term_objective",
+        goal,
+        "2026-09-12T00:00:02Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[3]);
+    let mut placed = 0;
+    let mut ids: Vec<String> = Vec::new();
+    for channel in [
+        "constraints",
+        "responseStyle",
+        "continuity",
+        "topicActivated",
+        "deepRecall",
+        "doNotSurface",
+    ] {
+        for entry in plan[channel].as_array().expect(channel) {
+            placed += 1;
+            ids.push(format!(
+                "{channel}:{}",
+                entry["recordId"].as_str().unwrap_or("?")
+            ));
+        }
+    }
+
+    // Three records, and each must appear once. `doNotSurface` counts as placed:
+    // it is a decision to withhold, which is different from being overlooked.
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(
+        unique.len(),
+        ids.len(),
+        "a record reached more than one channel: {ids:?}"
+    );
+    assert_eq!(
+        placed, 3,
+        "records that reached no channel are invisible to the model; placement was {ids:?}"
+    );
+}
+
+#[test]
+fn a_stand_in_for_the_hidden_arm_keeps_scope_isolated() {
+    // The counterfactual arm and the gold arms run against one worker. If a
+    // record written for one scope were readable from another, every arm
+    // comparison would be measuring contamination rather than memory.
+    let mut worker = Worker::start();
+    worker.send(
+        "admit",
+        "admit",
+        json!({
+            "scope": { "service_id": "service", "owner_user_id": "owner", "companion_profile_id": "preset" },
+            "now": "2026-09-12T00:00:00Z",
+            "source": { "id": "m1", "session_id": "session-1", "text": "别跟我提前任" },
+            "candidates": [candidate("b1", "boundary.topic_avoid", "别跟我提前任")],
+        }),
+    );
+    worker.send(
+        "warm-other",
+        "warm",
+        json!({
+            "scope": { "service_id": "service", "owner_user_id": "owner", "companion_profile_id": "other-preset" },
+            "current_message": "今天天气怎么样",
+            "now": "2026-09-12T00:00:02Z",
+            "session_id": "session-9",
+            "new_session": true,
+            "turn_key": "turn-other",
+        }),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    assert_eq!(
+        plan["constraints"].as_array().expect("constraints").len(),
+        0,
+        "one preset's boundary must not constrain another, plan was {plan}"
+    );
+    let _ = scope();
+}
