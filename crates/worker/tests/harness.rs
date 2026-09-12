@@ -104,16 +104,54 @@ pub fn scope() -> Value {
     })
 }
 
-/// One candidate as the extractor would propose it.
-pub fn candidate(id: &str, predicate: &str, value: &str) -> Value {
+/// One candidate as the extractor would propose it, quoted truthfully.
+///
+/// The span is derived from `text` rather than supplied, because admission
+/// checks it against the retained message. A helper that let a caller write its
+/// own offsets turned every case in this suite into a source-span case: the
+/// worker refused them all for a reason no test was asking about, and the ones
+/// expecting a refusal passed without exercising what they named.
+pub fn candidate(id: &str, predicate: &str, value: &str, text: &str) -> Value {
+    let start = text
+        .find(value)
+        .unwrap_or_else(|| panic!("{value:?} does not occur in the message {text:?}"));
     json!({
         "id": id,
         "predicate": predicate,
         "value": value,
         "raw_value": value,
-        "start_offset": 0,
-        "end_offset": value.len(),
+        "start_offset": start,
+        "end_offset": start + value.len(),
         "quote": value,
+        "confidence": 0.9,
+    })
+}
+
+/// One candidate whose quote the user never said.
+///
+/// Deliberately shaped so that only the quote check can refuse it: the span is
+/// in range and lands on character boundaries, so a guard that merely bounds
+/// the offsets would accept it. The assertions are here rather than in each
+/// test because a fabricated candidate that is accidentally well formed proves
+/// nothing, and it is not obvious from the call site which way it fell.
+pub fn fabricated_candidate(id: &str, predicate: &str, quote: &str, text: &str) -> Value {
+    assert!(
+        !text.contains(quote),
+        "{quote:?} does occur in {text:?}; this is not a fabricated quote"
+    );
+    assert!(
+        text.get(0..quote.len()).is_some(),
+        "{quote:?} does not fit inside {text:?}, so the span would be refused for its bounds \
+         rather than for its content"
+    );
+    json!({
+        "id": id,
+        "predicate": predicate,
+        "value": quote,
+        "raw_value": quote,
+        "start_offset": 0,
+        "end_offset": quote.len(),
+        "quote": quote,
         "confidence": 0.9,
     })
 }

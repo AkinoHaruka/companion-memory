@@ -24,7 +24,7 @@ fn record(worker: &mut Worker, id: &str, predicate: &str, value: &str, at: &str)
             at,
             "message-1",
             value,
-            vec![candidate(id, predicate, value)],
+            vec![candidate(id, predicate, value, value)],
         ),
     );
 }
@@ -342,6 +342,69 @@ fn every_admitted_record_lands_in_exactly_one_channel() {
 }
 
 #[test]
+fn a_shared_grammatical_pair_is_not_a_cue() {
+    // The matcher's evidence for "the user is talking about this" is a shared
+    // adjacent pair of characters. `今天` is such a pair and is two of the most
+    // frequent characters in the language, so a record that happens to mention
+    // today used to activate on any message that happened to mention today —
+    // reported, confidently, as `current_turn_cue`.
+    //
+    // Both halves matter. The record must not be injected, and it must still be
+    // accounted for: withheld is a decision, invisible is a bug.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "cat-1",
+        "misc.unclassified",
+        "楼下那只三花猫今天又蹲在同一个台阶上",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    assert!(
+        plan["topicActivated"].as_array().expect("topic").is_empty(),
+        "sharing only `今天` is not sharing a subject, plan was {plan}"
+    );
+    assert_eq!(
+        plan["doNotSurface"].as_array().expect("doNotSurface").len(),
+        1,
+        "it must still be accounted for, plan was {plan}"
+    );
+}
+
+#[test]
+fn a_shared_subject_pair_still_cues() {
+    // The control for the case above. Tightening the matcher until nothing ever
+    // activates would pass that test and destroy the system, so the same record
+    // has to arrive when the message really is about the cat.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "cat-1",
+        "misc.unclassified",
+        "楼下那只三花猫今天又蹲在同一个台阶上",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("楼下那只三花猫还在吗", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    let topic = plan["topicActivated"].as_array().expect("topic");
+    assert_eq!(topic.len(), 1, "a shared subject must still cue, plan was {plan}");
+    assert_eq!(topic[0]["recordId"], "claim-cat-1");
+}
+
+#[test]
 fn a_stand_in_for_the_hidden_arm_keeps_scope_isolated() {
     // The counterfactual arm and the gold arms run against one worker. If a
     // record written for one scope were readable from another, every arm
@@ -354,7 +417,7 @@ fn a_stand_in_for_the_hidden_arm_keeps_scope_isolated() {
             "scope": { "service_id": "service", "owner_user_id": "owner", "companion_profile_id": "preset" },
             "now": "2026-09-12T00:00:00Z",
             "source": { "id": "m1", "session_id": "session-1", "text": "别跟我提前任" },
-            "candidates": [candidate("b1", "boundary.topic_avoid", "别跟我提前任")],
+            "candidates": [candidate("b1", "boundary.topic_avoid", "别跟我提前任", "别跟我提前任")],
         }),
     );
     worker.send(

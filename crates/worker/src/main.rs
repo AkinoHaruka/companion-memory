@@ -874,8 +874,8 @@ fn cue_matches(message: &str, claim: &Claim) -> bool {
             return true;
         }
     }
-    let message_pairs = cjk_pairs(&message);
-    let value_pairs = cjk_pairs(&claim_text(claim).to_lowercase());
+    let message_pairs = cjk_topic_pairs(&message);
+    let value_pairs = cjk_topic_pairs(&claim_text(claim).to_lowercase());
     !message_pairs.is_empty() && message_pairs.iter().any(|pair| value_pairs.contains(pair))
 }
 
@@ -888,8 +888,8 @@ fn cue_matches_episode(message: &str, episode: &Episode) -> bool {
     if message.contains(&narrative) || narrative.contains(&message) {
         return true;
     }
-    let message_pairs = cjk_pairs(&message);
-    let narrative_pairs = cjk_pairs(&narrative);
+    let message_pairs = cjk_topic_pairs(&message);
+    let narrative_pairs = cjk_topic_pairs(&narrative);
     if message_pairs
         .iter()
         .any(|pair| narrative_pairs.contains(pair))
@@ -908,15 +908,23 @@ fn cue_matches_episode(message: &str, episode: &Episode) -> bool {
         .any(|character| narrative_chars.contains(character))
 }
 
+/// Characters that carry grammar rather than topic.
+///
+/// This is a small stop-character filter, not a vocabulary or admission table.
+/// It exists so that a shared character cannot be mistaken for a shared subject.
+const FUNCTION_CHARS: &str =
+    "的了在是我你他她它和与这那有个也就不很都要会去来着过到点今天天气吗呢吧啊呀么从对把被为及并而但还又更最近总觉得想说看聊能可会已了然用户半三一二四五";
+
+fn is_function_char(character: char) -> bool {
+    FUNCTION_CHARS.contains(character)
+}
+
 fn meaningful_cjk_chars(text: &str) -> Vec<char> {
-    // This is a small stop-character filter, not a vocabulary or admission
-    // table.  Multi-character topic pairs and the direct entity/topic overlap
-    // above remain the normal path; this fallback only handles short Chinese
-    // paraphrases where the shared entity is one character long.
-    const FUNCTION_CHARS: &str =
-        "的了在是我你他她它和与这那有个也就不很都要会去来着过到点今天天气吗呢吧啊呀么从对把被为及并而但还又更最近总觉得想说看聊能可会已了然用户半三一二四五";
+    // Multi-character topic pairs and the direct entity/topic overlap in the
+    // cue matchers remain the normal path; this fallback only handles short
+    // Chinese paraphrases where the shared entity is one character long.
     text.chars()
-        .filter(|character| is_cjk(*character) && !FUNCTION_CHARS.contains(*character))
+        .filter(|character| is_cjk(*character) && !is_function_char(*character))
         .collect()
 }
 
@@ -931,6 +939,22 @@ fn cjk_pairs(text: &str) -> Vec<String> {
             let both_cjk = pair.iter().all(|character| is_cjk(*character));
             both_cjk.then(|| pair.iter().collect())
         })
+        .collect()
+}
+
+/// Adjacent CJK pairs, minus the ones that are nothing but grammatical glue.
+///
+/// A shared pair is the cue matchers' main evidence, so a pair carrying no topic
+/// is not evidence. `今天` is two of the most frequent characters in the
+/// language: left in, any record that happens to say "today" activates on any
+/// message that happens to say "today", which is most of them. The matcher then
+/// reports a confident `current_turn_cue` for a turn that shares no subject at
+/// all, and every downstream reading of the plan — how often memory was used,
+/// whether it helped — is measuring that instead.
+fn cjk_topic_pairs(text: &str) -> Vec<String> {
+    cjk_pairs(text)
+        .into_iter()
+        .filter(|pair| !pair.chars().all(is_function_char))
         .collect()
 }
 
