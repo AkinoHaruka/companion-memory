@@ -132,6 +132,8 @@ packages/dsh-plugin/   DeepSeek Harness 适配层。唯一与宿主耦合的地�
 
 给 `boundary` 最高 `base_priority` 会让它**竞争 prompt 空间**。它是无条件约束。
 
+当当前话题命中一个 episode，且 episode narrative 包含 boundary 的规范化主题值时，worker 在渲染前把该 episode 放入 `do_not_surface`。这样 DSH 只收到约束和 withheld 计数，不会同时收到禁谈主题的原文；这是 gate 的预先过滤，不是把矛盾事实交给模型仲裁。
+
 ---
 
 ## 3. 数据模型

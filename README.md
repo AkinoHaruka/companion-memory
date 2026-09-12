@@ -113,6 +113,11 @@ turn, admitting the gold proposals wherever no counterfactual was declared,
 which made it gold under another label and its distance from the ceiling a
 sampling artifact read as a causal floor.
 
+Boundary protection is enforced before prompt rendering: when a cued episode
+narrative contains a boundary's normalised topic value, the worker withholds the
+episode and only the boundary constraint plus a withheld count reach DSH. The
+model is not asked to arbitrate between a prohibition and the prohibited text.
+
 Every conclusion here is a difference between having memory and not having it,
 and `oracle-summary.json` reports that difference as `lift`, ceiling minus
 control, per effect. A rate against an absolute floor cannot separate "memory
