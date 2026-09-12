@@ -13,7 +13,7 @@
  *   node scripts/build-host.mjs
  */
 
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -88,6 +88,11 @@ function sources(dir) {
   return found;
 }
 
+// Clear the output first. Transpiling file by file leaves the compiled form of a
+// deleted source in place, so `dist` keeps exporting modules that no longer exist
+// in `src` -- which is how a removed provider client stayed importable long after
+// it was deleted, and would have kept working if anything had still pointed at it.
+rmSync(outRoot, { recursive: true, force: true });
 for (const source of sources(hostSrc)) transpile(source, hostSrc, join(outRoot, 'src'));
 
 process.stdout.write(`built host -> ${outRoot}\n`);
