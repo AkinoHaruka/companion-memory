@@ -253,8 +253,11 @@ fn a_temporal_single_predicate_supersedes() {
 
 #[test]
 fn the_misc_escape_hatch_never_displaces_anything() {
-    // `misc` is a Set, so it would append; the inert check must fire first and
-    // refuse outright, because unclassified sludge must not accumulate either.
+    // Invariant I2 read literally: a `misc` record never triggers a supersede.
+    // It does not say the statement is thrown away, and throwing it away is the
+    // one outcome the escape hatch exists to prevent — everything the registry's
+    // keys cannot name would be lost, and the loss would present as a policy
+    // refusing a candidate rather than as a gap in the vocabulary.
     let existing = claim(
         "c1",
         "misc.unclassified",
@@ -263,10 +266,34 @@ fn the_misc_escape_hatch_never_displaces_anything() {
     );
     let value = json!("something else");
     match decide_supersede(&input("misc.unclassified", &value), &[&existing]) {
-        SupersedeDecision::Reject { reason, .. } => {
-            assert_eq!(reason, SupersedeRejection::InertDomain)
-        }
-        other => panic!("misc must be inert, got {other:?}"),
+        SupersedeDecision::Append { .. } => {}
+        other => panic!("an unclassified statement must be kept alongside, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_unclassified_statement_is_writable_at_all() {
+    // The escape hatch has to be able to hold the first statement, or the
+    // accumulation above never begins. Everything the vocabulary cannot classify
+    // passes through here, which for a daily companionship product is not a rare
+    // path: it is most of what a person talks about.
+    let value = json!("楼下那只三花猫今天又蹲在同一个台阶上");
+    match decide_supersede(&input("misc.unclassified", &value), &[]) {
+        SupersedeDecision::Create { .. } => {}
+        other => panic!("nothing else can hold this statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_unclassified_restatement_is_merged_rather_than_duplicated() {
+    // The other half of inertness: repeating yourself must not build a pile of
+    // identical records. Without this, "stored rather than dropped" would trade
+    // one problem for a worse one, because nothing here is ever superseded.
+    let existing = claim("c1", "misc.unclassified", json!("又下雨了"), "2026-01-01T00:00:00Z");
+    let value = json!("又下雨了");
+    match decide_supersede(&input("misc.unclassified", &value), &[&existing]) {
+        SupersedeDecision::Merge { into_id, .. } => assert_eq!(into_id, "c1"),
+        other => panic!("a restatement must not become a second record, got {other:?}"),
     }
 }
 

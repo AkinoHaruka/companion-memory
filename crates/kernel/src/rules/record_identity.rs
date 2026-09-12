@@ -122,8 +122,6 @@ pub enum SupersedeRejection {
     UnknownPredicate,
     /// A `Set` predicate accumulates; it never replaces.
     CardinalitySet,
-    /// `misc` records must not displace classified facts.
-    InertDomain,
     /// An entity-bearing predicate arrived without an entity.
     RequiresEntityRef,
     /// The incoming value does not fit the predicate's declared shape.
@@ -309,14 +307,17 @@ pub fn decide_supersede(
         };
     };
 
-    if is_inert(spec.domain) || spec.key == MISC_PREDICATE {
-        // Unclassified statements are stored for the user's benefit but must
-        // never displace a classified fact.
-        return SupersedeDecision::Reject {
-            reason: SupersedeRejection::InertDomain,
-            detail: spec.key.to_string(),
-        };
-    }
+    // `misc` records never displace a classified fact. This used to refuse the
+    // write outright, which reads as the same policy and quietly loses the one
+    // thing the escape hatch exists to keep: a statement the vocabulary could
+    // not classify. The guard therefore removes the ability to supersede and
+    // lets the rest of the decision run, so an unclassified statement is stored
+    // beside what is already known instead of being dropped for being unusual.
+    //
+    // The slot is keyed by predicate, so an unclassified statement never
+    // competes with a classified one anyway. What this buys is that a later
+    // registry row cannot quietly hand `misc` the power to overwrite.
+    let may_displace = !is_inert(spec.domain) && spec.key != MISC_PREDICATE;
 
     if spec.kind == ValueKind::EntityRef && input.entity_ref.is_none() {
         return SupersedeDecision::Reject {
@@ -351,10 +352,11 @@ pub fn decide_supersede(
 
     let incumbent = pick_most_authoritative(same_slot_active);
 
-    if !supersedes_by_cardinality(spec.cardinality) {
-        // A set accumulates. Still type-check the incumbent so that adding "I'm
-        // thinking about moving" into a set of places is refused rather than
-        // quietly polluting the accumulation.
+    if !may_displace || !supersedes_by_cardinality(spec.cardinality) {
+        // A set accumulates, and an inert domain is treated as one whatever its
+        // row says. Still type-check the incumbent so that adding "I'm thinking
+        // about moving" into a set of places is refused rather than quietly
+        // polluting the accumulation.
         if let ValueClass::Classifiable(incumbent_kind) = classify_value(spec, &incumbent.value) {
             if incumbent_kind != incoming_kind {
                 return SupersedeDecision::Reject {
