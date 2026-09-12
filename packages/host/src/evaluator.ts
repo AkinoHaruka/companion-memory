@@ -45,6 +45,8 @@ interface ArmResult {
   plan: unknown;
   injectedRecordIds: string[];
   reply: string;
+  /** The route returned no text twice, so this turn has no answer to judge. */
+  replyFailed: boolean;
 }
 
 interface ScoredEffect { passed: boolean; evidence: string; }
@@ -69,13 +71,21 @@ export interface EffectRate { passed: number; total: number; rate: number | null
 export interface OracleEvaluationSummary {
   runCount: number;
   effectRates: Record<Arm, Partial<Record<EffectType, EffectRate>>>;
+  /** Turns per arm with no reply at all, excluded from every rate. */
+  unreplied: Record<Arm, number>;
   acceptance: {
     goldForcedCoreAtLeastEightOfTen: boolean;
     normalCoreAtLeastSevenOfTen: boolean;
     protectionPerfect: boolean;
+    /** Share of turns the route answered, per arm. Rates below the floor describe too little to trust. */
+    answeredShare: Record<Arm, number>;
+    enoughTurnsWereAnswered: boolean;
     passed: boolean;
   };
 }
+
+/** Below this share of answered turns, the rates describe the route rather than the model. */
+const MIN_ANSWERED_SHARE = 0.95;
 
 function addDays(iso: string, days: number): string {
   return new Date(Date.parse(iso) + days * 86_400_000).toISOString();
@@ -164,7 +174,18 @@ function prompt(snapshot: string, user: string): EvaluationMessage[] {
   ];
 }
 
-function score(effect: EffectType, opportunity: UserTurn['memoryOpportunity'], reply: string): ScoredEffect {
+/**
+ * Score one arm's reply for one effect.
+ *
+ * `replyFailed` is checked first and fails everything, including the protections.
+ * An empty reply is not a model choosing to stay quiet; it is the route not
+ * answering. It cannot contain the prohibited topic, so counting it as the
+ * boundary holding would let the protection score rise on precisely the turns
+ * that broke -- and the protections are the criteria that are supposed to be
+ * perfect, which makes them the ones least able to absorb a silent pass.
+ */
+function score(effect: EffectType, opportunity: UserTurn['memoryOpportunity'], reply: string, replyFailed: boolean): ScoredEffect {
+  if (replyFailed) return { passed: false, evidence: 'the route returned no reply, so the effect was not observed' };
   switch (effect) {
     case 'name': return { passed: reply.includes('林越'), evidence: 'reply addresses the established name' };
     case 'language': return { passed: /[\u3400-\u9fff]/.test(reply), evidence: 'reply follows the established Chinese preference' };
@@ -188,6 +209,12 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
   }
   for (const row of rows) {
     for (const arm of ARMS) {
+      // Only answered turns enter a rate. Counting an unobserved turn as a failed
+      // effect would bias every core effect downward for a reason that has nothing
+      // to do with memory, and counting it as a passed protection would bias the
+      // protections up. Neither belongs in a denominator; the share of unanswered
+      // turns is reported separately and caps the acceptance instead.
+      if (row.arms[arm].replyFailed) continue;
       const rate = effectRates[arm][row.effectType];
       if (rate === undefined) continue;
       rate.total += 1;
@@ -206,14 +233,27 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
   const goldForcedCoreAtLeastEightOfTen = CORE_POSITIVE_EFFECTS.every((effect) => hasRate('gold_forced', effect, 0.8));
   const normalCoreAtLeastSevenOfTen = CORE_POSITIVE_EFFECTS.every((effect) => hasRate('normal', effect, 0.7));
   const protectionPerfect = ARMS.every((arm) => PROTECTED_EFFECTS.every((effect) => hasRate(arm, effect, 1)));
+  const unreplied = Object.fromEntries(
+    ARMS.map((arm) => [arm, rows.filter((row) => row.arms[arm].replyFailed).length]),
+  ) as Record<Arm, number>;
+  const answeredShare = Object.fromEntries(
+    ARMS.map((arm) => [arm, rows.length === 0 ? 0 : (rows.length - unreplied[arm]) / rows.length]),
+  ) as Record<Arm, number>;
+  // A run the route stopped answering is not a run that measured memory. This does
+  // not demand a perfect route -- one empty stream in twenty is a real route -- but
+  // it does refuse to draw a conclusion from a sample that shrank too far.
+  const enoughTurnsWereAnswered = ARMS.every((arm) => answeredShare[arm] >= MIN_ANSWERED_SHARE);
   return {
     runCount,
     effectRates,
+    unreplied,
     acceptance: {
       goldForcedCoreAtLeastEightOfTen,
       normalCoreAtLeastSevenOfTen,
       protectionPerfect,
-      passed: goldForcedCoreAtLeastEightOfTen && normalCoreAtLeastSevenOfTen && protectionPerfect,
+      answeredShare,
+      enoughTurnsWereAnswered,
+      passed: goldForcedCoreAtLeastEightOfTen && normalCoreAtLeastSevenOfTen && protectionPerfect && enoughTurnsWereAnswered,
     },
   };
 }
@@ -299,11 +339,18 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
           const warmed = await Promise.all(ARMS.map(async (arm) => [arm, await warmArm(worker, states[arm], arm, turn.text, at, `${session.id}-${run}`, sourceId, index === 0)] as const));
           const armResults = Object.fromEntries(await Promise.all(warmed.map(async ([arm, result]) => {
             const snapshot = renderMemoryUsagePlan(result.plan);
-            const reply = (await options.client.chat(prompt(snapshot, turn.text), { maxTokens: 400 })).text.trim();
+            // One retry. Against a real route an occasional empty stream is
+            // transient, and a single re-ask is far cheaper than discarding a run
+            // that has already paid for every other turn in the fixture.
+            let reply = (await options.client.chat(prompt(snapshot, turn.text), { maxTokens: 400 })).text.trim();
+            if (reply.length === 0) {
+              reply = (await options.client.chat(prompt(snapshot, turn.text), { maxTokens: 400 })).text.trim();
+            }
             return [arm, {
               plan: result.plan.plan,
               injectedRecordIds: renderedRecordIds(result.plan.plan),
               reply,
+              replyFailed: reply.length === 0,
             } satisfies ArmResult] as const;
           }))) as Record<Arm, ArmResult>;
 
@@ -336,7 +383,7 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
             ARMS.map((arm, armIndex) => [arm, accepted[armIndex]?.rejected ?? []]),
           ) as Record<Arm, Array<{ candidateId: string; reason: string }>>;
           const scores = Object.fromEntries(
-            ARMS.map((arm) => [arm, score(turn.effectType, turn.memoryOpportunity, armResults[arm].reply)]),
+            ARMS.map((arm) => [arm, score(turn.effectType, turn.memoryOpportunity, armResults[arm].reply, armResults[arm].replyFailed)]),
           ) as Record<Arm, ScoredEffect>;
           rows.push({
             run, session: session.id, day: session.dayOffset, turn: index, intent: turn.intent, user: turn.text,

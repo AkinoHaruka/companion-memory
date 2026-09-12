@@ -82,8 +82,40 @@ describe('Oracle evaluator causal artifacts', () => {
     }
   });
 
+  it('cannot pass when the route stops answering', async () => {
+    // The dangerous direction. An empty reply cannot contain a prohibited topic,
+    // so a turn where the route failed used to count as the boundary holding --
+    // the protection score rising on exactly the turns that broke. Measured on a
+    // live run: 12 of 80 replies came back empty, and the protections were the
+    // only effects that looked healthy.
+    //
+    // Unanswered turns are dropped from the denominators rather than counted as
+    // failures, so what is asserted here is that the sample is refused, not that
+    // it is scored badly.
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'companion-memory-oracle-silent-'));
+    try {
+      const summary = await runOracleEvaluation({
+        client: { async chat() { return { text: '' }; }, chatJson: fakeModel.chatJson },
+        databasePath: join(outputDirectory, 'oracle.db'),
+        workerCommand: process.execPath,
+        workerArgs: ['-e', workerProgram, '--'],
+        runCount: 1,
+        outputDirectory,
+        sessions: script,
+      });
+      expect(summary.acceptance.answeredShare.normal).toBe(0);
+      expect(summary.acceptance.enoughTurnsWereAnswered).toBe(false);
+      expect(summary.acceptance.passed).toBe(false);
+      expect(summary.unreplied.normal).toBeGreaterThan(0);
+      // Nothing may be credited to a turn nobody answered, in either direction.
+      expect(summary.effectRates.normal.correct_silence).toMatchObject({ passed: 0, total: 0, rate: null });
+      expect(summary.effectRates.normal.boundary).toMatchObject({ passed: 0, total: 0, rate: null });
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a database that already holds records', async () => {
-    // Repetitions are isolated by scope, so one database is safe for all ten
     // runs of an invocation. It is not safe across invocations: profile ids are
     // `normal-0`, `gold-retrieved-0` and so on, so a second invocation against
     // the same file begins each repetition with the previous run's memories in
