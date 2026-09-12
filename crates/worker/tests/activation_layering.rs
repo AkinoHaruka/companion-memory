@@ -57,6 +57,63 @@ fn a_boundary_is_a_constraint_regardless_of_the_message() {
 }
 
 #[test]
+fn a_boundary_withholds_a_matching_episode_before_model_render() {
+    // A model-facing boundary is not safe if the same sensitive episode is
+    // still present in topicActivated beside it. The worker must make the
+    // withholding decision before rendering the plan, so the model never gets
+    // the prohibited narrative as prompt context to reinterpret.
+    let mut worker = Worker::start();
+    let source_text = "上周三晚上九点，我和前任分手了。";
+    let quote = "前任";
+    let start = source_text.find(quote).expect("episode quote") as i64;
+    let mut params = admit_params(
+        "2026-09-12T00:00:00Z",
+        "message-1",
+        source_text,
+        vec![candidate("boundary-1", "boundary.topic_avoid", quote, quote)],
+    );
+    // `admit_params` uses the candidate text as the retained source. Replace
+    // the source and span with the real user message used by this episode.
+    params["source"] = json!({
+        "id": "message-1",
+        "session_id": "session-1",
+        "text": source_text,
+    });
+    params["candidates"][0]["start_offset"] = start.into();
+    params["candidates"][0]["end_offset"] = (start + quote.len() as i64).into();
+    params["candidates"][0]["quote"] = quote.into();
+    params["episodes"] = json!([{
+        "id": "breakup-1",
+        "narrative": "用户上周三晚上九点和前任分手了。",
+        "start_offset": start,
+        "end_offset": start + quote.len() as i64,
+        "quote": quote,
+        "confidence": 0.9,
+    }]);
+    worker.send("admit", "admit", params);
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("我想聊聊前任", "session-2", false),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    assert!(
+        plan["topicActivated"].as_array().expect("topic").is_empty(),
+        "a boundary must remove a matching sensitive episode from model-visible topic context, plan was {plan}"
+    );
+    assert!(
+        plan["doNotSurface"]
+            .as_array()
+            .expect("withheld")
+            .iter()
+            .any(|entry| entry["recordId"] == "episode-breakup-1"),
+        "the episode must be accounted for as withheld rather than silently dropped, plan was {plan}"
+    );
+}
+
+#[test]
 fn a_stated_preference_is_a_standing_style() {
     // Communication and support preferences shape every reply rather than being
     // recalled when cued, which is what "standing" has to mean if it means
