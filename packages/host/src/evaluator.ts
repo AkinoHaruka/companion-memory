@@ -96,6 +96,15 @@ export interface EvaluationOptions {
    */
   sequentialArms?: boolean;
   interCallDelayMs?: number;
+  /**
+   * Run only these arms.
+   *
+   * The arm set should serve the hypothesis. Measuring one effect's lift needs
+   * its ceiling and its control on that turn -- two or three arms over two turns,
+   * not the whole matrix -- and this is what makes that experiment cost a dozen
+   * calls instead of a hundred.
+   */
+  arms?: readonly Arm[];
   includeProbes?: boolean;
   /** Optional frozen subset for deterministic contract tests or focused diagnosis. */
   sessions?: readonly SessionScript[];
@@ -840,7 +849,9 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
         const at = addDays(NOW, session.dayOffset);
         for (const [index, turn] of session.turns.entries()) {
           const sourceId = `run-${run}-${session.id}-${index}`;
-          const order = rotate(armsForTurn(turn, states.counterfactual_forced.forcedRecordIds.length > 0), run);
+          const wanted = armsForTurn(turn, states.counterfactual_forced.forcedRecordIds.length > 0)
+            .filter((arm) => options.arms === undefined || options.arms.includes(arm));
+          const order = rotate(wanted, run);
           const running = new Set(order);
           const skipped = Object.fromEntries(
             ARMS.filter((arm) => !running.has(arm)).map((arm) => [arm, {
