@@ -9,6 +9,7 @@ import { renderMemoryUsagePlan, renderedRecordIds } from '../../dsh-plugin/src/r
 import { WorkerClient } from '../../dsh-plugin/src/worker-client.js';
 import { extractionPrompt, parseExtractionItems } from '../../dsh-plugin/src/extractor.js';
 import { routeRefused, starvedByReasoning, type RouteReport } from './route-report.js';
+import { fatalViolations, unmeasurableTurns } from './fixture.js';
 
 export type Arm = 'normal' | 'gold_retrieved' | 'gold_forced' | 'counterfactual_forced';
 const ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'];
@@ -310,24 +311,41 @@ function prompt(snapshot: string, user: string): EvaluationMessage[] {
  *
  * Kept in one place so the predicate the report prints is the predicate that
  * ran. The descriptions are deliberate about what they measure: `preference`
- * tests length, not preference; `continuity` on the recorded rule tests a
- * pronoun-avoiding word, not recall. Naming a scorer after its intention is how
- * a number becomes a product conclusion on the way to a report.
+ * tests length, not preference. Naming a scorer after its intention is how a
+ * number becomes a product conclusion on the way to a report.
  */
 interface ScorerSpec {
   condition: string;
-  test: (reply: string, opportunity: UserTurn['memoryOpportunity']) => boolean;
+  test: (reply: string, turn: UserTurn) => boolean;
 }
+
+/**
+ * One strong token, or two lower-grade ones together.
+ *
+ * A flat "any keyword" rule passes a reply that guessed: measured against a real
+ * model, `折腾` is a stock consolation word and `半夜` is how this kind of story
+ * goes, while `三点` is a clock reading nobody produces without the record. So a
+ * weak hit cannot carry the effect alone, and two independent weak hits can.
+ */
+function recallDemonstrated(reply: string, turn: UserTurn): boolean {
+  const evidence = turn.recallEvidence;
+  if (evidence === undefined) return false;
+  if (evidence.strong.some((token) => reply.includes(token))) return true;
+  const lower = [...evidence.medium, ...evidence.weak].filter((token) => reply.includes(token));
+  return lower.length >= 2;
+}
+
+const RECALL_CONDITION = 'one strong evidence token, or two medium/weak ones together (tokens are verbatim from human-verified gold and absent from the turn itself)';
 
 const SCORERS: Record<EffectType, ScorerSpec> = {
   name: { condition: 'reply.includes("林越")', test: (reply) => reply.includes('林越') },
   language: { condition: 'reply matches /[\\u3400-\\u9fff]/', test: (reply) => /[\u3400-\u9fff]/.test(reply) },
   preference: { condition: 'reply.length >= 80 && reply matches /[\\u3400-\\u9fff]/', test: (reply) => reply.length >= 80 && /[\u3400-\u9fff]/.test(reply) },
   boundary: { condition: '!reply.includes("前任")', test: (reply) => !reply.includes('前任') },
-  continuity: { condition: 'reply.includes("猫") || reply.includes("宠物医院")', test: (reply) => reply.includes('猫') || reply.includes('宠物医院') },
+  continuity: { condition: RECALL_CONDITION, test: recallDemonstrated },
   correct_silence: {
     condition: 'opportunity !== "none" || (!reply.includes("前任") && !reply.includes("宠物医院"))',
-    test: (reply, opportunity) => opportunity !== 'none' || (!reply.includes('前任') && !reply.includes('宠物医院')),
+    test: (reply, turn) => turn.memoryOpportunity !== 'none' || (!reply.includes('前任') && !reply.includes('宠物医院')),
   },
 };
 
@@ -357,11 +375,15 @@ function nameRenderedAsStyle(plan: MemoryUsagePlan): boolean {
  */
 function observe(
   effect: EffectType,
-  opportunity: UserTurn['memoryOpportunity'],
+  turn: UserTurn,
   arm: ArmResult,
+  unmeasurableReason: string | undefined,
 ): ScoredEffect {
   const spec = SCORERS[effect];
   const invalid = (evidence: string): ScoredEffect => ({ state: 'invalid', condition: spec.condition, evidence });
+  if (unmeasurableReason !== undefined) {
+    return { state: 'not_applicable', condition: spec.condition, evidence: unmeasurableReason };
+  }
   if (arm.replyFailed) {
     if (routeRefused(arm.route)) return invalid(`the route refused: ${arm.route?.error ?? 'unknown'}`);
     if (starvedByReasoning(arm.route)) return invalid(`the reply budget was spent on hidden reasoning: ${arm.route?.reasoningTokens ?? 0} reasoning tokens and no text`);
@@ -377,7 +399,7 @@ function observe(
       evidence: 'identity.name was rendered in the response_style channel, so a reply that omits it cannot be read as a memory failure',
     };
   }
-  const passed = spec.test(arm.reply, opportunity);
+  const passed = spec.test(arm.reply, turn);
   return { state: passed ? 'pass' : 'fail', condition: spec.condition, evidence: passed ? 'condition held' : 'condition did not hold' };
 }
 
@@ -468,9 +490,17 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
       refusals.push(`arm ${arm}: ${(invalidShare[arm] * 100).toFixed(1)}% of observations are invalid and were excluded (${breakdown})`);
     }
   }
-  const notApplicable = ARMS.reduce((sum, arm) => sum + Object.values(effectRates[arm]).reduce((inner, rate) => inner + (rate?.notApplicable ?? 0), 0), 0);
-  if (notApplicable > 0) {
-    refusals.push(`${notApplicable} observations were declared not_applicable; the tables below are not evidence about those effects`);
+  const notApplicableReasons = new Map<string, number>();
+  for (const row of rows) {
+    for (const arm of ARMS) {
+      const score = row.scores[arm];
+      if (score.state !== 'not_applicable') continue;
+      notApplicableReasons.set(score.evidence, (notApplicableReasons.get(score.evidence) ?? 0) + 1);
+    }
+  }
+  const notApplicable = [...notApplicableReasons.values()].reduce((sum, count) => sum + count, 0);
+  for (const [reason, count] of notApplicableReasons) {
+    refusals.push(`${count} observations were not_applicable and were excluded: ${reason}`);
   }
   for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) {
     const ceiling = effectRates.gold_forced[effect];
@@ -573,6 +603,14 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
   const predicateSchemas = (await worker.health()).predicateSchemas;
   const sessions: readonly SessionScript[] = options.sessions
     ?? (options.includeProbes === true ? [...SESSIONS, ...PROBES] : SESSIONS);
+  // Before the first model call. A fixture that contradicts itself cannot be
+  // fixed by running it, and every past defect here was found by reading a batch
+  // that had already been paid for.
+  const fatal = fatalViolations(sessions);
+  if (fatal.length > 0) {
+    throw new Error(`the fixture contradicts itself, so no run over it can mean anything:\n${fatal.map((violation) => `  ${violation.turn} ${violation.rule}: ${violation.detail}`).join('\n')}`);
+  }
+  const unmeasurable = unmeasurableTurns(sessions);
   const allRows: OracleRow[] = [];
   try {
     for (let run = 0; run < options.runCount; run += 1) {
@@ -657,7 +695,7 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
             ARMS.map((arm, armIndex) => [arm, accepted[armIndex]?.rejected ?? []]),
           ) as Record<Arm, Array<{ candidateId: string; reason: string }>>;
           const scores = Object.fromEntries(
-            ARMS.map((arm) => [arm, observe(turn.effectType, turn.memoryOpportunity, armResults[arm])]),
+            ARMS.map((arm) => [arm, observe(turn.effectType, turn, armResults[arm], unmeasurable.get(`${session.id}t${index}`))]),
           ) as Record<Arm, ScoredEffect>;
           rows.push({
             run, session: session.id, day: session.dayOffset, turn: index, intent: turn.intent, user: turn.text,

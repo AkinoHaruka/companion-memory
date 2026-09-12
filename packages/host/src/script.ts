@@ -4,6 +4,31 @@ export type EffectType = 'name' | 'language' | 'preference' | 'boundary' | 'cont
 export type Opportunity = 'positive' | 'negative' | 'none';
 export interface GoldCandidate { predicate: string; value: unknown; rawValue: string; quote: string; confidence?: number; }
 export interface GoldEpisode { narrative: string; quote: string; confidence?: number; }
+/**
+ * The words a reply could only carry having read this turn's memory, graded by
+ * how much they prove.
+ *
+ * Every token must appear verbatim in the turn's own human-verified gold, and
+ * none may appear in the turn's own user text -- both are checked by
+ * `validateFixture` before any model call, because a token that fails either is
+ * not evidence of anything.
+ *
+ * The grades exist because a flat keyword list cannot tell recall from
+ * guesswork. Measured against a real model, 「折腾」 is a stock consolation word
+ * ("这几天没少折腾吧") and 「半夜」 is a genre prior for a pet falling ill, while
+ * 「三点」 is a time nobody produces without the record. A weak token on its own
+ * therefore passes a reply that never read anything, so the rule requires one
+ * strong token, or two tokens of any lower grade together.
+ */
+export interface RecallEvidence {
+  /** A time, a number, a proper noun: unavailable without the record. */
+  strong: readonly string[];
+  /** Unlikely without the record, but reachable from how this kind of story goes. */
+  medium: readonly string[];
+  /** Reachable by guesswork alone; only counted alongside another token. */
+  weak: readonly string[];
+}
+
 export interface UserTurn {
   intent: string; text: string; memoryOpportunity: Opportunity; effectType: EffectType;
   /** Human-verified direct claims, consumed only by Gold arms. */
@@ -12,6 +37,12 @@ export interface UserTurn {
   goldEpisodes?: GoldEpisode[];
   /** Deliberately contradictory paired memory for causal generation checks. */
   counterfactual?: GoldCandidate[];
+  /**
+   * What a reply to this turn would have to contain to show it read this turn's
+   * memory. Absent means this effect cannot be read from this turn, which
+   * `validateFixture` reports rather than letting it score as a failure.
+   */
+  recallEvidence?: RecallEvidence;
 }
 export interface SessionScript { id: string; dayOffset: number; turns: UserTurn[]; }
 
@@ -49,7 +80,17 @@ export const SESSIONS: SessionScript[] = [
     ] },
   ] },
   { id: 's4', dayOffset: 21, turns: [
-    { intent: 'recall a detail from three weeks ago', text: '猫现在好多了，能吃东西了。', memoryOpportunity: 'positive', effectType: 'continuity' },
+    { intent: 'recall a detail from three weeks ago', text: '猫现在好多了，能吃东西了。', memoryOpportunity: 'positive', effectType: 'continuity', recallEvidence: {
+      // All three are read verbatim out of s3t0's human-verified episode
+      // narrative, 『猫生病，用户半夜带猫去宠物医院，折腾到三点。』, and none of
+      // them occurs in this turn's own user text. Graded by how far a reply could
+      // get without the record: a clock reading cannot be guessed, a pet being
+      // taken to hospital at night is how this story goes, and 折腾 is what one
+      // says to anyone who has had a hard week.
+      strong: ['三点'],
+      medium: ['半夜'],
+      weak: ['折腾'],
+    } },
     { intent: 'recurring theme', text: '又加班到十点。这个项目好像永远做不完。', memoryOpportunity: 'none', effectType: 'correct_silence' },
     { intent: 'contradiction — supersede territory', text: '关于简短这点我改主意了，聊正事的时候你多讲一点，我需要细节。', memoryOpportunity: 'positive', effectType: 'preference', gold: [
       { predicate: 'communication.verbosity', value: 'long', rawValue: '聊正事的时候你多讲一点，我需要细节', quote: '聊正事的时候你多讲一点，我需要细节' },

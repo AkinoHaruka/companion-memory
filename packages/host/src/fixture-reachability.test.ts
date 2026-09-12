@@ -37,14 +37,46 @@ const silentClient: EvaluationClient = {
   async chatJson() { return {}; },
 };
 
+interface PlanChannel { text?: string; }
+
+interface PlanShape {
+  constraints?: PlanChannel[];
+  responseStyle?: PlanChannel[];
+  continuity?: PlanChannel[];
+  topicActivated?: PlanChannel[];
+  deepRecall?: PlanChannel[];
+}
+
 interface ArtifactRow {
   session: string;
   turn: number;
   intent: string;
   memoryOpportunity: 'positive' | 'negative' | 'none';
   effectType: string;
-  arms: Record<Arm, { injectedRecordIds: string[] }>;
+  arms: Record<Arm, { injectedRecordIds: string[]; plan?: PlanShape }>;
   rejections: Record<Arm, Array<{ candidateId: string; reason: string }>>;
+}
+
+/** Every record text the renderer put in front of the model, in any channel. */
+function renderedText(row: ArtifactRow, arm: Arm): string {
+  const plan = row.arms[arm].plan ?? {};
+  return Object.values(plan)
+    .flatMap((channel) => (Array.isArray(channel) ? channel : []))
+    .map((entry) => entry.text ?? '')
+    .join('\n');
+}
+
+/** The turn keys that declare what a reply must contain to show it read memory. */
+function declaredEvidence(sessions: readonly SessionScript[]): Map<string, readonly string[]> {
+  const declared = new Map<string, readonly string[]>();
+  for (const session of sessions) {
+    for (const [index, turn] of session.turns.entries()) {
+      const evidence = turn.recallEvidence;
+      if (evidence === undefined) continue;
+      declared.set(`${session.id}t${index}`, [...evidence.strong, ...evidence.medium, ...evidence.weak]);
+    }
+  }
+  return declared;
 }
 
 let replayCount = 0;
@@ -89,6 +121,59 @@ describe.skipIf(!existsSync(workerCommand))('Oracle fixture reachability', () =>
       empty,
       'a turn scored for using memory had no memory in front of the model, so its effect '
       + 'cannot pass however good the replies are',
+    ).toEqual([]);
+  });
+
+  it('delivers the declared evidence word itself, not merely some record', async () => {
+    // "Some record arrived" is not the precondition the recall scorer needs. The
+    // precondition is that the wording it looks for was in front of the model,
+    // because a record that arrived without it cannot produce a hit however good
+    // the reply is. Free to check: the renderer runs either way.
+    const rows = await replayFixture();
+    const declared = declaredEvidence([...SESSIONS, ...PROBES] as readonly SessionScript[]);
+    const missing: string[] = [];
+    for (const row of rows) {
+      const tokens = declared.get(`${row.session}t${row.turn}`);
+      if (tokens === undefined || tokens.length === 0) continue;
+      const rendered = renderedText(row, 'gold_retrieved');
+      const present = tokens.filter((token) => rendered.includes(token));
+      if (present.length === 0) missing.push(`${label(row)} none of ${JSON.stringify(tokens)} reached the model`);
+    }
+    expect(missing).toEqual([]);
+  });
+
+  // Expected to fail, and deliberately so. It pins a live product defect whose fix
+  // is outside the evaluator: `crates/worker/src/main.rs:850` classifies
+  // `identity.name` as a policy claim, and `main.rs:384` renders every policy
+  // claim into `<response_style>` under "Use these to choose language, tone,
+  // format, and level of detail". A model reading that correctly concludes the
+  // name is not something to say. Measured: eight forced records, the name in the
+  // plan, and not one reply used it — and the batch reported that as the name
+  // memory not working.
+  //
+  // The fix is a channel that means "who this is", not a style knob, which is a
+  // worker rule change plus a renderer change. Until then the evaluator declares
+  // the name observation `not_applicable` instead of scoring it, so the defect is
+  // reported rather than measured. When someone fixes it, this test starts
+  // passing and the suite fails until the marker is removed — which is the point.
+  it.fails('never renders identity.name into the style channel (live defect, see crates/worker/src/main.rs:850)', async () => {
+    // The measured defect, asserted statically. `identity.name` arrived inside
+    // `<response_style>`, whose guidance is "Use these to choose language, tone,
+    // format, and level of detail", so a model reading it correctly concludes the
+    // name is not something to say. Eight forced records, and not one reply used
+    // it -- and the batch reported that as the name memory not working.
+    const rows = await replayFixture();
+    const misplaced: string[] = [];
+    for (const row of rows) {
+      for (const arm of ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'] as const) {
+        for (const entry of row.arms[arm].plan?.responseStyle ?? []) {
+          if ((entry.text ?? '').startsWith('identity.name')) misplaced.push(`${label(row)} ${arm}`);
+        }
+      }
+    }
+    expect(
+      misplaced,
+      'identity.name was handed to the model as a style parameter, so no reply can be read for it',
     ).toEqual([]);
   });
 

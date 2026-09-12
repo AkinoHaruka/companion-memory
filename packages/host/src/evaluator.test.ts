@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 
 import { runOracleEvaluation, type EvaluationClient } from './evaluator.js';
-import type { SessionScript } from './script.js';
+import { SESSIONS, type SessionScript } from './script.js';
 
 /**
  * A stand-in worker that stores what it is told and renders it into one channel.
@@ -204,6 +204,75 @@ describe('Oracle evaluator causal artifacts', () => {
       expect(summary.measurement.invalidShare.gold_forced).toBeGreaterThan(0);
       expect(summary.measurement.batchAcceptable).toBe(false);
       expect(summary.measurement.refusals.join(' ')).toContain('invalid');
+      expect(summary.acceptance.passed).toBe(false);
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a self-contradicting fixture before spending a single model call', async () => {
+    // The fixture compiler exists to fail here rather than in a batch of replies.
+    // A counterfactual that restates gold is the recorded defect: the arm was
+    // gold under another name and its difference from the ceiling was read as a
+    // causal effect.
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'companion-memory-oracle-compile-'));
+    let modelCalls = 0;
+    const countingClient: EvaluationClient = {
+      async chat() { modelCalls += 1; return { text: 'x' }; },
+      async chatJson() { modelCalls += 1; return { items: [] }; },
+    };
+    const contradictory: readonly SessionScript[] = [{
+      id: 'bad', dayOffset: 0, turns: [
+        {
+          intent: 'contradiction', text: '关于简短我改主意了。', memoryOpportunity: 'positive', effectType: 'preference',
+          gold: [{ predicate: 'communication.verbosity', value: 'long', rawValue: '多讲一点', quote: '关于简短' }],
+          counterfactual: [{ predicate: 'communication.verbosity', value: 'long', rawValue: '多讲一点', quote: '关于简短' }],
+        },
+      ],
+    }];
+    try {
+      await expect(runOracleEvaluation({
+        client: countingClient,
+        databasePath: join(outputDirectory, 'oracle.db'),
+        workerCommand: process.execPath,
+        workerArgs: workerArgs('deepRecall'),
+        runCount: 1,
+        outputDirectory,
+        sessions: contradictory,
+      })).rejects.toThrow(/counterfactual-equals-gold/);
+      expect(modelCalls).toBe(0);
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('declares a recall turn unmeasurable when the fixture recorded nothing for it', async () => {
+    // s5t0 is scored for continuity — "项目又延期了" wants the model to recognise a
+    // theme from three weeks earlier — and the fixture records no gold for it
+    // anywhere, so no reply can be a recall of anything. Ten of the eighteen
+    // continuity turns in the fixture are this turn; the recorded batch reported
+    // them as a failure, which was a property of the fixture.
+    //
+    // This is the answer that needs no invented ground truth: not a pass, not a
+    // fail, and not scored at all.
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'companion-memory-oracle-unmeasurable-'));
+    const s5 = SESSIONS[4];
+    if (s5 === undefined) throw new Error('the fixture no longer has an s5');
+    try {
+      const summary = await runOracleEvaluation({
+        client: fakeModel,
+        databasePath: join(outputDirectory, 'oracle.db'),
+        workerCommand: process.execPath,
+        workerArgs: workerArgs('deepRecall'),
+        runCount: 1,
+        outputDirectory,
+        sessions: [{ ...s5, turns: [s5.turns[0]!] }],
+      });
+      const rows = JSON.parse(readFileSync(join(outputDirectory, 'oracle-run-1.json'), 'utf8')) as Array<{ scores: Record<string, { state: string; evidence: string }> }>;
+      expect(rows[0]?.scores.normal?.state).toBe('not_applicable');
+      expect(rows[0]?.scores.normal?.evidence).toContain('effect-without-evidence');
+      expect(summary.effectRates.normal.continuity).toMatchObject({ total: 0, notApplicable: 1 });
+      expect(summary.measurement.batchAcceptable).toBe(false);
       expect(summary.acceptance.passed).toBe(false);
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
