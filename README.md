@@ -204,7 +204,7 @@ Rust worker 会逐条验证：谓词是否在注册表中、枚举值是否精�
 
 | 操作 | 输入 | 行为 |
 |---|---|---|
-| `search` | 用户当前明确给出的查询词 | worker 在同一 scope 内查找匹配的 `Claim` / `Episode`，再次应用可提及策略，只返回允许显示的记录 |
+| `search` | 用户当前明确给出的查询词 | worker 在同一 scope 内查找匹配的 `Claim` / `Episode`；`Claim` 会再次经过提及闸门，`Episode` 当前按主题匹配返回，完整统一闸门仍是待加强项 |
 | `forget` | 用户要求删除的精确 `record_id` | worker 只处理该条 Claim 或 Episode，保留 suppression / 指纹并清理可恢复证据，避免误删整个人物画像 |
 
 因此，工具查询是“用户主动要求的受控查看”，不是一个把全部数据库暴露给模型的后门；遗忘也不是让模型自己决定删什么，而是一个可以审计的确定性操作。
@@ -403,6 +403,7 @@ pnpm --filter @companion-memory/host run
 6. **运行环境有 DSH 耦合**：插件依赖 DSH 0.1.5-rc.2 的 Bundle、Agent Preset 和生命周期事件；换到其他宿主需要重新实现适配层，Rust kernel 才能复用。
 7. **部署有进程和原生依赖**：worker 是独立 Rust 子进程，存储使用 bundled SQLite；Windows 发布需要 MSVC 工具链，数据库路径、权限、备份和进程重启需要部署方负责。
 8. **范围刻意偏向单用户陪伴**：scope 是服务、用户和伴侣 profile 的关系，不是团队共享知识库；它适合一个用户与一个固定人格长期互动，不适合直接当作多租户协作记忆。
+9. **主动搜索的闸门还不完全统一**：当前 `query` 对 Claim 复用 mention gate，但 Episode 搜索主要按主题匹配；如果生产环境允许查询敏感 Episode，应在正式发布前补上统一的 `do_not_surface` / boundary 过滤。
 
 ### 适合与不适合的场景
 
