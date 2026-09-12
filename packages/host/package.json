@@ -2,7 +2,7 @@
   "name": "@companion-memory/host",
   "version": "0.0.1",
   "private": true,
-  "description": "DSH-route Oracle evaluator for Companion Memory's causal-chain artifacts.",
+  "description": "面向 DSH 路由的 Companion Memory 因果链产物 Oracle 评估器。",
   "type": "module",
   "main": "./dist/src/gateway.js",
   "exports": {

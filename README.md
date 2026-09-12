@@ -1,81 +1,61 @@
 # companion-memory
 
-Long-term memory for an AI companion: it should remember you, and know when to
-say so.
+面向 AI 伴侣的长期记忆系统：记住用户，也知道什么时候应该表达出来。
 
-Not a RAG stack. A retrieval pipeline answers "what is relevant"; this project's
-harder problems are **what deserves to be kept**, **whether this is the moment to
-say it**, and **how a picture of a person should grow rather than accumulate**.
+这不是一个普通的 RAG（检索增强生成）系统。检索流程只回答“什么内容相关”；本项目更难的问题是：什么值得保存、现在是否适合说出来，以及如何让用户画像逐步成长而不是不断堆积。
 
-Design rationale lives in [DESIGN.md](./DESIGN.md). Read §1–§2 first: the six
-argument errors recorded there explain why the schema looks the way it does.
+设计依据见 [DESIGN.md](./DESIGN.md)。建议先阅读第 1–2 节，其中记录了促成当前数据结构的六个设计错误。
 
 ---
 
-## Layout
+## 项目结构
 
 ```
-crates/kernel/        Rust — the decision logic
-                      No I/O, no model, no host dependency, no ambient time.
-crates/storage/       Rust — SQLite persistence. The only crate that touches a
-                      database; records what the kernel decided and reads it back.
-crates/worker/        Versioned JSONL subprocess: the only runtime access to
-                      Rust rules, SQLite, retrieval and admission.
-packages/dsh-plugin/  External DSH 0.1.5-rc.2 Bundle. It renders Rust's usage
-                      plan and owns no memory policy of its own.
-packages/host/        Oracle evaluator; it calls the same worker and records
-                      causal-chain artifacts rather than answer differences.
-scripts/              Tooling: worker packaging, host builds and the MSVC
-                      build wrapper.
+crates/kernel/        Rust — 决策逻辑
+                      不执行 I/O，不调用模型，不依赖宿主环境或隐式时间。
+crates/storage/       Rust — SQLite 持久化。唯一接触数据库的 crate，
+                      负责记录内核决策并读回数据。
+crates/worker/        有版本的 JSONL 子进程：运行时访问 Rust 规则、
+                      SQLite、检索和准入逻辑的唯一入口。
+packages/dsh-plugin/  外部 DSH 0.1.5-rc.2 Bundle。渲染 Rust 的使用计划，
+                      自身不拥有记忆策略。
+packages/host/        Oracle 评估器；调用同一个 worker，记录因果链产物，
+                      而不是只比较回答差异。
+scripts/              工具：worker 打包、宿主构建和 MSVC 构建包装器。
 ```
 
-The kernel performs no I/O and calls no model, which is what makes it
-exhaustively testable. Extraction, narration, consolidation and host wiring stay
-in the adapter, because those need a model and a session.
+内核不执行 I/O，也不调用模型，因此可以被穷举测试。抽取、叙述、整合和宿主接线留在适配层，因为这些环节需要模型和会话。
 
-A TypeScript prototype of the same domain and rules was developed first and then
-deleted. The reason is worth recording, because "keep the prototype as a
-reference" is usually good advice: it had its own test suite, the suite passed,
-and the code was still **behaviourally wrong where the tests did not look** — it
-accepted any string as a `Date`, so the rule that prose must never overwrite a
-resolved instant was not actually enforced. A reference that disagrees with the
-implementation on exactly the invariant you care about is worse than none.
+本项目曾先用 TypeScript 实现同一套领域和规则，随后将其删除。保留原型作为参考通常是好建议，但那个原型在测试未覆盖的地方存在行为错误：它接受任意字符串作为 `Date`，因此“自然语言不能覆盖已经解析出的时间点”这一规则并没有真正落实。与实现恰好在关键不变量上冲突的参考代码，不如没有参考代码。
 
-## Status
+## 当前状态
 
-| Area | State |
+| 模块 | 状态 |
 |---|---|
-| Predicate vocabulary + registry (47 predicates) | done |
-| Record identity: cardinality, supersede, type compatibility | done |
-| Mention gate | done |
-| Evidence graph and suppression | done |
-| Salience, scoring and promotion thresholds | done |
-| Forgetting: suppression, residue scan, derived recompute | done |
-| Inference lifecycle (confidence cap, review) | done |
-| Storage: schema, migrations, scope-isolated queries | done |
-| JSONL worker: health, warm, admit, query, forget, session closure | done |
-| SQLite v3: accepted evidence, spans, open threads, telemetry, pending review pointers | done |
-| DSH external Bundle: actual `agent/pre-step` snapshot injection | done |
-| Async direct-user extraction and deterministic worker admission | done |
-| Oracle evaluator: normal, Gold retrieval, forced Gold, counterfactual | done |
-| Kernel↔store integration: write, recall, supersede, forget | done |
-| RuntimeState / inference promotion | pending extraction-quality threshold |
-| Platform release binaries | CI package workflow (Windows x64, Linux x64) |
+| 谓词词汇表与注册表（47 个谓词） | 已完成 |
+| 记录身份：基数、替代、类型兼容 | 已完成 |
+| 提及闸门 | 已完成 |
+| 证据图与抑制 | 已完成 |
+| 显著性、评分和晋级阈值 | 已完成 |
+| 遗忘：抑制、残留扫描、派生重算 | 已完成 |
+| 推断生命周期（置信度上限、复核） | 已完成 |
+| 存储：模式、迁移、范围隔离查询 | 已完成 |
+| JSONL worker：health、warm、admit、query、forget、会话关闭 | 已完成 |
+| SQLite v3：已接受证据、片段、开放线程、遥测、待复核指针 | 已完成 |
+| DSH 外部 Bundle：实际 `agent/pre-step` 快照注入 | 已完成 |
+| 异步用户消息抽取与确定性 worker 准入 | 已完成 |
+| Oracle 评估器：普通、Gold 检索、强制 Gold、反事实 | 已完成 |
+| 内核↔存储集成：写入、召回、替代、遗忘 | 已完成 |
+| RuntimeState / 推断晋级 | 等待抽取质量阈值 |
+| 平台发布二进制 | CI 打包流程（Windows x64、Linux x64） |
 
-The old TypeScript predicate, cardinality, admission, store and `HostKernel`
-implementations were intentionally retired. A TypeScript caller may serialize a
-candidate but cannot decide that it is valid, visible, superseding, or durable.
+旧的 TypeScript 谓词、基数、准入、存储和 `HostKernel` 实现已被有意退役。TypeScript 调用方可以序列化候选记录，但不能决定它是否有效、可见、替代旧记录或持久化。
 
-The lifecycle test dispatches a real DSH `agent/pre-step` waterfall through the
-formal Bundle mount and asserts one durable `plugin/snapshot` injection only on
-the first step. The worker's stdio test covers bad JSON recovery, accepted source
-retention and evidence deletion after forgetting.
+生命周期测试会通过正式 Bundle 挂载，调度真实 DSH `agent/pre-step` 瀑布，并断言只有第一步注入一条持久化的 `plugin/snapshot` 消息。worker 的标准输入输出测试覆盖错误 JSON 恢复、已接受源消息的保留，以及遗忘后的证据删除。
 
-## DSH Bundle installation
+## DSH Bundle 安装
 
-Build a release worker for the host platform, stage it in the package, then add
-the package as an external DSH Bundle. Release CI runs the same staging command
-for Windows x64 and Linux x64.
+为宿主平台构建发布版 worker，将其放入 package，然后把 package 作为外部 DSH Bundle 添加。发布 CI 会为 Windows x64 和 Linux x64 执行相同的打包命令。
 
 ```powershell
 pnpm build:worker:windows
@@ -83,101 +63,55 @@ pnpm --filter @companion-memory/dsh-plugin build
 dsh plugin --profile <profile> add <path-to-companion-memory/packages/dsh-plugin>
 ```
 
-`packages/dsh-plugin/cordis.patch.yml` reads the deployment-scoped service,
-owner, default profile, database location and worker command from
-`COMPANION_MEMORY_*` environment variables. The profile id is the DSH Agent
-Preset; if absent, only `COMPANION_MEMORY_DEFAULT_PROFILE` is used. It never
-falls back to Agent ID or Session ID.
+`packages/dsh-plugin/cordis.patch.yml` 从 `COMPANION_MEMORY_*` 环境变量读取部署范围内的服务、用户、默认 profile、数据库位置和 worker 命令。profile id 使用 DSH Agent Preset；如果没有设置，只使用 `COMPANION_MEMORY_DEFAULT_PROFILE`。它不会退回使用 Agent ID 或 Session ID。
 
-Each first `agent/pre-step` reads a fresh `MemoryUsagePlan` from the worker and
-appends it as a durable `plugin/snapshot` user message. Worker failure, timeout
-or protocol damage produces a normal DSH reply with no memory; a prior snapshot
-is never reused. Direct user messages are extracted only after `turn/end` on a
-private, bounded, cancellable queue.
+每一次首次 `agent/pre-step` 都会从 worker 读取一份新的 `MemoryUsagePlan`，并追加为持久化的 `plugin/snapshot` 用户消息。worker 故障、超时或协议损坏时，DSH 仍正常回复但不注入记忆，也不会复用上一份快照。用户直接消息只会在 `turn/end` 之后进入私有、有界且可取消的队列进行抽取。
 
-## Evaluation
+## 评估
 
-`packages/host` labels each turn as a positive opportunity, a protected
-negative case, or a no-opportunity silence case. It writes plans, selected ids,
-admission outcomes and replies for frozen arms: the normal chain, Gold with
-normal retrieval, forced Gold injection, and a **zero-memory control** whose
-scope is never written to. The normal arm shares the production extractor
-grammar and span validation; only the direct user text and Rust-approved records
-can enter it.
+`packages/host` 将每个回合标记为正向机会、受保护的负向案例或无机会静默案例。它会为固定实验臂记录计划、选中记录、准入结果和回答：普通链路、正常检索 Gold、强制注入 Gold，以及从不写入记忆的零记忆控制组。普通实验臂复用生产抽取语法和片段校验；只有直接用户文本和 Rust 批准的记录可以进入其中。
 
-A fifth arm, forced wrong memory, runs on the turn that declares a
-counterfactual and on the turns after it while the wrong fact is still in its
-store. It is a pressure test -- does the model repeat a fact it was handed, does
-the gate suppress a topic the user asked it to avoid. It used to run on every
-turn, admitting the gold proposals wherever no counterfactual was declared,
-which made it gold under another label and its distance from the ceiling a
-sampling artifact read as a causal floor.
+第五个实验臂是强制注入错误记忆：它运行在声明反事实的回合及其后续回合，直到错误事实仍留在存储中。这个实验用于施加压力：模型是否会重复被提供的事实，闸门是否会抑制用户要求避免的话题。过去它在每个回合都录入 Gold 提案，导致没有声明反事实的回合也被错误标记为 Gold，使得与上限的距离变成抽样误差而不是因果下限。
 
-Boundary protection is enforced before prompt rendering: when a cued episode
-narrative contains a boundary's normalised topic value, the worker withholds the
-episode and only the boundary constraint plus a withheld count reach DSH. The
-model is not asked to arbitrate between a prohibition and the prohibited text.
+边界保护发生在 prompt 渲染之前：如果当前话题命中一个 episode，且其叙事包含边界的规范化主题值，worker 会隐藏该 episode；DSH 只会收到边界约束和 withheld 计数。模型不会同时看到禁令和被禁止的原文，也不需要自行仲裁两者。
 
-Every conclusion here is a difference between having memory and not having it,
-and `oracle-summary.json` reports that difference as `lift`, ceiling minus
-control, per effect. A rate against an absolute floor cannot separate "memory
-worked" from "the model does this anyway".
+这里的每个结论都比较“有记忆”和“无记忆”的差异，`oracle-summary.json` 按效果报告 `lift`（上限减控制组）。只看绝对命中率无法区分“记忆生效”和“模型本来就会这样回答”。
 
-Before the first model call, `validateFixture` refuses a fixture that
-contradicts itself -- an evidence token no earlier record contains, a token the
-user said themselves, a counterfactual that restates gold, a session that does
-not advance. A turn that declares a recall effect without declaring what a reply
-would have to contain is not a contradiction: its observation is
-`not_applicable`, and the summary says so rather than scoring a failure.
+第一次模型调用前，`validateFixture` 会拒绝自相矛盾的 fixture：例如证据 token 不存在于更早记录、token 已由用户在当前回合说出、反事实重复 Gold，或会话没有推进。一个回合声明了召回效果但没有声明回答必须包含什么，并不构成矛盾；它会被标记为 `not_applicable`，而不是被错误计为失败。
 
 ```powershell
-# The bridge runs inside DSH and binds the current Agent route. It must export
-# createEvaluationClient(), implemented with createDshRouteEvaluationClient(ctx, agent).
+# bridge 在 DSH 内运行并绑定当前 Agent 路由，必须导出
+# createEvaluationClient()，实现可使用 createDshRouteEvaluationClient(ctx, agent)。
 $env:COMPANION_MEMORY_DSH_EVALUATION_BRIDGE = 'C:\path\to\dsh-oracle-bridge.mjs'
-# Uses five repetitions by default; set acceptance for ten and enforce gates.
+# 默认五次重复；正式验收时可设置为十次并启用验收门槛。
 $env:COMPANION_MEMORY_EVAL_MODE = 'acceptance'
 pnpm --filter @companion-memory/host run
 ```
 
-Provider-specific probes and their transcripts stay outside the published
-source tree. When formal acceptance is needed, run the host package through the
-DSH bridge above; the evaluator records the complete
-candidate → admission → activation → injection → visible-effect chain and
-keeps route refusals separate from memory failures.
+供应商专用探针及其对话记录不属于发布源码。需要正式验收时，通过上面的 DSH bridge 运行 host package；评估器会记录完整的“候选 → 准入 → 激活 → 注入 → 可见效果”链路，并将路由拒答与记忆失败分开。
 
-## Conventions
+## 约定
 
-**Timestamps** are ISO 8601 strings. The kernel compares them lexicographically,
-which is the only time operation it performs; parsing and formatting are the
-host's job.
+**时间戳**使用 ISO 8601 字符串。内核只进行字典序比较，不执行其他时间操作；解析和格式化由宿主负责。
 
-**Scope** is `{service_id, owner_user_id, companion_profile_id}` and deliberately
-excludes the agent or model id. A user who switches models must not find that
-their companion has forgotten them, so the producing agent is recorded as
-`Provenance::agent_id` — metadata, never identity.
+**范围**为 `{service_id, owner_user_id, companion_profile_id}`，刻意排除 agent id 和 model id。用户切换模型后不应发现伴侣忘记了自己，因此产生记录的 agent 会写入 `Provenance::agent_id`，它只是元数据，不是身份标识。
 
-**Invariants** are numbered I1–I13 in DESIGN.md §5 and each is pinned by a test
-that names it. If a rule is worth writing down it is worth failing a build over.
+**不变量**在 DESIGN.md 第 5 节编号为 I1–I13，每条都由名称明确的测试固定。如果一条规则值得写下来，就值得让构建在它被破坏时失败。
 
-## Verifying
+## 验证
 
-The kernel has no C dependency and builds anywhere Rust does:
+内核没有 C 依赖，只要 Rust 可用即可构建：
 
 ```sh
 cargo test -p companion-memory-kernel
 cargo clippy -p companion-memory-kernel --all-targets -- -D warnings
 ```
 
-The storage crate vendors SQLite through `rusqlite`'s `bundled` feature, which
-compiles C source. On Windows that needs the MSVC toolchain on `PATH`, and
-Visual Studio being *installed* is not enough — `cl.exe` is only visible after
-`vcvars64.bat` has run. `scripts/cargo-msvc.ps1` does that in one process and
-forwards the cargo arguments:
+存储 crate 通过 `rusqlite` 的 `bundled` feature 自带 SQLite 源码。在 Windows 上需要 MSVC 工具链；仅安装 Visual Studio 还不够，必须先运行 `vcvars64.bat` 让 `cl.exe` 出现在 `PATH` 中。`scripts/cargo-msvc.ps1` 会在同一进程内完成这一步并转发 cargo 参数：
 
 ```sh
 .\scripts\cargo-msvc.ps1 -- test -p companion-memory-storage
 .\scripts\cargo-msvc.ps1 -- clippy --all-targets -- -D warnings
 ```
 
-The `--` is required: without it PowerShell tries to bind `-p` to one of its own
-parameters.
+命令中的 `--` 不能省略，否则 PowerShell 会尝试将 `-p` 绑定到自身参数。

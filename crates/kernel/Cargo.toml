@@ -1,6 +1,6 @@
 [package]
 name = "companion-memory-kernel"
-description = "Pure decision kernel for companion memory: predicate registry, record identity, evidence graph, mention gate, scoring."
+description = "伴侣记忆的纯决策内核：谓词注册表、记录身份、证据图、提及闸门与评分。"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

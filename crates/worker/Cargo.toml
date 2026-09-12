@@ -1,6 +1,6 @@
 [package]
 name = "companion-memory-worker"
-description = "Persistent JSONL worker for companion memory rules and storage."
+description = "负责伴侣记忆规则与存储的持久化 JSONL worker。"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

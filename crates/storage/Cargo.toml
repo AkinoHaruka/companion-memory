@@ -1,6 +1,6 @@
 [package]
 name = "companion-memory-storage"
-description = "SQLite persistence for companion memory: schema, idempotent migrations, and scope-isolated queries."
+description = "伴侣记忆的 SQLite 持久化：数据模式、幂等迁移与范围隔离查询。"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -2,7 +2,7 @@
   "name": "@companion-memory/dsh-plugin",
   "version": "0.1.0",
   "private": true,
-  "description": "DeepSeek Harness adapter for the companion memory kernel: prompt sections, per-turn context, and memory tools.",
+  "description": "伴侣记忆内核的 DeepSeek Harness 适配器：提示词分区、回合上下文与记忆工具。",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
