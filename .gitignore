@@ -8,3 +8,6 @@ target/
 *.db
 *.db-wal
 *.db-shm
+# Run artifacts. The transcripts contain the conversation the system was given,
+# which for this project is exactly the material that should not be committed.
+runs/

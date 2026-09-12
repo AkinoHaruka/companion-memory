@@ -1,0 +1,19 @@
+{
+  "name": "@companion-memory/host",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Host runtime: drives real conversations through the memory pipeline and runs the dream consolidation pass against a live model.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../scripts/build-host.mjs",
+    "run": "node dist/src/run.js"
+  },
+  "dependencies": {
+    "@companion-memory/dsh-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

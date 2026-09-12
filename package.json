@@ -12,5 +12,8 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r build"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }
