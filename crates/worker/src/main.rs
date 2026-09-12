@@ -352,6 +352,10 @@ fn warm(store: &Store, input: WarmInput) -> Result<Value, Failure> {
         .map_err(storage_failure)?;
     let mut plan = MemoryUsagePlan::default();
     let force = input.force_record_ids;
+    let boundaries: Vec<&Claim> = claims
+        .iter()
+        .filter(|claim| is_constraint(Some(&claim.predicate)))
+        .collect();
 
     for claim in &claims {
         let text = claim_text(claim);
@@ -422,7 +426,7 @@ fn warm(store: &Store, input: WarmInput) -> Result<Value, Failure> {
         let referenced = cue_matches_episode(&input.current_message, episode);
         let forced = force.iter().any(|id| id == &episode.id);
         if referenced || forced {
-            plan.topic_activated.push(PlanEntry {
+            let entry = PlanEntry {
                 record_id: episode.id.clone(),
                 text: episode.narrative.clone(),
                 surface: "mention_if_user_cues".into(),
@@ -432,7 +436,23 @@ fn warm(store: &Store, input: WarmInput) -> Result<Value, Failure> {
                     "episode_topic_activated"
                 }
                 .into(),
-            });
+            };
+            // A cue makes an episode relevant, but relevance cannot override a
+            // standing boundary. Withhold the narrative before rendering so a
+            // downstream model never receives both the prohibition and the
+            // sensitive record and is not asked to arbitrate the conflict.
+            if boundaries
+                .iter()
+                .any(|boundary| boundary_blocks_episode(boundary, episode))
+            {
+                plan.do_not_surface.push(PlanEntry {
+                    surface: "never_surface".into(),
+                    reason: "boundary_policy".into(),
+                    ..entry
+                });
+            } else {
+                plan.topic_activated.push(entry);
+            }
         }
     }
 
@@ -864,6 +884,31 @@ fn claim_text(claim: &Claim) -> String {
             value => value.to_string(),
         });
     format!("{}: {}", claim.predicate, value)
+}
+
+/// Whether a standing boundary names content in an episode narrative.
+///
+/// Boundary values are normalised into `Claim::value`, while `raw_value` may
+/// contain the user's longer prohibition (for example, "别跟我提前任"). The
+/// normalised value is the strongest signal because it is the extracted topic
+/// token; the raw wording remains a fallback for non-string values.
+fn boundary_blocks_episode(boundary: &Claim, episode: &Episode) -> bool {
+    let token = match &boundary.value {
+        Value::String(value) if !value.trim().is_empty() => value.trim(),
+        _ => boundary
+            .raw_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(""),
+    };
+    if token.is_empty() {
+        return false;
+    }
+    episode
+        .narrative
+        .to_lowercase()
+        .contains(&token.to_lowercase())
 }
 
 /// Who the user is. Rendered into its own channel, not into the style channel:

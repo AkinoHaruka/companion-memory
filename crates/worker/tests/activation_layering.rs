@@ -70,18 +70,13 @@ fn a_boundary_withholds_a_matching_episode_before_model_render() {
         "2026-09-12T00:00:00Z",
         "message-1",
         source_text,
-        vec![candidate("boundary-1", "boundary.topic_avoid", quote, quote)],
+        vec![candidate(
+            "boundary-1",
+            "boundary.topic_avoid",
+            quote,
+            source_text,
+        )],
     );
-    // `admit_params` uses the candidate text as the retained source. Replace
-    // the source and span with the real user message used by this episode.
-    params["source"] = json!({
-        "id": "message-1",
-        "session_id": "session-1",
-        "text": source_text,
-    });
-    params["candidates"][0]["start_offset"] = start.into();
-    params["candidates"][0]["end_offset"] = (start + quote.len() as i64).into();
-    params["candidates"][0]["quote"] = quote.into();
     params["episodes"] = json!([{
         "id": "breakup-1",
         "narrative": "用户上周三晚上九点和前任分手了。",
