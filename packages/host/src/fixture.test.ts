@@ -55,6 +55,19 @@ describe('fixture validation', () => {
       .toContainEqual(['evidence-in-user-text', true]);
   });
 
+  it('refuses a protection token the user says in the scored turn', () => {
+    // Like recall evidence, a protected token in the prompt would make an echo
+    // look like a memory leak. This must fail before a paid model call.
+    const violations = validateFixture(script([
+      {
+        intent: 'declare boundary', text: '别提前任。', memoryOpportunity: 'none', effectType: 'boundary_silence',
+        protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] },
+      },
+    ]));
+    expect(violations.map((violation) => [violation.rule, violation.fatal]))
+      .toContainEqual(['protection-token-in-user-text', true]);
+  });
+
   it('refuses a counterfactual that restates gold, because that arm is not an intervention', () => {
     // Recorded: eighteen of twenty turns fell back to gold, so the "floor" was
     // gold under another name and its difference from the ceiling was sampling
