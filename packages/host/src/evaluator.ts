@@ -11,10 +11,48 @@ import { extractionPrompt, parseExtractionItems } from '../../dsh-plugin/src/ext
 import { routeRefused, starvedByReasoning, type RouteReport } from './route-report.js';
 import { fatalViolations, unmeasurableTurns } from './fixture.js';
 
-export type Arm = 'normal' | 'gold_retrieved' | 'gold_forced' | 'counterfactual_forced';
-const ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'];
+export type Arm = 'normal' | 'gold_retrieved' | 'gold_forced' | 'no_memory' | 'counterfactual_forced';
+const ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'no_memory', 'counterfactual_forced'];
+/**
+ * The arms every turn runs.
+ *
+ * `counterfactual_forced` is not in this list. Over twenty recorded turns it ran
+ * on all of them and only two declared a counterfactual that contradicts gold;
+ * the other eighteen fell back to the gold proposals, so the arm was gold under
+ * another label and its difference from the ceiling could only be sampling noise
+ * -- which was nonetheless read as the causal floor.
+ *
+ * In its place is `no_memory`, the zero-memory control the design never had. Every
+ * conclusion the acceptance wants to draw is a difference between having memory
+ * and not having it, and until now there was no not-having-it arm at all, so the
+ * difference was reasoning rather than measurement. Reusing the slots the
+ * meaningless arm occupied is why this costs two calls per repetition instead of
+ * a fifth of the run.
+ */
+const BASE_ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'no_memory'];
 const CORE_POSITIVE_EFFECTS: readonly EffectType[] = ['name', 'language', 'preference', 'continuity'];
 const PROTECTED_EFFECTS: readonly EffectType[] = ['boundary', 'correct_silence'];
+
+/**
+ * The arms this turn runs.
+ *
+ * `counterfactual_forced` runs on the turn that declares a counterfactual, and on
+ * the turns after it while the wrong fact is still in that arm's store -- which
+ * is the only thing that arm is good for: a pressure test of whether the model
+ * repeats a fact it was given, and whether the gate suppresses a topic the user
+ * asked it to avoid. What it no longer does is admit the gold proposals on the
+ * eighteen turns that declare nothing. That fallback made it gold under another
+ * label, and its difference from the ceiling was sampling noise read as a causal
+ * floor.
+ *
+ * Everything it gave up is now the zero-memory control, which is the arm the
+ * design was missing: every conclusion here is a difference between having memory
+ * and not having it, and there was nothing to subtract from.
+ */
+function armsForTurn(turn: UserTurn, carryingWrongMemory: boolean): readonly Arm[] {
+  const declared = (turn.counterfactual ?? []).length > 0;
+  return declared || carryingWrongMemory ? [...BASE_ARMS, 'counterfactual_forced'] : BASE_ARMS;
+}
 
 export interface EvaluationMessage {
   role: 'system' | 'user';
@@ -64,6 +102,12 @@ interface ArmResult {
   route?: RouteReport;
   /** The plan put `identity.name` in the style channel, so no reply can be read for it. */
   nameRenderedAsStyle: boolean;
+  /**
+   * This arm was not run on this turn, and why. A skipped arm is not a failure and
+   * not a success: it is an arm the turn did not ask for, and it must be countable
+   * rather than silently absent.
+   */
+  skipped?: string;
 }
 
 /**
@@ -128,6 +172,21 @@ export interface EffectRate {
   notApplicable: number;
 }
 
+/**
+ * The difference having memory makes: the ceiling arm minus the zero-memory arm.
+ *
+ * Every conclusion this acceptance wants to state is a difference like this one,
+ * and until there was a zero-memory arm there was nothing to subtract. A rate
+ * against an absolute floor cannot tell "memory worked" from "the model does this
+ * anyway" -- `language` scored 100% in every arm including the wrong-memory one.
+ */
+export interface EffectLift {
+  withMemory: number | null;
+  withoutMemory: number | null;
+  /** `withMemory - withoutMemory`, or null when either side has no observation. */
+  delta: number | null;
+}
+
 export interface OracleEvaluationSummary {
   runCount: number;
   effectRates: Record<Arm, Partial<Record<EffectType, EffectRate>>>;
@@ -144,6 +203,8 @@ export interface OracleEvaluationSummary {
   starvedReplies: Record<Arm, number>;
   /** Turns where the normal arm's extraction call did not answer, so it stored nothing. */
   extractionFailures: number;
+  /** Ceiling minus zero-memory control, per effect. See {@link EffectLift}. */
+  lift: Partial<Record<EffectType, EffectLift>>;
   /**
    * Whether this batch may be read as a result at all.
    *
@@ -205,6 +266,18 @@ const INVALID_SHARE_CEILING = 0.05;
  * whether an answer was observed.
  */
 const EXTRACTION_FAILURE_CEILING = 0.1;
+
+/**
+ * How often the zero-memory control may produce a recall token before the tokens
+ * are declared guesswork rather than evidence.
+ *
+ * A recall effect is supposed to be unproducible without the record. Some
+ * collision is expected -- a model consoling someone about a sick pet will reach
+ * for 折腾 -- and the ceiling is where that stops being noise. Set from the
+ * measured behaviour of the graded tokens rather than from taste, and reported
+ * with every batch so a wrong value is visible rather than trusted.
+ */
+const COLLISION_CEILING = 0.2;
 
 /**
  * Reply budget per arm per turn.
@@ -381,6 +454,9 @@ function observe(
 ): ScoredEffect {
   const spec = SCORERS[effect];
   const invalid = (evidence: string): ScoredEffect => ({ state: 'invalid', condition: spec.condition, evidence });
+  if (arm.skipped !== undefined) {
+    return { state: 'not_applicable', condition: spec.condition, evidence: arm.skipped };
+  }
   if (unmeasurableReason !== undefined) {
     return { state: 'not_applicable', condition: spec.condition, evidence: unmeasurableReason };
   }
@@ -502,6 +578,26 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
   for (const [reason, count] of notApplicableReasons) {
     refusals.push(`${count} observations were not_applicable and were excluded: ${reason}`);
   }
+
+  const lift: Partial<Record<EffectType, EffectLift>> = {};
+  for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) {
+    const ceiling = effectRates.gold_forced[effect];
+    const control = effectRates.no_memory[effect];
+    const withMemory = ceiling?.rate ?? null;
+    const withoutMemory = control?.rate ?? null;
+    lift[effect] = { withMemory, withoutMemory, delta: withMemory === null || withoutMemory === null ? null : withMemory - withoutMemory };
+  }
+  // The guesswork guard both reviews asked for, measured instead of argued. The
+  // recall tokens are graded precisely because some of them are reachable from
+  // how this kind of story goes; if the zero-memory arm produces them anyway, they
+  // are not evidence of recall and neither the ceiling nor the control is
+  // measuring anything.
+  for (const effect of ['continuity'] as const) {
+    const control = effectRates.no_memory[effect];
+    if (control !== undefined && control.total > 0 && control.rate !== null && control.rate > COLLISION_CEILING) {
+      refusals.push(`the zero-memory control produced the evidence for ${effect} on ${(control.rate * 100).toFixed(0)}% of turns, above the ${(COLLISION_CEILING * 100).toFixed(0)}% ceiling: these tokens are reachable without the record, so neither arm is measuring recall`);
+    }
+  }
   for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) {
     const ceiling = effectRates.gold_forced[effect];
     if (ceiling !== undefined && ceiling.total === 0) {
@@ -519,6 +615,7 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
     routeRefusals,
     starvedReplies,
     extractionFailures: rows.filter((row) => row.extractionFailed).length,
+    lift,
     measurement: {
       scorerVersion: SCORER_VERSION,
       invalidShare,
@@ -620,6 +717,10 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
         normal: { scope: { serviceId: 'oracle', ownerUserId: SUBJECT, companionProfileId: `normal-${run}` }, forcedRecordIds: [] },
         gold_retrieved: { scope: { serviceId: 'oracle', ownerUserId: SUBJECT, companionProfileId: `gold-retrieved-${run}` }, forcedRecordIds: [] },
         gold_forced: { scope: { serviceId: 'oracle', ownerUserId: SUBJECT, companionProfileId: `gold-forced-${run}` }, forcedRecordIds: [] },
+        // Nothing is ever written to this scope. Its plan is the renderer's own
+        // empty envelope -- the same policy header with no records -- so the
+        // difference from a memory arm is the records and not the prompt's shape.
+        no_memory: { scope: { serviceId: 'oracle', ownerUserId: SUBJECT, companionProfileId: `no-memory-${run}` }, forcedRecordIds: [] },
         counterfactual_forced: { scope: { serviceId: 'oracle', ownerUserId: SUBJECT, companionProfileId: `counterfactual-${run}` }, forcedRecordIds: [] },
       };
       const rows: OracleRow[] = [];
@@ -627,8 +728,15 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
         const at = addDays(NOW, session.dayOffset);
         for (const [index, turn] of session.turns.entries()) {
           const sourceId = `run-${run}-${session.id}-${index}`;
-          const warmed = await Promise.all(ARMS.map(async (arm) => [arm, await warmArm(worker, states[arm], arm, turn.text, at, `${session.id}-${run}`, sourceId, index === 0)] as const));
-          const armResults = Object.fromEntries(await Promise.all(warmed.map(async ([arm, result]) => {
+          const running = armsForTurn(turn, states.counterfactual_forced.forcedRecordIds.length > 0);
+          const skipped = Object.fromEntries(
+            ARMS.filter((arm) => !running.includes(arm)).map((arm) => [arm, {
+              plan: {}, injectedRecordIds: [], reply: '', replyFailed: false, nameRenderedAsStyle: false,
+              skipped: 'this turn declares no counterfactual and the arm is not yet carrying one, so there is no wrong-memory intervention to test',
+            } satisfies ArmResult]),
+          );
+          const warmed = await Promise.all(running.map(async (arm) => [arm, await warmArm(worker, states[arm], arm, turn.text, at, `${session.id}-${run}`, sourceId, index === 0)] as const));
+          const ran = Object.fromEntries(await Promise.all(warmed.map(async ([arm, result]) => {
             const snapshot = renderMemoryUsagePlan(result.plan);
             // One retry. Against a real route an occasional empty stream is
             // transient, and a single re-ask is far cheaper than discarding a run
@@ -656,7 +764,8 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
               nameRenderedAsStyle: nameRenderedAsStyle(result.plan.plan),
               ...(route === undefined ? {} : { route }),
             } satisfies ArmResult] as const;
-          }))) as Record<Arm, ArmResult>;
+          }))) as Record<string, ArmResult>;
+          const armResults = { ...skipped, ...ran } as Record<Arm, ArmResult>;
 
           // Extract or inject only after every arm has answered this frozen request.
           //
@@ -677,17 +786,32 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
           // extraction leaves the normal arm with no candidates and the run
           // continues. That is the right behaviour and the wrong measurement --
           // a run whose extractor was refused reads as a normal arm that had no
-          // memory, which is the same artifact as an extractor that found
-          // nothing. Recorded per turn so the two can be told apart.
+          // memory, which is the same artifact as an extractor that found nothing.
+          // Recorded per turn so the two can be told apart.
           let extractionFailed = false;
           const normal = await normalExtraction(options.client, predicateSchemas, armSource.normal, turn.text)
             .catch((): NormalExtraction => { extractionFailed = true; return { candidates: [], episodes: [] }; });
-          const accepted = await Promise.all([
-            admit(worker, states.normal, armSource.normal, session.id, turn.text, at, normal.candidates, normal.episodes),
-            admit(worker, states.gold_retrieved, armSource.gold_retrieved, session.id, turn.text, at, candidates(armSource.gold_retrieved, turn.text, turn.gold ?? []), episodeCandidates(armSource.gold_retrieved, turn.text, turn.goldEpisodes ?? [])),
-            admit(worker, states.gold_forced, armSource.gold_forced, session.id, turn.text, at, candidates(armSource.gold_forced, turn.text, turn.gold ?? []), episodeCandidates(armSource.gold_forced, turn.text, turn.goldEpisodes ?? [])),
-            admit(worker, states.counterfactual_forced, armSource.counterfactual_forced, session.id, turn.text, at, candidates(armSource.counterfactual_forced, turn.text, turn.counterfactual ?? turn.gold ?? []), episodeCandidates(armSource.counterfactual_forced, turn.text, turn.goldEpisodes ?? [])),
-          ]);
+          const accepted = await Promise.all(ARMS.map((arm): Promise<AdmitOutcome> => {
+            // The control stores nothing, and a turn that declares no
+            // counterfactual has no wrong memory to store. Neither is a failure;
+            // both are the arm's definition, so no write is attempted at all.
+            if (!running.includes(arm) || arm === 'no_memory') return Promise.resolve({ accepted: [], rejected: [] });
+            const source = armSource[arm];
+            if (arm === 'normal') {
+              return admit(worker, states.normal, source, session.id, turn.text, at, normal.candidates, normal.episodes);
+            }
+            if (arm === 'gold_retrieved') {
+              return admit(worker, states.gold_retrieved, source, session.id, turn.text, at, candidates(source, turn.text, turn.gold ?? []), episodeCandidates(source, turn.text, turn.goldEpisodes ?? []));
+            }
+            if (arm === 'gold_forced') {
+              return admit(worker, states.gold_forced, source, session.id, turn.text, at, candidates(source, turn.text, turn.gold ?? []), episodeCandidates(source, turn.text, turn.goldEpisodes ?? []));
+            }
+            // No fallback to gold. A turn without a counterfactual does not reach
+            // this branch, and a turn with one has it validated before the run --
+            // the fallback is what made eighteen turns an arm that was gold with
+            // another name.
+            return admit(worker, states.counterfactual_forced, source, session.id, turn.text, at, candidates(source, turn.text, turn.counterfactual ?? []), episodeCandidates(source, turn.text, turn.goldEpisodes ?? []));
+          }));
           const admissions = Object.fromEntries(
             ARMS.map((arm, armIndex) => [arm, accepted[armIndex]?.accepted ?? []]),
           ) as Record<Arm, string[]>;

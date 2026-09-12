@@ -279,6 +279,55 @@ describe('Oracle evaluator causal artifacts', () => {
     }
   });
 
+  it('runs a zero-memory control on every turn, and a wrong-memory arm only while it is carrying one', async () => {
+    // The control is the arm the design was missing: every conclusion here is a
+    // difference between having memory and not having it, and there was nothing to
+    // subtract from. The wrong-memory arm keeps its pressure-test role but stops
+    // admitting the gold proposals on turns that declare nothing -- that fallback
+    // made it gold under another label, and its gap from the ceiling was read as a
+    // causal floor when it could only be sampling noise.
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'companion-memory-oracle-control-'));
+    const noDeclaration: readonly SessionScript[] = [{
+      id: 'c', dayOffset: 0, turns: [
+        {
+          intent: 'establish identity', text: '我叫林越。', memoryOpportunity: 'none', effectType: 'correct_silence',
+          gold: [{ predicate: 'identity.name', value: '林越', rawValue: '林越', quote: '林越' }],
+        },
+        { intent: 'natural name probe', text: '我想继续聊聊。', memoryOpportunity: 'positive', effectType: 'name' },
+      ],
+    }];
+    try {
+      const summary = await runOracleEvaluation({
+        client: fakeModel,
+        databasePath: join(outputDirectory, 'oracle.db'),
+        workerCommand: process.execPath,
+        workerArgs: workerArgs('deepRecall'),
+        runCount: 1,
+        outputDirectory,
+        sessions: noDeclaration,
+      });
+      const rows = JSON.parse(readFileSync(join(outputDirectory, 'oracle-run-1.json'), 'utf8')) as Array<{
+        arms: Record<string, { reply: string; injectedRecordIds: string[] }>;
+        scores: Record<string, { state: string; evidence: string }>;
+      }>;
+      const probe = rows[1];
+      // Nothing is ever written to the control's scope, so it answers from no memory.
+      expect(probe?.arms.no_memory?.injectedRecordIds).toEqual([]);
+      expect(probe?.arms.no_memory?.reply).toBe('我在。');
+      expect(probe?.scores.no_memory?.state).toBe('fail');
+      // The ceiling answers from the record, so the difference is memory.
+      expect(probe?.scores.gold_forced?.state).toBe('pass');
+      expect(summary.lift.name).toMatchObject({ withMemory: 1, withoutMemory: 0, delta: 1 });
+      // No counterfactual is declared anywhere here, so that arm never runs and is
+      // excluded rather than scored.
+      expect(probe?.scores.counterfactual_forced?.state).toBe('not_applicable');
+      expect(probe?.scores.counterfactual_forced?.evidence).toContain('no wrong-memory intervention');
+      expect(summary.effectRates.counterfactual_forced.name).toMatchObject({ total: 0, notApplicable: 1 });
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a database that already holds records', async () => {
     // runs of an invocation. It is not safe across invocations: profile ids are
     // `normal-0`, `gold-retrieved-0` and so on, so a second invocation against

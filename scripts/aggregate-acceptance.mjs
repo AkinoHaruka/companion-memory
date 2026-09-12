@@ -80,7 +80,7 @@ const rows = files.flatMap((entry, index) => {
 });
 
 const summary = summarizeOracle(rows, files.length);
-const arms = ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'];
+const arms = ['normal', 'gold_retrieved', 'gold_forced', 'no_memory', 'counterfactual_forced'];
 const effects = ['name', 'language', 'preference', 'continuity', 'boundary', 'correct_silence'];
 
 /** The predicate each effect actually applied, taken from the observations themselves. */
@@ -123,6 +123,18 @@ if (versionIncompatible) {
   // A refusal here leaves the normal arm with nothing to store, which reads as
   // "the normal arm had no memory" unless it is counted.
   process.stdout.write(`\nextractor refusals: ${summary.extractionFailures} of ${rows.length} turns\n`);
+
+  // The number every other number is subordinate to: the ceiling minus the
+  // zero-memory control. A rate against an absolute floor cannot separate
+  // "memory worked" from "the model does this anyway".
+  process.stdout.write('\nlift: gold_forced (ceiling) minus no_memory (control)\n');
+  process.stdout.write(`  ${'effect'.padEnd(18)}${'with'.padStart(8)}${'without'.padStart(9)}${'delta'.padStart(8)}\n`);
+  for (const effect of effects) {
+    const value = summary.lift?.[effect];
+    if (value === undefined) continue;
+    const show = (rate) => (rate === null ? 'n/a' : rate.toFixed(2));
+    process.stdout.write(`  ${effect.padEnd(18)}${show(value.withMemory).padStart(8)}${show(value.withoutMemory).padStart(9)}${show(value.delta).padStart(8)}\n`);
+  }
 }
 
 process.stdout.write('\n=== verdict ===\n');
