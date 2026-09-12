@@ -12,7 +12,9 @@ import { routeRefused, starvedByReasoning, type RouteReport } from './route-repo
 import { fatalViolations, unmeasurableTurns } from './fixture.js';
 
 export type Arm = 'normal' | 'gold_retrieved' | 'gold_forced' | 'no_memory' | 'counterfactual_forced';
-const ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'no_memory', 'counterfactual_forced'];
+/** Every arm the current design knows about, including the ones a turn may skip. */
+export const ALL_ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'no_memory', 'counterfactual_forced'];
+const ARMS: readonly Arm[] = ALL_ARMS;
 /**
  * The arms every turn runs.
  *
@@ -451,8 +453,8 @@ const SCORERS: Record<EffectType, ScorerSpec> = {
  * it is declared unreadable from the plan itself rather than judged and reported
  * as a zero.
  */
-function identityRenderedElsewhere(plan: MemoryUsagePlan): boolean {
-  return Object.entries(plan).some(([channel, entries]) => channel !== 'identity'
+function identityRenderedElsewhere(plan: Partial<MemoryUsagePlan> | undefined): boolean {
+  return Object.entries(plan ?? {}).some(([channel, entries]) => channel !== 'identity'
     && Array.isArray(entries)
     && entries.some((entry) => entry.text.startsWith('identity.')));
 }
@@ -518,6 +520,44 @@ function observe(
   }
   const passed = spec.test(arm.reply, turn);
   return { state: passed ? 'pass' : 'fail', condition: spec.condition, evidence: passed ? 'condition held' : 'condition did not hold', nonGating: false };
+}
+
+/**
+ * What one stored arm observation is worth under the current rules.
+ *
+ * Scoring is a pure function of what the model was shown and what it answered,
+ * and the artifacts keep both. So a change to the rules does not need a model
+ * call: the same replies can be read again under the new rules, which is also
+ * the only way to compare two rules without the model's own variance deciding
+ * the winner.
+ *
+ * What this can never do is change what the model saw. A changed renderer, gate
+ * or fixture is an intervention, and it needs fresh replies; re-scoring answers
+ * "how would today's judge read yesterday's behaviour" and must not be mistaken
+ * for "how would today's system behave".
+ */
+export function rescoreArm(
+  effect: EffectType,
+  turn: UserTurn | undefined,
+  arm: { reply?: string; route?: RouteReport; skipped?: string; plan?: Partial<MemoryUsagePlan> },
+  unmeasurableReason?: string,
+): ScoredEffect {
+  const reconstructed: ArmResult = {
+    plan: arm.plan ?? {},
+    injectedRecordIds: [],
+    reply: arm.reply ?? '',
+    replyFailed: (arm.reply ?? '').length === 0,
+    identityRenderedElsewhere: identityRenderedElsewhere(arm.plan),
+    ...(arm.route === undefined ? {} : { route: arm.route }),
+    ...(arm.skipped === undefined ? {} : { skipped: arm.skipped }),
+  };
+  const reason = turn === undefined ? 'this turn no longer exists in the current fixture' : unmeasurableReason;
+  return observe(effect, turn ?? { intent: '', text: '', memoryOpportunity: 'none', effectType: 'correct_silence' }, reconstructed, reason);
+}
+
+/** The condition a scorer would report, without needing an observation. */
+export function scorerCondition(effect: EffectType): string {
+  return SCORERS[effect].condition;
 }
 
 function emptyRate(): EffectRate { return { passed: 0, total: 0, rate: null, invalid: 0, notApplicable: 0 }; }
