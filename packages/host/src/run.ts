@@ -156,6 +156,11 @@ async function main(): Promise<void> {
     runCount,
     outputDirectory: runDirectory,
     includeProbes: true,
+    // A free tier answers a four-arm burst with 1305 and 1302 on every turn; the
+    // same calls spaced out answer normally. The snapshot is frozen either way,
+    // so spacing costs wall clock and buys refusals.
+    sequentialArms: true,
+    interCallDelayMs: 1_500,
   });
   process.stdout.write(`${JSON.stringify({ mode, route: selected.routeDescription, runDirectory, runCount, ...summary.acceptance, routeRefusals: summary.routeRefusals, starvedReplies: summary.starvedReplies, extractionFailures: summary.extractionFailures })}\n`);
   if (mode === 'acceptance' && !summary.acceptance.passed) process.exitCode = 1;

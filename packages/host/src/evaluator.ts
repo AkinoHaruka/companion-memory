@@ -51,6 +51,16 @@ const PROTECTED_EFFECTS: readonly EffectType[] = ['boundary', 'correct_silence']
  * design was missing: every conclusion here is a difference between having memory
  * and not having it, and there was nothing to subtract from.
  */
+/** Rotate the arm order by repetition, so no arm is always the one that goes first. */
+function rotate(arms: readonly Arm[], by: number): readonly Arm[] {
+  const offset = by % arms.length;
+  return [...arms.slice(offset), ...arms.slice(0, offset)];
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
 function armsForTurn(turn: UserTurn, carryingWrongMemory: boolean): readonly Arm[] {
   const declared = (turn.counterfactual ?? []).length > 0;
   return declared || carryingWrongMemory ? [...BASE_ARMS, 'counterfactual_forced'] : BASE_ARMS;
@@ -70,6 +80,22 @@ export interface EvaluationOptions {
   workerArgs?: readonly string[];
   runCount: number;
   outputDirectory: string;
+  /**
+   * Run a turn's arms one after another instead of together, waiting
+   * `interCallDelayMs` between calls.
+   *
+   * The snapshot is frozen before any of them runs, so ordering cannot change
+   * what an arm is asked. What ordering does change is the burst: four calls at
+   * once is what a free tier answers with 1305 and 1302 on every turn, measured
+   * over a run that lost most of its quota to them. Sequential is slower by the
+   * wall clock and far cheaper in refusals.
+   *
+   * It also removes the other confound: a fixed arm order means the arm that
+   * always goes first is the arm that always meets the freshest route. The
+   * starting arm rotates by repetition instead.
+   */
+  sequentialArms?: boolean;
+  interCallDelayMs?: number;
   includeProbes?: boolean;
   /** Optional frozen subset for deterministic contract tests or focused diagnosis. */
   sessions?: readonly SessionScript[];
@@ -814,15 +840,18 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
         const at = addDays(NOW, session.dayOffset);
         for (const [index, turn] of session.turns.entries()) {
           const sourceId = `run-${run}-${session.id}-${index}`;
-          const running = armsForTurn(turn, states.counterfactual_forced.forcedRecordIds.length > 0);
+          const order = rotate(armsForTurn(turn, states.counterfactual_forced.forcedRecordIds.length > 0), run);
+          const running = new Set(order);
           const skipped = Object.fromEntries(
-            ARMS.filter((arm) => !running.includes(arm)).map((arm) => [arm, {
+            ARMS.filter((arm) => !running.has(arm)).map((arm) => [arm, {
               plan: {}, injectedRecordIds: [], reply: '', replyFailed: false, identityRenderedElsewhere: false,
               skipped: 'this turn declares no counterfactual and the arm is not yet carrying one, so there is no wrong-memory intervention to test',
             } satisfies ArmResult]),
           );
-          const warmed = await Promise.all(running.map(async (arm) => [arm, await warmArm(worker, states[arm], arm, turn.text, at, `${session.id}-${run}`, sourceId, index === 0)] as const));
-          const ran = Object.fromEntries(await Promise.all(warmed.map(async ([arm, result]) => {
+          const ran: Partial<Record<Arm, ArmResult>> = {};
+          for (const arm of order) {
+            if (options.interCallDelayMs !== undefined && options.interCallDelayMs > 0) await delay(options.interCallDelayMs);
+            const result = await warmArm(worker, states[arm], arm, turn.text, at, `${session.id}-${run}`, sourceId, index === 0);
             const snapshot = renderMemoryUsagePlan(result.plan);
             // One retry. Against a real route an occasional empty stream is
             // transient, and a single re-ask is far cheaper than discarding a run
@@ -842,15 +871,15 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
               reply = second.text.trim();
               route = second.route;
             }
-            return [arm, {
+            ran[arm] = {
               plan: result.plan.plan,
               injectedRecordIds: renderedRecordIds(result.plan.plan),
               reply,
               replyFailed: reply.length === 0,
               identityRenderedElsewhere: identityRenderedElsewhere(result.plan.plan),
               ...(route === undefined ? {} : { route }),
-            } satisfies ArmResult] as const;
-          }))) as Record<string, ArmResult>;
+            } satisfies ArmResult;
+          }
           const armResults = { ...skipped, ...ran } as Record<Arm, ArmResult>;
 
           // Extract or inject only after every arm has answered this frozen request.
@@ -881,7 +910,7 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
             // The control stores nothing, and a turn that declares no
             // counterfactual has no wrong memory to store. Neither is a failure;
             // both are the arm's definition, so no write is attempted at all.
-            if (!running.includes(arm) || arm === 'no_memory') return Promise.resolve({ accepted: [], rejected: [] });
+            if (!running.has(arm) || arm === 'no_memory') return Promise.resolve({ accepted: [], rejected: [] });
             const source = armSource[arm];
             if (arm === 'normal') {
               return admit(worker, states.normal, source, session.id, turn.text, at, normal.candidates, normal.episodes);
