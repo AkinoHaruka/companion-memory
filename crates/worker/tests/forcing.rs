@@ -61,7 +61,7 @@ fn an_uncued_record_stays_out_without_forcing_and_arrives_with_it() {
     record(
         &mut worker,
         "goal-1",
-        "goal.long_term_objective",
+        "goal.aspiration",
         "攒钱去冰岛看极光",
         None,
     );
@@ -108,7 +108,7 @@ fn a_forced_record_is_not_reported_as_a_user_cue() {
     record(
         &mut worker,
         "goal-1",
-        "goal.long_term_objective",
+        "goal.aspiration",
         "攒钱去冰岛看极光",
         None,
     );
@@ -141,7 +141,7 @@ fn a_genuine_cue_is_still_reported_as_a_cue_when_the_record_is_also_forced() {
     record(
         &mut worker,
         "goal-1",
-        "goal.long_term_objective",
+        "goal.aspiration",
         "攒钱去冰岛看极光",
         None,
     );

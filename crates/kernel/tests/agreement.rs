@@ -134,6 +134,55 @@ fn misc_is_inert() {
 }
 
 #[test]
+fn a_companion_may_raise_what_the_user_is_working_towards() {
+    // A product decision recorded where it can be read: these rows are freely
+    // mentionable because a companion that cannot bring up what the user is
+    // working towards, who matters to them, or how they know each other is not
+    // remembering them, it is only answering.
+    //
+    // Listed one by one rather than asserted as "every row in these domains",
+    // because the decision did not cover every row in those domains. The HIGH
+    // sensitivity rows were left cue-gated — `goal.aspiration` describes something
+    // the user may not have said publicly, and `relationship.closeness` is their
+    // private assessment of someone else — so a domain-wide assertion would
+    // quietly claim more than was decided, and would fail the moment someone
+    // added a new sensitive row.
+    for key in [
+        "goal.long_term_objective",
+        "person.occupation",
+        "relationship.type",
+        "relationship.contact_frequency",
+    ] {
+        assert_eq!(
+            require_spec(key).mention_policy,
+            MentionMode::FreelyMentionable,
+            "{key} must be raisable without the user reintroducing it"
+        );
+    }
+}
+
+#[test]
+fn raising_visibility_did_not_reach_the_sensitive_rows() {
+    // The other half of the same decision, and the half that is easy to lose in a
+    // bulk edit. Each of these carries a reason in its own row for staying quiet.
+    assert_eq!(
+        require_spec("goal.aspiration").mention_policy,
+        MentionMode::MentionIfUserCues,
+        "a hoped-for future may not be one the user has said out loud"
+    );
+    assert_eq!(
+        require_spec("relationship.closeness").mention_policy,
+        MentionMode::MentionIfUserCues,
+        "how close the user feels to someone is their assessment, not a fact to raise"
+    );
+    assert_eq!(
+        require_spec("person.age").mention_policy,
+        MentionMode::NeverSurface,
+        "age is never raised unprompted"
+    );
+}
+
+#[test]
 fn boundary_is_a_constraint_not_a_candidate() {
     for spec in registry()
         .iter()

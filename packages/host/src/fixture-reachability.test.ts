@@ -47,12 +47,17 @@ interface ArtifactRow {
   rejections: Record<Arm, Array<{ candidateId: string; reason: string }>>;
 }
 
+let replayCount = 0;
+
 /** One evaluation of the whole fixture, shared by every case below. */
 async function replayFixture(): Promise<ArtifactRow[]> {
-  // Set to keep the artifact instead of deleting it, for reading a full plan.
+  // Set to keep artifacts instead of deleting them, for reading a full plan. Each
+  // call gets its own directory, because two cases sharing one database would trip
+  // the stale-database guard rather than measure anything.
   const keep = process.env.COMPANION_MEMORY_REACHABILITY_DIR?.trim();
+  replayCount += 1;
   const directory = keep !== undefined && keep.length > 0
-    ? keep
+    ? join(keep, `replay-${replayCount}`)
     : mkdtempSync(join(tmpdir(), 'companion-memory-reachability-'));
   try {
     await runOracleEvaluation({

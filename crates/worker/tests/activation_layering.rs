@@ -122,72 +122,6 @@ fn a_topic_record_activates_only_when_the_message_touches_it() {
 }
 
 #[test]
-fn an_uncued_goal_reaches_no_channel_because_its_predicate_is_cue_gated() {
-    // The finding this test pins, stated as behaviour rather than as a guess at
-    // the code.
-    //
-    // `goal.long_term_objective` is registered `mention_if_user_cues`, so with no
-    // cue the gate denies it. The record is not a constraint and not a policy, so
-    // the remaining channels are `topicActivated`, which requires the cue, and
-    // `deepRecall`, which admits only `freely_mentionable` records. It therefore
-    // reaches the plan only as `doNotSurface`, and the model never sees it.
-    //
-    // An earlier version of this comment said `deepRecall` was never populated by
-    // anything. That was wrong, and the case below — an uncued `goal.current_focus`
-    // arriving through `deepRecall` — is what disproved it. The channel works; what
-    // excludes this record is its registry row, which is a policy and not a gap.
-    //
-    // Twenty-one of the forty-six predicates are cue-gated this way, including
-    // goals, people and relationships. So a companion cannot bring up a stated
-    // ambition the user has not just mentioned, which is a large part of what
-    // remembering someone is supposed to look like. Tightening the cue matcher
-    // deepens this: fewer false cues means fewer accidental mentions as well as
-    // fewer spurious ones.
-    //
-    // Asserted as-is rather than as a requirement: the behaviour is deliberate in
-    // the registry, and whether to change it is a product decision that has not
-    // been made explicitly.
-    let mut worker = Worker::start();
-    record(
-        &mut worker,
-        "goal-1",
-        "goal.long_term_objective",
-        "攒钱去冰岛看极光",
-        "2026-09-12T00:00:00Z",
-    );
-    worker.send(
-        "warm",
-        "warm",
-        warm_params("今天天气怎么样", "session-2", true),
-    );
-    let responses = worker.responses();
-
-    let plan = channels(&responses[1]);
-    let visible = [
-        "constraints",
-        "responseStyle",
-        "continuity",
-        "topicActivated",
-        "deepRecall",
-    ]
-    .iter()
-    .map(|channel| plan[channel].as_array().expect(channel).len())
-    .sum::<usize>();
-
-    assert_eq!(
-        visible, 0,
-        "recorded behaviour: an uncued cue-gated goal is invisible. If this now \
-         fails, the activation layering changed and the number of cue-gated \
-         predicates should be reconsidered. Plan was {plan}"
-    );
-    assert_eq!(
-        plan["doNotSurface"].as_array().expect("withheld").len(),
-        1,
-        "the record must at least be accounted for as withheld, plan was {plan}"
-    );
-}
-
-#[test]
 fn an_uncued_freely_mentionable_goal_reaches_deep_recall() {
     // The `deepRecall` channel works, which two of my own readings of the code
     // got wrong: one predicted the branch was unreachable, the next predicted the
@@ -222,24 +156,24 @@ fn an_uncued_freely_mentionable_goal_reaches_deep_recall() {
 }
 
 #[test]
-fn the_cue_gate_is_what_hides_a_long_term_goal_not_a_missing_channel() {
+fn the_cue_gate_is_what_hides_a_high_sensitivity_goal_not_a_missing_channel() {
     // The contrast that isolates the cause. Same stored shape, same uncued
-    // message, same importance band — the only difference is that
-    // `goal.long_term_objective` is registered `mention_if_user_cues` while
-    // `goal.current_focus` is `freely_mentionable`. One reaches the model and the
-    // other does not.
+    // message — the difference is the registry row. `goal.aspiration` is HIGH
+    // sensitivity and describes something the user may not have said publicly, so
+    // it stays `mention_if_user_cues`; `goal.current_focus` is freely mentionable.
+    // One reaches the model and the other does not.
     //
-    // Twenty-one of the forty-six predicates are cue-gated, so this is not an
-    // edge case: an ambition, a person, or a relationship is invisible until the
-    // user's own words happen to touch it. Whether that is right is a product
-    // decision about which memories a companion is allowed to raise, and it is
-    // recorded here as behaviour because that decision had not been made
-    // explicitly.
+    // This pair is chosen deliberately rather than by picking two convenient
+    // predicates. Making the MED rows freely mentionable was a product decision:
+    // a companion that cannot raise what the user is working towards is not
+    // remembering them. The HIGH rows were left cue-gated in the same change, and
+    // this is the case that says so — if someone widens the policy again without
+    // meaning to, the difference between the two rows disappears and this fails.
     let mut worker = Worker::start();
     record(
         &mut worker,
         "goal-1",
-        "goal.long_term_objective",
+        "goal.aspiration",
         "攒钱去冰岛看极光",
         "2026-09-12T00:00:00Z",
     );
@@ -271,6 +205,39 @@ fn the_cue_gate_is_what_hides_a_long_term_goal_not_a_missing_channel() {
         plan["doNotSurface"].as_array().expect("withheld").len(),
         1,
         "it must still be accounted for as withheld rather than dropped, plan was {plan}"
+    );
+}
+
+#[test]
+fn a_durable_objective_reaches_the_model_without_being_cued() {
+    // What the policy change bought, asserted as behaviour rather than as a
+    // registry row. The user is told what they are working towards without having
+    // to reintroduce it, which is most of what remembering someone looks like in
+    // a conversation that runs for months.
+    let mut worker = Worker::start();
+    record(
+        &mut worker,
+        "objective-1",
+        "goal.long_term_objective",
+        "攒钱去冰岛看极光",
+        "2026-09-12T00:00:00Z",
+    );
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("今天天气怎么样", "session-2", true),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    assert_eq!(
+        plan["deepRecall"].as_array().expect("deep recall")[0]["recordId"],
+        "claim-objective-1",
+        "an uncued objective must reach the model as background, plan was {plan}"
+    );
+    assert!(
+        plan["doNotSurface"].as_array().expect("withheld").is_empty(),
+        "it must not be withheld as well as surfaced, plan was {plan}"
     );
 }
 

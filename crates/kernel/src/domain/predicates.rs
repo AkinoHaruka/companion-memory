@@ -370,7 +370,11 @@ pub static ROWS: &[Row] = &[
     ("advice.when_to_offer_steps",       SET,      ENUM, LOW,  false, CUED, UNTIL, "When concrete steps are welcome."),
 
     // -- goal --------------------------------------------------------------
-    ("goal.long_term_objective",         SET,      TXT,  MED,  true,  CUED, UNTIL, "A durable desired outcome."),
+    // The MED rows here are `freely_mentionable`: a companion that cannot raise
+    // something the user is working towards is not remembering them, it is only
+    // answering. The HIGH row stays cue-gated, because "possibly not stated
+    // publicly" is a reason to let the user choose the moment.
+    ("goal.long_term_objective",         SET,      TXT,  MED,  true,  FREE, UNTIL, "A durable desired outcome."),
     ("goal.current_focus",               SET,      TXT,  MED,  true,  FREE, UNTIL, "What the user is actively working on."),
     ("goal.aspiration",                  SET,      TXT,  HIGH, true,  CUED, UNTIL, "A hoped-for future, possibly not stated publicly."),
     ("goal.constraint",                  SET,      TXT,  MED,  false, BG,   UNTIL, "A limit on how a goal may be pursued."),
@@ -395,15 +399,16 @@ pub static ROWS: &[Row] = &[
     // -- person ------------------------------------------------------------
     ("person.name",                      ONE,      TXT,  MED,  true,  FREE, PERM,  "Name of a person in the user's life."),
     ("person.relation_label",            SET,      ENUM, MED,  true,  FREE, UNTIL, "How that person relates to the user."),
-    ("person.occupation",                SET,      TXT,  MED,  true,  CUED, UNTIL, "What that person does."),
+    ("person.occupation",                SET,      TXT,  MED,  true,  FREE, UNTIL, "What that person does."),
     ("person.age",                       T_SINGLE, NUM,  HIGH, true,  NEVER, UNTIL, "That person's age or birth year."),
 
     // -- relationship ------------------------------------------------------
     // Facts about a dyad. The *dynamic* of a relationship is observed over time
-    // and therefore belongs to the Inference layer, not here.
-    ("relationship.type",                ONE,      ENUM, MED,  true,  CUED, UNTIL, "Category of the relationship."),
+    // and therefore belongs to the Inference layer, not here. `closeness` stays
+    // cue-gated: it is the user's private assessment of someone else.
+    ("relationship.type",                ONE,      ENUM, MED,  true,  FREE, UNTIL, "Category of the relationship."),
     ("relationship.closeness",           ONE,      ENUM, HIGH, true,  CUED, UNTIL, "How close the user considers it."),
-    ("relationship.contact_frequency",   ONE,      TXT,  MED,  true,  CUED, UNTIL, "How often they are in touch."),
+    ("relationship.contact_frequency",   ONE,      TXT,  MED,  true,  FREE, UNTIL, "How often they are in touch."),
 
     // -- misc --------------------------------------------------------------
     ("misc.unclassified",                SET,      TXT,  HIGH, false, CUED, UNTIL, "Unclassified user statements. Never supersedes, never seeds inference."),
