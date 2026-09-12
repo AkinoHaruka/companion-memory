@@ -60,6 +60,7 @@ interface OracleRow {
   effectType: EffectType;
   arms: Record<Arm, ArmResult>;
   admissions: Record<Arm, string[]>;
+  rejections: Record<Arm, Array<{ candidateId: string; reason: string }>>;
   scores: Record<Arm, ScoredEffect>;
 }
 
@@ -226,6 +227,12 @@ async function warmArm(worker: WorkerClient, state: ArmState, arm: Arm, text: st
   return { plan: warmed };
 }
 
+interface AdmitOutcome {
+  accepted: string[];
+  /** Why a proposal was not stored. Kept because a write that fails looks like a turn with nothing to say. */
+  rejected: Array<{ candidateId: string; reason: string }>;
+}
+
 async function admit(
   worker: WorkerClient,
   state: ArmState,
@@ -235,13 +242,13 @@ async function admit(
   at: string,
   records: readonly ExtractedCandidate[],
   episodes: readonly { id: string; narrative: string; sourceSpan: { startOffset: number; endOffset: number; quote: string }; confidence: number }[] = [],
-): Promise<string[]> {
+): Promise<AdmitOutcome> {
   const outcome = await worker.admit({
     scope: toWorkerScope(state.scope), now: at, source: { id: sourceId, session_id: sessionId, text },
     candidates: workerCandidates(records), episodes: workerEpisodes(episodes),
   });
   state.forcedRecordIds.push(...outcome.accepted);
-  return outcome.accepted;
+  return { accepted: outcome.accepted, rejected: outcome.rejected ?? [] };
 }
 
 /**
@@ -301,24 +308,40 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
           }))) as Record<Arm, ArmResult>;
 
           // Extract or inject only after every arm has answered this frozen request.
-          const normal = await normalExtraction(options.client, predicateSchemas, sourceId, turn.text)
+          //
+          // Record ids are namespaced by arm, and they have to be. A record id is
+          // a global primary key, and the store refuses a same-id write from a
+          // different scope rather than letting `INSERT OR REPLACE` delete another
+          // relationship's row. Four arms fed the same ids therefore meant three
+          // of them could store nothing at all: whichever arm wrote first owned
+          // every id, and the rest were refused with `unable to persist
+          // admission`. The comparison arms read empty stores, so the evaluation
+          // would have concluded that memory does not help while measuring a
+          // harness that had switched it off.
+          const armSource = Object.fromEntries(
+            ARMS.map((arm) => [arm, `${arm}-${sourceId}`]),
+          ) as Record<Arm, string>;
+          const normal = await normalExtraction(options.client, predicateSchemas, armSource.normal, turn.text)
             .catch((): NormalExtraction => ({ candidates: [], episodes: [] }));
           const accepted = await Promise.all([
-            admit(worker, states.normal, sourceId, session.id, turn.text, at, normal.candidates, normal.episodes),
-            admit(worker, states.gold_retrieved, sourceId, session.id, turn.text, at, candidates(sourceId, turn.text, turn.gold ?? []), episodeCandidates(sourceId, turn.text, turn.goldEpisodes ?? [])),
-            admit(worker, states.gold_forced, sourceId, session.id, turn.text, at, candidates(sourceId, turn.text, turn.gold ?? []), episodeCandidates(sourceId, turn.text, turn.goldEpisodes ?? [])),
-            admit(worker, states.counterfactual_forced, sourceId, session.id, turn.text, at, candidates(sourceId, turn.text, turn.counterfactual ?? turn.gold ?? []), episodeCandidates(sourceId, turn.text, turn.goldEpisodes ?? [])),
+            admit(worker, states.normal, armSource.normal, session.id, turn.text, at, normal.candidates, normal.episodes),
+            admit(worker, states.gold_retrieved, armSource.gold_retrieved, session.id, turn.text, at, candidates(armSource.gold_retrieved, turn.text, turn.gold ?? []), episodeCandidates(armSource.gold_retrieved, turn.text, turn.goldEpisodes ?? [])),
+            admit(worker, states.gold_forced, armSource.gold_forced, session.id, turn.text, at, candidates(armSource.gold_forced, turn.text, turn.gold ?? []), episodeCandidates(armSource.gold_forced, turn.text, turn.goldEpisodes ?? [])),
+            admit(worker, states.counterfactual_forced, armSource.counterfactual_forced, session.id, turn.text, at, candidates(armSource.counterfactual_forced, turn.text, turn.counterfactual ?? turn.gold ?? []), episodeCandidates(armSource.counterfactual_forced, turn.text, turn.goldEpisodes ?? [])),
           ]);
           const admissions = Object.fromEntries(
-            ARMS.map((arm, armIndex) => [arm, accepted[armIndex] ?? []]),
+            ARMS.map((arm, armIndex) => [arm, accepted[armIndex]?.accepted ?? []]),
           ) as Record<Arm, string[]>;
+          const rejections = Object.fromEntries(
+            ARMS.map((arm, armIndex) => [arm, accepted[armIndex]?.rejected ?? []]),
+          ) as Record<Arm, Array<{ candidateId: string; reason: string }>>;
           const scores = Object.fromEntries(
             ARMS.map((arm) => [arm, score(turn.effectType, turn.memoryOpportunity, armResults[arm].reply)]),
           ) as Record<Arm, ScoredEffect>;
           rows.push({
             run, session: session.id, day: session.dayOffset, turn: index, intent: turn.intent, user: turn.text,
             memoryOpportunity: turn.memoryOpportunity, effectType: turn.effectType,
-            arms: armResults, admissions, scores,
+            arms: armResults, admissions, rejections, scores,
           });
         }
       }
