@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { NOW, PROBES, SESSIONS, SUBJECT, type EffectType, type GoldCandidate, type GoldEpisode, type SessionScript, type UserTurn } from './script.js';
-import { toWorkerScope, type ExtractedCandidate, type MemoryScope, type PredicateSchema, type WarmResult } from '../../dsh-plugin/src/protocol.js';
+import { toWorkerScope, type ExtractedCandidate, type MemoryScope, type MemoryUsagePlan, type PredicateSchema, type WarmResult } from '../../dsh-plugin/src/protocol.js';
 import { renderMemoryUsagePlan, renderedRecordIds } from '../../dsh-plugin/src/render.js';
 import { WorkerClient } from '../../dsh-plugin/src/worker-client.js';
 import { extractionPrompt, parseExtractionItems } from '../../dsh-plugin/src/extractor.js';
@@ -61,9 +61,37 @@ interface ArmResult {
   replyFailed: boolean;
   /** Present when the client reports what the route did; absent for the harness route. */
   route?: RouteReport;
+  /** The plan put `identity.name` in the style channel, so no reply can be read for it. */
+  nameRenderedAsStyle: boolean;
 }
 
-interface ScoredEffect { passed: boolean; evidence: string; }
+/**
+ * What one observation was worth.
+ *
+ * A boolean cannot express the three things that were being confused here. An
+ * empty reply is not a model staying quiet (the route may have refused, or a
+ * reasoning route may have spent the whole budget before writing anything), and
+ * a turn whose own fixture cannot support the effect is not evidence about that
+ * effect at all. Both used to arrive as `false`, and the protections were read
+ * as holding on precisely the turns that broke.
+ *
+ * `invalid` means the observation does not exist. `not_applicable` means it
+ * exists but this effect cannot be read from it, and why. Neither belongs in a
+ * denominator, and neither may be reported as a result.
+ */
+export type ObservationState = 'pass' | 'fail' | 'invalid' | 'not_applicable';
+
+export interface ScoredEffect {
+  state: ObservationState;
+  /**
+   * The predicate that was actually applied, verbatim. A report that shows
+   * `preference 26/37` invites reading a preference into a length check; a
+   * report that shows the condition cannot. The string is the rule's own, so
+   * the two cannot drift apart.
+   */
+  condition: string;
+  evidence: string;
+}
 
 interface OracleRow {
   run: number;
@@ -74,6 +102,8 @@ interface OracleRow {
   user: string;
   memoryOpportunity: UserTurn['memoryOpportunity'];
   effectType: EffectType;
+  /** The rule version that produced `scores`. Rows from another version are not comparable. */
+  scorerVersion: number;
   arms: Record<Arm, ArmResult>;
   admissions: Record<Arm, string[]>;
   rejections: Record<Arm, Array<{ candidateId: string; reason: string }>>;
@@ -87,7 +117,15 @@ interface OracleRow {
   extractionFailed: boolean;
 }
 
-export interface EffectRate { passed: number; total: number; rate: number | null; }
+export interface EffectRate {
+  passed: number;
+  total: number;
+  rate: number | null;
+  /** Observations this effect could not be read from, excluded from `total`. */
+  invalid: number;
+  /** Observations where this effect does not apply to the turn, excluded from `total`. */
+  notApplicable: number;
+}
 
 export interface OracleEvaluationSummary {
   runCount: number;
@@ -105,6 +143,25 @@ export interface OracleEvaluationSummary {
   starvedReplies: Record<Arm, number>;
   /** Turns where the normal arm's extraction call did not answer, so it stored nothing. */
   extractionFailures: number;
+  /**
+   * Whether this batch may be read as a result at all.
+   *
+   * The scorer produced numbers for every batch it was given, including batches
+   * where the experiment had not happened: three arms storing nothing, twelve
+   * empty replies counted as a held boundary, a route that spent its budget on
+   * hidden reasoning, an aggregate over the wrong ten repetitions. Each of those
+   * produced a complete, plausible table. This block is what refuses to.
+   */
+  measurement: {
+    scorerVersion: number;
+    /** Invalid observations as a share of all observations, per arm. */
+    invalidShare: Record<Arm, number>;
+    /** Observations declared not_applicable, summed over arms and effects. */
+    notApplicable: number;
+    /** Machine-generated reasons this batch may not be read. Empty means it may. */
+    refusals: string[];
+    batchAcceptable: boolean;
+  };
   acceptance: {
     goldForcedCoreAtLeastEightOfTen: boolean;
     normalCoreAtLeastSevenOfTen: boolean;
@@ -116,8 +173,37 @@ export interface OracleEvaluationSummary {
   };
 }
 
+/**
+ * Bumped whenever a rule in {@link SCORERS} or a precondition changes.
+ *
+ * Numbers produced under different versions are not comparable, and mixing them
+ * silently is one of the ways a result becomes unattributable. The version is
+ * written into every summary and printed with every table.
+ */
+export const SCORER_VERSION = 2;
+
 /** Below this share of answered turns, the rates describe the route rather than the model. */
 const MIN_ANSWERED_SHARE = 0.95;
+
+/**
+ * Above this share of invalid observations, the batch is refused.
+ *
+ * Measured: the first real run lost 12 of 80 replies to an empty stream, and
+ * those twelve were counted as a boundary holding. Five percent is one turn in
+ * twenty, which is a real route; more than that and the exclusions are choosing
+ * the result.
+ */
+const INVALID_SHARE_CEILING = 0.05;
+
+/**
+ * Above this share of extractor refusals, the normal arm is refused.
+ *
+ * An extractor refusal leaves that turn with nothing to store, which is the same
+ * artifact as an extractor that found nothing. Looser than the observation
+ * ceiling because one refusal in twenty changes which records exist rather than
+ * whether an answer was observed.
+ */
+const EXTRACTION_FAILURE_CEILING = 0.1;
 
 /**
  * Reply budget per arm per turn.
@@ -220,50 +306,110 @@ function prompt(snapshot: string, user: string): EvaluationMessage[] {
 }
 
 /**
- * Score one arm's reply for one effect.
+ * The rule for each effect, and the rule's own description of itself.
  *
- * `replyFailed` is checked first and fails everything, including the protections.
- * An empty reply is not a model choosing to stay quiet; it is the route not
- * answering. It cannot contain the prohibited topic, so counting it as the
- * boundary holding would let the protection score rise on precisely the turns
- * that broke -- and the protections are the criteria that are supposed to be
- * perfect, which makes them the ones least able to absorb a silent pass.
+ * Kept in one place so the predicate the report prints is the predicate that
+ * ran. The descriptions are deliberate about what they measure: `preference`
+ * tests length, not preference; `continuity` on the recorded rule tests a
+ * pronoun-avoiding word, not recall. Naming a scorer after its intention is how
+ * a number becomes a product conclusion on the way to a report.
  */
-function score(effect: EffectType, opportunity: UserTurn['memoryOpportunity'], reply: string, replyFailed: boolean): ScoredEffect {
-  if (replyFailed) return { passed: false, evidence: 'the route returned no reply, so the effect was not observed' };
-  switch (effect) {
-    case 'name': return { passed: reply.includes('林越'), evidence: 'reply addresses the established name' };
-    case 'language': return { passed: /[\u3400-\u9fff]/.test(reply), evidence: 'reply follows the established Chinese preference' };
-    case 'preference': return { passed: reply.length >= 80 && /[\u3400-\u9fff]/.test(reply), evidence: 'reply follows the detailed-response preference in Chinese' };
-    case 'boundary': return { passed: !reply.includes('前任'), evidence: 'reply does not volunteer the prohibited topic' };
-    case 'continuity': return { passed: reply.includes('猫') || reply.includes('宠物医院'), evidence: 'reply recognises the continuing cat event' };
-    case 'correct_silence': return {
-      passed: opportunity !== 'none' || (!reply.includes('前任') && !reply.includes('宠物医院')),
-      evidence: 'reply does not manufacture an unrelated remembered topic',
-    };
-  }
+interface ScorerSpec {
+  condition: string;
+  test: (reply: string, opportunity: UserTurn['memoryOpportunity']) => boolean;
 }
 
-function emptyRate(): EffectRate { return { passed: 0, total: 0, rate: null }; }
+const SCORERS: Record<EffectType, ScorerSpec> = {
+  name: { condition: 'reply.includes("林越")', test: (reply) => reply.includes('林越') },
+  language: { condition: 'reply matches /[\\u3400-\\u9fff]/', test: (reply) => /[\u3400-\u9fff]/.test(reply) },
+  preference: { condition: 'reply.length >= 80 && reply matches /[\\u3400-\\u9fff]/', test: (reply) => reply.length >= 80 && /[\u3400-\u9fff]/.test(reply) },
+  boundary: { condition: '!reply.includes("前任")', test: (reply) => !reply.includes('前任') },
+  continuity: { condition: 'reply.includes("猫") || reply.includes("宠物医院")', test: (reply) => reply.includes('猫') || reply.includes('宠物医院') },
+  correct_silence: {
+    condition: 'opportunity !== "none" || (!reply.includes("前任") && !reply.includes("宠物医院"))',
+    test: (reply, opportunity) => opportunity !== 'none' || (!reply.includes('前任') && !reply.includes('宠物医院')),
+  },
+};
 
-/** Aggregate effect-specific results without treating reply inequality as a metric. */
+/**
+ * Whether the user's name arrived in a channel that a scorer may read as an
+ * address.
+ *
+ * It is rendered into `<response_style>` under "Use these to choose language,
+ * tone, format, and level of detail", which tells a model the name is a style
+ * parameter rather than a way to address the user. Measured: eight forced
+ * records, name present in the plan, and not one reply used it. The effect
+ * cannot be attributed while this holds, so it is declared unreadable from the
+ * plan itself rather than judged and reported as a zero.
+ */
+function nameRenderedAsStyle(plan: MemoryUsagePlan): boolean {
+  return plan.responseStyle.some((entry) => entry.text.startsWith('identity.name'));
+}
+
+/**
+ * Score one arm's reply for one effect, or say why it cannot be scored.
+ *
+ * The preconditions run before the rule and are not part of it. A reply the
+ * route refused, a reply a reasoning budget starved, and a reply cut mid
+ * sentence are all `invalid`: they are absences of an observation, not
+ * observations of absence, and each of them was measured to be read as a
+ * protection holding.
+ */
+function observe(
+  effect: EffectType,
+  opportunity: UserTurn['memoryOpportunity'],
+  arm: ArmResult,
+): ScoredEffect {
+  const spec = SCORERS[effect];
+  const invalid = (evidence: string): ScoredEffect => ({ state: 'invalid', condition: spec.condition, evidence });
+  if (arm.replyFailed) {
+    if (routeRefused(arm.route)) return invalid(`the route refused: ${arm.route?.error ?? 'unknown'}`);
+    if (starvedByReasoning(arm.route)) return invalid(`the reply budget was spent on hidden reasoning: ${arm.route?.reasoningTokens ?? 0} reasoning tokens and no text`);
+    return invalid('the route returned no reply');
+  }
+  if (arm.route?.finishReason === 'length' && arm.route.textLength > 0) {
+    return invalid(`the reply was cut by the token budget after ${arm.route.textLength} characters`);
+  }
+  if (effect === 'name' && arm.nameRenderedAsStyle) {
+    return {
+      state: 'not_applicable',
+      condition: spec.condition,
+      evidence: 'identity.name was rendered in the response_style channel, so a reply that omits it cannot be read as a memory failure',
+    };
+  }
+  const passed = spec.test(arm.reply, opportunity);
+  return { state: passed ? 'pass' : 'fail', condition: spec.condition, evidence: passed ? 'condition held' : 'condition did not hold' };
+}
+
+function emptyRate(): EffectRate { return { passed: 0, total: 0, rate: null, invalid: 0, notApplicable: 0 }; }
+
+/**
+ * Aggregate effect-specific results without treating reply inequality as a metric.
+ *
+ * Only observations that existed and applied enter a denominator. A turn the
+ * route refused, a turn whose answer was cut by the budget, and a turn this
+ * effect cannot be read from are all excluded -- and counted, so the exclusion
+ * itself is visible rather than being an invisible shrink of the sample.
+ *
+ * The last thing this does is decide whether the batch may be read at all, and
+ * the reasons are generated here rather than by whoever reads the table.
+ */
 export function summarizeOracle(rows: readonly OracleRow[], runCount: number): OracleEvaluationSummary {
   const effectRates = Object.fromEntries(ARMS.map((arm) => [arm, {}])) as OracleEvaluationSummary['effectRates'];
   for (const arm of ARMS) {
     for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) effectRates[arm][effect] = emptyRate();
   }
+  const observations: Record<Arm, number> = Object.fromEntries(ARMS.map((arm) => [arm, 0])) as Record<Arm, number>;
   for (const row of rows) {
     for (const arm of ARMS) {
-      // Only answered turns enter a rate. Counting an unobserved turn as a failed
-      // effect would bias every core effect downward for a reason that has nothing
-      // to do with memory, and counting it as a passed protection would bias the
-      // protections up. Neither belongs in a denominator; the share of unanswered
-      // turns is reported separately and caps the acceptance instead.
-      if (row.arms[arm].replyFailed) continue;
       const rate = effectRates[arm][row.effectType];
       if (rate === undefined) continue;
+      observations[arm] += 1;
+      const score = row.scores[arm];
+      if (score.state === 'invalid') { rate.invalid += 1; continue; }
+      if (score.state === 'not_applicable') { rate.notApplicable += 1; continue; }
       rate.total += 1;
-      if (row.scores[arm].passed) rate.passed += 1;
+      if (score.state === 'pass') rate.passed += 1;
     }
   }
   for (const arm of ARMS) {
@@ -294,6 +440,48 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
   // not demand a perfect route -- one empty stream in twenty is a real route -- but
   // it does refuse to draw a conclusion from a sample that shrank too far.
   const enoughTurnsWereAnswered = ARMS.every((arm) => answeredShare[arm] >= MIN_ANSWERED_SHARE);
+
+  const invalidShare = Object.fromEntries(
+    ARMS.map((arm) => [arm, observations[arm] === 0 ? 0 : (rows.reduce((sum, row) => sum + (row.scores[arm].state === 'invalid' ? 1 : 0), 0)) / observations[arm]]),
+  ) as Record<Arm, number>;
+  const extractionFailureShare = rows.length === 0 ? 0 : rows.filter((row) => row.extractionFailed).length / rows.length;
+
+  const refusals: string[] = [];
+  // Rows from another scorer version do not carry the same fields, so every rate
+  // computed from them is meaningless -- and it is meaningless in the shape of a
+  // complete table, which is how a version change silently zeroes a report. The
+  // version lives in the rows so this can be detected rather than assumed.
+  const versions = [...new Set(rows.map((row) => row.scorerVersion))];
+  if (versions.length !== 1 || versions[0] !== SCORER_VERSION) {
+    refusals.push(`these artifacts were produced by scorer version ${versions.map((version) => String(version)).join(', ')} and the current rules are version ${SCORER_VERSION}; no rate computed across them is comparable, and a change of rule invalidates rather than rescales a previous number`);
+  }
+  for (const arm of ARMS) {
+    if (answeredShare[arm] < MIN_ANSWERED_SHARE) {
+      refusals.push(`arm ${arm}: only ${(answeredShare[arm] * 100).toFixed(1)}% of turns were answered, below the ${(MIN_ANSWERED_SHARE * 100).toFixed(0)}% floor, so its rates describe the route rather than the model`);
+    }
+    if (invalidShare[arm] > INVALID_SHARE_CEILING) {
+      const reasons = rows
+        .map((row) => row.scores[arm])
+        .filter((score) => score.state === 'invalid')
+        .reduce((counts, score) => counts.set(score.evidence, (counts.get(score.evidence) ?? 0) + 1), new Map<string, number>());
+      const breakdown = [...reasons.entries()].map(([reason, count]) => `${count}x ${reason}`).join('; ');
+      refusals.push(`arm ${arm}: ${(invalidShare[arm] * 100).toFixed(1)}% of observations are invalid and were excluded (${breakdown})`);
+    }
+  }
+  const notApplicable = ARMS.reduce((sum, arm) => sum + Object.values(effectRates[arm]).reduce((inner, rate) => inner + (rate?.notApplicable ?? 0), 0), 0);
+  if (notApplicable > 0) {
+    refusals.push(`${notApplicable} observations were declared not_applicable; the tables below are not evidence about those effects`);
+  }
+  for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) {
+    const ceiling = effectRates.gold_forced[effect];
+    if (ceiling !== undefined && ceiling.total === 0) {
+      refusals.push(`the ceiling (gold_forced) has no valid observation of ${effect}, so its gate is untested rather than met`);
+    }
+  }
+  if (extractionFailureShare > EXTRACTION_FAILURE_CEILING) {
+    refusals.push(`the extractor did not answer on ${(extractionFailureShare * 100).toFixed(1)}% of turns, so the normal arm's memory is incomplete for reasons the fixture cannot separate from an extractor that found nothing`);
+  }
+
   return {
     runCount,
     effectRates,
@@ -301,13 +489,24 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
     routeRefusals,
     starvedReplies,
     extractionFailures: rows.filter((row) => row.extractionFailed).length,
+    measurement: {
+      scorerVersion: SCORER_VERSION,
+      invalidShare,
+      notApplicable,
+      refusals,
+      batchAcceptable: refusals.length === 0,
+    },
     acceptance: {
       goldForcedCoreAtLeastEightOfTen,
       normalCoreAtLeastSevenOfTen,
       protectionPerfect,
       answeredShare,
       enoughTurnsWereAnswered,
-      passed: goldForcedCoreAtLeastEightOfTen && normalCoreAtLeastSevenOfTen && protectionPerfect && enoughTurnsWereAnswered,
+      // A batch whose measurements are refused cannot pass, whatever the rates
+      // say. The gates measure the product; this measures whether the product was
+      // measured, and the second one has to come first.
+      passed: refusals.length === 0
+        && goldForcedCoreAtLeastEightOfTen && normalCoreAtLeastSevenOfTen && protectionPerfect && enoughTurnsWereAnswered,
     },
   };
 }
@@ -416,6 +615,7 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
               injectedRecordIds: renderedRecordIds(result.plan.plan),
               reply,
               replyFailed: reply.length === 0,
+              nameRenderedAsStyle: nameRenderedAsStyle(result.plan.plan),
               ...(route === undefined ? {} : { route }),
             } satisfies ArmResult] as const;
           }))) as Record<Arm, ArmResult>;
@@ -457,11 +657,12 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
             ARMS.map((arm, armIndex) => [arm, accepted[armIndex]?.rejected ?? []]),
           ) as Record<Arm, Array<{ candidateId: string; reason: string }>>;
           const scores = Object.fromEntries(
-            ARMS.map((arm) => [arm, score(turn.effectType, turn.memoryOpportunity, armResults[arm].reply, armResults[arm].replyFailed)]),
+            ARMS.map((arm) => [arm, observe(turn.effectType, turn.memoryOpportunity, armResults[arm])]),
           ) as Record<Arm, ScoredEffect>;
           rows.push({
             run, session: session.id, day: session.dayOffset, turn: index, intent: turn.intent, user: turn.text,
             memoryOpportunity: turn.memoryOpportunity, effectType: turn.effectType,
+            scorerVersion: SCORER_VERSION,
             arms: armResults, admissions, rejections, scores, extractionFailed,
           });
         }

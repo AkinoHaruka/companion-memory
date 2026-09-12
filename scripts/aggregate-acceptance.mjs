@@ -83,27 +83,62 @@ const summary = summarizeOracle(rows, files.length);
 const arms = ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'];
 const effects = ['name', 'language', 'preference', 'continuity', 'boundary', 'correct_silence'];
 
+/** The predicate each effect actually applied, taken from the observations themselves. */
+const conditions = new Map();
+for (const row of rows) {
+  for (const arm of arms) {
+    if (!conditions.has(row.effectType)) conditions.set(row.effectType, row.scores[arm].condition);
+  }
+}
+
 process.stdout.write(`invocations aggregated: ${selected.map((entry) => entry.name).join(', ')}\n`);
-process.stdout.write(`repetitions aggregated: ${files.length} (of ${available.length} invocations present${label === undefined ? '' : ` for label ${label}`})\n\n`);
-process.stdout.write('effect rates, unanswered turns excluded:\n');
-process.stdout.write(`  ${'arm'.padEnd(22)}${effects.map((effect) => effect.padStart(16)).join('')}\n`);
-for (const arm of arms) {
-  const cells = effects.map((effect) => {
-    const rate = summary.effectRates[arm][effect];
-    if (rate === undefined || rate.rate === null) return 'n/a'.padStart(16);
-    return `${rate.passed}/${rate.total}`.padStart(16);
-  });
-  process.stdout.write(`  ${arm.padEnd(22)}${cells.join('')}\n`);
+process.stdout.write(`repetitions aggregated: ${files.length} (of ${available.length} invocations present${label === undefined ? '' : ` for label ${label}`})\n`);
+process.stdout.write(`scorer version: ${summary.measurement.scorerVersion}\n\n`);
+const versionIncompatible = summary.measurement.refusals.some((refusal) => refusal.includes('scorer version'));
+if (versionIncompatible) {
+  // The rows come from different rules, so their score fields do not even have the
+  // same shape. Printing the table would show zeros that look like failures rather
+  // than like incomparability.
+  process.stdout.write('these artifacts predate the current scorer; re-run the batch instead of re-reading it.\n\n');
+} else {
+  process.stdout.write('what each effect actually measured:\n');
+  for (const effect of effects) process.stdout.write(`  ${effect.padEnd(18)}${conditions.get(effect) ?? '(no observation)'}\n`);
+  process.stdout.write('\neffect rates, pass/total. valid observations only; inv = invalid, n/a = not applicable\n');
+  process.stdout.write(`  ${'arm'.padEnd(22)}${effects.map((effect) => effect.padStart(18)).join('')}\n`);
+  for (const arm of arms) {
+    const cells = effects.map((effect) => {
+      const rate = summary.effectRates[arm][effect];
+      if (rate === undefined) return 'n/a'.padStart(18);
+      const excluded = rate.invalid + rate.notApplicable === 0 ? '' : ` inv${rate.invalid} na${rate.notApplicable}`;
+      const value = rate.rate === null ? 'n/a' : `${rate.passed}/${rate.total}`;
+      return `${value}${excluded}`.padStart(18);
+    });
+    process.stdout.write(`  ${arm.padEnd(22)}${cells.join('')}\n`);
+  }
+  process.stdout.write('\nobservations that did not count:\n');
+  for (const arm of arms) {
+    process.stdout.write(`  ${arm.padEnd(22)}unanswered ${summary.unreplied[arm]}  refused ${summary.routeRefusals[arm]}  starved ${summary.starvedReplies[arm]}  invalid ${(summary.measurement.invalidShare[arm] * 100).toFixed(1)}%\n`);
+  }
+  // Not a per-arm effect: the extractor runs once per turn, for the normal arm.
+  // A refusal here leaves the normal arm with nothing to store, which reads as
+  // "the normal arm had no memory" unless it is counted.
+  process.stdout.write(`\nextractor refusals: ${summary.extractionFailures} of ${rows.length} turns\n`);
 }
-process.stdout.write('\nunanswered turns per arm:\n');
-for (const arm of arms) {
-  process.stdout.write(`  ${arm.padEnd(22)}${summary.unreplied[arm]}  (answered ${(summary.acceptance.answeredShare[arm] * 100).toFixed(1)}%)`);
-  const refused = summary.routeRefusals?.[arm] ?? 0;
-  const starved = summary.starvedReplies?.[arm] ?? 0;
-  process.stdout.write(`  refused ${refused}  starved ${starved}\n`);
+
+process.stdout.write('\n=== verdict ===\n');
+if (!summary.measurement.batchAcceptable) {
+  // Machine-generated, and the only place a reading is allowed to come from. What
+  // survives for diagnosis is the arithmetic; what does not survive is a
+  // conclusion drawn from it.
+  process.stdout.write('REFUSED -- this batch may not be read as a result:\n');
+  for (const refusal of summary.measurement.refusals) process.stdout.write(`  - ${refusal}\n`);
+  process.stdout.write('  The counts above are shown for diagnosis. They are not a product finding.\n');
+} else {
+  process.stdout.write('measurement preconditions held.\n');
 }
-// Not a per-arm effect: the extractor runs once per turn, for the normal arm.
-// A refusal here leaves the normal arm with nothing to store, which reads as
-// "the normal arm had no memory" unless it is counted.
-process.stdout.write(`\nextractor refusals: ${summary.extractionFailures ?? 0} of ${rows.length} turns\n`);
-process.stdout.write(`\n${JSON.stringify(summary.acceptance, null, 2)}\n`);
+if (versionIncompatible) {
+  process.stdout.write('\nthe acceptance gates are not evaluated: they compare rates that were never computed.\n');
+} else {
+  process.stdout.write(`\n${JSON.stringify(summary.acceptance, null, 2)}\n`);
+}
+process.exitCode = summary.acceptance.passed ? 0 : 1;
