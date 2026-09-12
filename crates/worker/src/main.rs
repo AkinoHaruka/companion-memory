@@ -360,7 +360,7 @@ fn warm(store: &Store, input: WarmInput) -> Result<Value, Failure> {
             record_id: claim.id.clone(),
             text,
             surface: surface_name(&decision).into(),
-            reason: decision_reason(&decision, referenced || forced).into(),
+            reason: decision_reason(&decision, referenced, forced).into(),
         };
 
         if is_constraint(Some(&claim.predicate)) {
@@ -995,13 +995,19 @@ fn surface_name(decision: &MentionDecision) -> &'static str {
     }
 }
 
-fn decision_reason(decision: &MentionDecision, has_cue: bool) -> &'static str {
+fn decision_reason(decision: &MentionDecision, referenced: bool, forced: bool) -> &'static str {
     match decision {
         MentionDecision::Allowed {
             background_only: true,
             ..
         } => "background_policy",
-        MentionDecision::Allowed { .. } if has_cue => "current_turn_cue",
+        // A record the oracle forced was not cued by the user, and saying it was
+        // makes the forced arm's plan indistinguishable from the arm that really
+        // did remember. `reason` is the field a diagnosis reads to decide why
+        // something surfaced, so a label that cannot tell the harness apart from
+        // the product answers that question wrongly for two arms out of four.
+        MentionDecision::Allowed { .. } if forced && !referenced => "forced_oracle_injection",
+        MentionDecision::Allowed { .. } if referenced || forced => "current_turn_cue",
         MentionDecision::Allowed { .. } => "policy_memory",
         MentionDecision::Denied { .. } => "mention_gate_denied",
     }

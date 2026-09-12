@@ -178,7 +178,22 @@ pub fn warm_params(current_message: &str, session_id: &str, new_session: bool) -
     })
 }
 
-/// The five channels of a plan, so a test can assert them as a set.
+/// A `warm` request with the oracle's forced-injection list attached.
+///
+/// `gold_forced` and `counterfactual_forced` differ from `normal` only by this
+/// field, so the arms are only isolated if it does exactly what it says.
+pub fn forced_warm_params(
+    current_message: &str,
+    session_id: &str,
+    new_session: bool,
+    record_ids: Vec<String>,
+) -> Value {
+    let mut params = warm_params(current_message, session_id, new_session);
+    params["force_record_ids"] = json!(record_ids);
+    params
+}
+
+/// The channels of a plan, so a test can assert them as a set.
 pub fn channels(response: &Value) -> Value {
     let plan = &response["result"]["plan"];
     json!({

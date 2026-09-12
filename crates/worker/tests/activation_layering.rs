@@ -128,20 +128,25 @@ fn an_uncued_goal_reaches_no_channel_because_its_predicate_is_cue_gated() {
     //
     // `goal.long_term_objective` is registered `mention_if_user_cues`, so with no
     // cue the gate denies it. The record is not a constraint and not a policy, so
-    // the remaining channels are `topicActivated` — which requires the cue — and
-    // `deepRecall` — which nothing populates. It therefore reaches the plan only
-    // as `doNotSurface`, and the model never sees it.
+    // the remaining channels are `topicActivated`, which requires the cue, and
+    // `deepRecall`, which admits only `freely_mentionable` records. It therefore
+    // reaches the plan only as `doNotSurface`, and the model never sees it.
+    //
+    // An earlier version of this comment said `deepRecall` was never populated by
+    // anything. That was wrong, and the case below — an uncued `goal.current_focus`
+    // arriving through `deepRecall` — is what disproved it. The channel works; what
+    // excludes this record is its registry row, which is a policy and not a gap.
     //
     // Twenty-one of the forty-six predicates are cue-gated this way, including
     // goals, people and relationships. So a companion cannot bring up a stated
     // ambition the user has not just mentioned, which is a large part of what
-    // remembering someone is supposed to look like.
+    // remembering someone is supposed to look like. Tightening the cue matcher
+    // deepens this: fewer false cues means fewer accidental mentions as well as
+    // fewer spurious ones.
     //
     // Asserted as-is rather than as a requirement: the behaviour is deliberate in
-    // the registry, and whether to change it is a product decision. What is not
-    // deliberate is that `deepRecall` exists as the safety net for exactly this
-    // case and is never filled, which is why the silence is total rather than
-    // ranked.
+    // the registry, and whether to change it is a product decision that has not
+    // been made explicitly.
     let mut worker = Worker::start();
     record(
         &mut worker,
