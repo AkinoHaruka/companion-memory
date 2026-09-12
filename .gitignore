@@ -11,3 +11,22 @@ target/
 # Run artifacts. The transcripts contain the conversation the system was given,
 # which for this project is exactly the material that should not be committed.
 runs/
+
+# Internal handoff and evaluation material. Keep local copies out of the
+# publishable repository so a release upload cannot expose planning context or
+# provider transcripts by accident.
+HANDOFF-*.md
+docs/consultation-*.md
+scripts/tasks/
+scripts/attribute-ab.mjs
+scripts/aggregate-acceptance.mjs
+scripts/boundary-probe.mjs
+scripts/check-observations.mjs
+scripts/codex-task.ps1
+scripts/headless-acceptance.patch.yml
+scripts/inspect-run.mjs
+scripts/lift-probe.mjs
+scripts/rescore-artifacts.mjs
+scripts/run-acceptance-http.mjs
+scripts/score-run.mjs
+scripts/show-ab.mjs
