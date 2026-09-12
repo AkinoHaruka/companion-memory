@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
-import { runOracleEvaluation, type EvaluationClient } from './evaluator.js';
-import { SESSIONS, type SessionScript } from './script.js';
+import { rescoreArm, runOracleEvaluation, type EvaluationClient } from './evaluator.js';
+import { SESSIONS, type SessionScript, type UserTurn } from './script.js';
 
 /**
  * A stand-in worker that stores what it is told and renders it into one channel.
@@ -35,7 +35,7 @@ const workerArgs = (deepChannel: 'identity' | 'deepRecall' | 'responseStyle'): s
 const script: readonly SessionScript[] = [{
   id: 'oracle-contract', dayOffset: 0, turns: [
     {
-      intent: 'establish identity', text: '我叫林越。', memoryOpportunity: 'none', effectType: 'correct_silence',
+      intent: 'establish identity', text: '我叫林越。', memoryOpportunity: 'none', effectType: 'background_silence',
       gold: [{ predicate: 'identity.name', value: '林越', rawValue: '林越', quote: '林越' }],
       counterfactual: [{ predicate: 'identity.name', value: '周然', rawValue: '周然', quote: '林越' }],
     },
@@ -61,6 +61,23 @@ const fakeModel: EvaluationClient = {
 };
 
 describe('Oracle evaluator causal artifacts', () => {
+  it('only scores a background protection after its declared record was rendered', () => {
+    const turn = {
+      intent: 'background protection probe', text: '我最近有点烦。', memoryOpportunity: 'negative', effectType: 'background_silence',
+      protectionEvidence: { tokens: ['宠物医院'], surfaces: ['background_only', 'never_surface'] },
+    } satisfies UserTurn;
+    const absent = rescoreArm('background_silence', turn, {
+      reply: '听起来今天不太轻松。', plan: { constraints: [] },
+    });
+    expect(absent).toMatchObject({ state: 'not_applicable' });
+
+    const rendered = rescoreArm('background_silence', turn, {
+      reply: '听起来今天不太轻松。',
+      plan: { doNotSurface: [{ recordId: 'test', reason: 'test', surface: 'never_surface', text: 'episode: 宠物医院' }] },
+    });
+    expect(rendered).toMatchObject({ state: 'pass' });
+  });
+
   it('keeps repetitions isolated and records normal, Gold, forced, and counterfactual effects', async () => {
     const outputDirectory = mkdtempSync(join(tmpdir(), 'companion-memory-oracle-'));
     try {
@@ -124,8 +141,8 @@ describe('Oracle evaluator causal artifacts', () => {
       expect(summary.acceptance.passed).toBe(false);
       expect(summary.unreplied.normal).toBeGreaterThan(0);
       // Nothing may be credited to a turn nobody answered, in either direction.
-      expect(summary.effectRates.normal.correct_silence).toMatchObject({ passed: 0, total: 0, rate: null });
-      expect(summary.effectRates.normal.boundary).toMatchObject({ passed: 0, total: 0, rate: null });
+      expect(summary.effectRates.normal.background_silence).toMatchObject({ passed: 0, total: 0, rate: null });
+      expect(summary.effectRates.normal.boundary_silence).toMatchObject({ passed: 0, total: 0, rate: null });
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
     }
@@ -292,7 +309,7 @@ describe('Oracle evaluator causal artifacts', () => {
     const noDeclaration: readonly SessionScript[] = [{
       id: 'c', dayOffset: 0, turns: [
         {
-          intent: 'establish identity', text: '我叫林越。', memoryOpportunity: 'none', effectType: 'correct_silence',
+          intent: 'establish identity', text: '我叫林越。', memoryOpportunity: 'none', effectType: 'background_silence',
           gold: [{ predicate: 'identity.name', value: '林越', rawValue: '林越', quote: '林越' }],
         },
         { intent: 'natural name probe', text: '我想继续聊聊。', memoryOpportunity: 'positive', effectType: 'name', nameExpectation: 'may_use' },

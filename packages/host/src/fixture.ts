@@ -34,12 +34,13 @@ export interface FixtureViolation {
 /**
  * The effects whose definition is "the reply used a record".
  *
- * Not every effect needs a record to exist: `boundary` and `correct_silence` are
- * about restraint, and `language` is about what language the user asked for. An
+ * Not every effect needs a record to exist: the silence effects are about
+ * restraint, and `language` is about what language the user asked for. An
  * effect in this set is scored for reading memory, so a turn that scores it must
  * declare what it would take to see that.
  */
 const EVIDENCE_REQUIRED_EFFECTS: readonly EffectType[] = ['continuity'];
+const PROTECTION_EFFECTS: readonly EffectType[] = ['boundary_silence', 'background_silence'];
 
 /** Every piece of human-verified text a turn contributes to memory. */
 function goldTextOf(turn: UserTurn): string[] {
@@ -92,6 +93,7 @@ export function validateFixture(sessions: readonly SessionScript[]): FixtureViol
     for (const [index, turn] of session.turns.entries()) {
       const label = `${session.id}t${index}`;
       const tiers = tiersOf(turn);
+      const recordsThisTurn = (turn.gold?.length ?? 0) + (turn.goldEpisodes?.length ?? 0) > 0;
 
       const graded = new Set<string>();
       for (const { grade, token } of tiers) {
@@ -118,6 +120,37 @@ export function validateFixture(sessions: readonly SessionScript[]): FixtureViol
       }
       if (tiers.length > 0 && turn.memoryOpportunity !== 'positive') {
         violations.push({ turn: label, rule: 'evidence-without-opportunity', detail: `recallEvidence is declared on a turn marked ${turn.memoryOpportunity}, so the effect it supports is not being asked for`, fatal: false });
+      }
+
+      if (PROTECTION_EFFECTS.includes(turn.effectType)) {
+        const protection = turn.protectionEvidence;
+        if (protection !== undefined) {
+          const { tokens, surfaces } = protection;
+          if (tokens.length === 0) {
+            violations.push({ turn: label, rule: 'protection-tokens-empty', detail: 'a protection observation needs at least one token whose appearance would surface the record', fatal: true });
+          }
+          if (surfaces.length === 0) {
+            violations.push({ turn: label, rule: 'protection-surfaces-empty', detail: 'a protection observation needs a background_only or never_surface visibility class', fatal: true });
+          }
+          for (const token of tokens) {
+            if (turn.text.includes(token)) {
+              violations.push({ turn: label, rule: 'protection-token-in-user-text', detail: `"${token}" occurs in this turn's own user text, so a reply containing it could be an echo rather than a surfaced memory`, fatal: true });
+            }
+          }
+        }
+        // A declaration or admission can only echo the user. It is valuable as
+        // setup, but cannot show whether a previously rendered protection holds.
+        if (recordsThisTurn) {
+          violations.push({ turn: label, rule: 'protection-on-recording-turn', detail: 'this turn declares or records memory, so its reply can only acknowledge the current text; protection is measurable only on a later turn', fatal: false });
+        } else if (protection === undefined) {
+          violations.push({ turn: label, rule: 'protection-without-evidence', detail: `effectType "${turn.effectType}" declares no protected token and visibility class, so no reply can be attributed to a rendered protection record`, fatal: false });
+        } else {
+          for (const token of protection.tokens) {
+            if (!memorySoFar.some((text) => text.includes(token))) {
+              violations.push({ turn: label, rule: 'protection-token-not-in-prior-gold', detail: `"${token}" does not occur in a human-verified record admitted before this turn, so the fixture has no protected memory to render`, fatal: true });
+            }
+          }
+        }
       }
 
       if (turn.counterfactual !== undefined) {

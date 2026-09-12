@@ -17,14 +17,22 @@ import { PROBES, SESSIONS, type SessionScript } from './script.js';
 const script = (turns: SessionScript['turns']): SessionScript[] => [{ id: 'x', dayOffset: 0, turns }];
 
 describe('fixture validation', () => {
-  it('finds exactly the one turn in the shipped fixture that cannot be measured', () => {
-    // s5t0 is scored for continuity and records no gold at all, so no reply to it
-    // can be read as a recall. Ten of the eighteen continuity turns are this
-    // turn, which is why its 0/16 in the recorded batch was structural rather
-    // than a model result.
+  it('marks declaration and recording turns as not measurable', () => {
+    // A current turn that creates memory cannot also prove the model respected
+    // it: a token in the reply can be a simple acknowledgement. The only
+    // measurable silence observations are later turns with declared evidence.
     const violations = validateFixture([...SESSIONS, ...PROBES]);
     expect(violations.map((violation) => [violation.turn, violation.rule, violation.fatal]))
-      .toEqual([['s5t0', 'effect-without-evidence', false]]);
+      .toEqual([
+        ['s1t0', 'protection-on-recording-turn', false],
+        ['s1t1', 'protection-on-recording-turn', false],
+        ['s1t2', 'protection-on-recording-turn', false],
+        ['s2t1', 'protection-on-recording-turn', false],
+        ['s3t0', 'protection-on-recording-turn', false],
+        ['s3t1', 'protection-on-recording-turn', false],
+        ['s5t0', 'effect-without-evidence', false],
+        ['probest5', 'protection-without-evidence', false],
+      ]);
   });
 
   it('refuses an evidence token that no record admitted before the turn contains', () => {
@@ -43,7 +51,7 @@ describe('fixture validation', () => {
     // A token the turn contains proves the reply echoed the user, not that it read memory.
     const violations = validateFixture(script([
       {
-        intent: 'records it', text: '猫半夜吐了，折腾到三点。', memoryOpportunity: 'none', effectType: 'correct_silence',
+        intent: 'records it', text: '猫半夜吐了，折腾到三点。', memoryOpportunity: 'none', effectType: 'background_silence',
         goldEpisodes: [{ narrative: '猫半夜吐了，折腾到三点。', quote: '猫半夜吐了，折腾到三点' }],
       },
       {
@@ -61,6 +69,7 @@ describe('fixture validation', () => {
     const violations = validateFixture(script([
       {
         intent: 'declare boundary', text: '别提前任。', memoryOpportunity: 'none', effectType: 'boundary_silence',
+        gold: [{ predicate: 'boundary.topic_avoid', value: '前任', rawValue: '别提前任', quote: '别提前任' }],
         protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] },
       },
     ]));
@@ -85,7 +94,7 @@ describe('fixture validation', () => {
   it('refuses a record that appears twice in one tier list, and a session that does not advance', () => {
     const twice = validateFixture(script([
       {
-        intent: 'records', text: '猫半夜吐了。', memoryOpportunity: 'none', effectType: 'correct_silence',
+        intent: 'records', text: '猫半夜吐了。', memoryOpportunity: 'none', effectType: 'background_silence',
         goldEpisodes: [{ narrative: '猫半夜吐了，折腾到三点。', quote: '猫半夜吐了' }],
       },
       {

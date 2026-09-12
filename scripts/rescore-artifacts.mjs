@@ -24,7 +24,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  ALL_ARMS, SCORER_VERSION, rescoreArm, scorerCondition, summarizeOracle,
+  ALL_ARMS, ALL_EFFECTS, SCORER_VERSION, rescoreArm, scorerCondition, summarizeOracle,
 } from '../packages/host/dist/src/evaluator.js';
 import { unmeasurableTurns } from '../packages/host/dist/src/fixture.js';
 import { PROBES, SESSIONS } from '../packages/host/dist/src/script.js';
@@ -67,6 +67,11 @@ const rows = files.flatMap((entry, index) => {
     const key = `${row.session}t${row.turn}`;
     const turn_ = turns.get(key);
     const reason = turn_ === undefined ? undefined : unmeasurable.get(key);
+    // Artifacts retain their historical effect label, but the frozen fixture is
+    // the source of truth for which present-day observation applies to that
+    // conversation turn. This is what lets a split scorer re-read an old reply
+    // without pretending the old, overbroad label is still a valid experiment.
+    const effectType = turn_?.effectType ?? row.effectType;
     const scores = {};
     const arms = {};
     for (const arm of ALL_ARMS) {
@@ -76,19 +81,19 @@ const rows = files.flatMap((entry, index) => {
         // skipped observation the live evaluator would have written is put back so
         // the aggregate has every arm to read.
         const skipped = 'this batch predates this arm, so it never ran here';
-        scores[arm] = rescoreArm(row.effectType, turn_, { skipped }, reason);
+        scores[arm] = rescoreArm(effectType, turn_, { skipped }, reason);
         arms[arm] = { plan: {}, injectedRecordIds: [], reply: '', replyFailed: false, identityRenderedElsewhere: false, skipped };
         continue;
       }
-      scores[arm] = rescoreArm(row.effectType, turn_, stored, reason);
+      scores[arm] = rescoreArm(effectType, turn_, stored, reason);
       arms[arm] = stored;
     }
-    return { ...row, run: index, scorerVersion: SCORER_VERSION, arms, scores };
+    return { ...row, run: index, effectType, scorerVersion: SCORER_VERSION, arms, scores };
   });
 });
 
 const summary = summarizeOracle(rows, files.length);
-const effects = [...new Set(rows.map((row) => row.effectType))];
+const effects = ALL_EFFECTS;
 
 process.stdout.write('RE-SCORED OFFLINE. No model call was made: these are the stored replies read under the\n');
 process.stdout.write(`current rules (scorer v${SCORER_VERSION}). They say how today\'s judge reads yesterday\'s behaviour,\n`);

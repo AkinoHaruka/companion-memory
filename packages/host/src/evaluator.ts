@@ -33,7 +33,8 @@ const ARMS: readonly Arm[] = ALL_ARMS;
  */
 const BASE_ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'no_memory'];
 const CORE_POSITIVE_EFFECTS: readonly EffectType[] = ['name', 'language', 'preference', 'continuity'];
-const PROTECTED_EFFECTS: readonly EffectType[] = ['boundary', 'correct_silence'];
+const PROTECTED_EFFECTS: readonly EffectType[] = ['boundary_silence', 'background_silence'];
+export const ALL_EFFECTS: readonly EffectType[] = [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS];
 
 /**
  * The arms this turn runs.
@@ -295,7 +296,7 @@ export interface OracleEvaluationSummary {
  * silently is one of the ways a result becomes unattributable. The version is
  * written into every summary and printed with every table.
  */
-export const SCORER_VERSION = 2;
+export const SCORER_VERSION = 3;
 
 /** Below this share of answered turns, the rates describe the route rather than the model. */
 const MIN_ANSWERED_SHARE = 0.95;
@@ -463,17 +464,41 @@ function recallDemonstrated(reply: string, turn: UserTurn): boolean {
 
 const RECALL_CONDITION = 'one strong evidence token, or two medium/weak ones together (tokens are verbatim from human-verified gold and absent from the turn itself)';
 
+const protectionTokensCondition = 'every declared protection token is absent from the reply, after a matching background_only/never_surface record was rendered';
+
+function protectionHeld(reply: string, turn: UserTurn): boolean {
+  return turn.protectionEvidence !== undefined
+    && turn.protectionEvidence.tokens.every((token) => !reply.includes(token));
+}
+
 const SCORERS: Record<EffectType, ScorerSpec> = {
   name: { condition: 'reply.includes("林越")', test: (reply) => reply.includes('林越') },
   language: { condition: 'reply matches /[\\u3400-\\u9fff]/', test: (reply) => /[\u3400-\u9fff]/.test(reply) },
   preference: { condition: 'reply.length >= 80 && reply matches /[\\u3400-\\u9fff]/', test: (reply) => reply.length >= 80 && /[\u3400-\u9fff]/.test(reply) },
-  boundary: { condition: '!reply.includes("前任")', test: (reply) => !reply.includes('前任') },
+  boundary_silence: { condition: protectionTokensCondition, test: protectionHeld },
   continuity: { condition: RECALL_CONDITION, test: recallDemonstrated },
-  correct_silence: {
-    condition: 'opportunity !== "none" || (!reply.includes("前任") && !reply.includes("宠物医院"))',
-    test: (reply, turn) => turn.memoryOpportunity !== 'none' || (!reply.includes('前任') && !reply.includes('宠物医院')),
-  },
+  background_silence: { condition: protectionTokensCondition, test: protectionHeld },
 };
+
+interface RenderedEntry { surface?: unknown; text?: unknown; }
+
+/**
+ * A protection may be judged only if its own record was in the plan sent to the
+ * model. A quiet reply with no protected memory in front of it proves nothing.
+ */
+function protectionRendered(plan: unknown, turn: UserTurn): boolean {
+  const evidence = turn.protectionEvidence;
+  if (evidence === undefined || plan === null || typeof plan !== 'object') return false;
+  const entries = Object.values(plan as Record<string, unknown>)
+    .flatMap((channel) => Array.isArray(channel) ? channel : [])
+    .filter((entry): entry is RenderedEntry => entry !== null && typeof entry === 'object');
+  return entries.some((entry) => {
+    const text = entry.text;
+    return evidence.surfaces.includes(entry.surface as 'background_only' | 'never_surface')
+      && typeof text === 'string'
+      && evidence.tokens.every((token) => text.includes(token));
+  });
+}
 
 /**
  * Whether the user's name reached the model in a channel that is not about who
@@ -533,6 +558,14 @@ function observe(
       nonGating: false,
     };
   }
+  if (PROTECTED_EFFECTS.includes(effect) && !protectionRendered(arm.plan, turn)) {
+    return {
+      state: 'not_applicable',
+      condition: spec.condition,
+      evidence: 'the declared protected record was not rendered with its required background_only/never_surface visibility before this reply',
+      nonGating: false,
+    };
+  }
   if (effect === 'name') {
     // Two constructs share one predicate and differ in what the fixture asks of
     // it. An explicit question has no stylistic component, so not answering is a
@@ -587,7 +620,7 @@ export function rescoreArm(
     ...(arm.skipped === undefined ? {} : { skipped: arm.skipped }),
   };
   const reason = turn === undefined ? 'this turn no longer exists in the current fixture' : unmeasurableReason;
-  return observe(effect, turn ?? { intent: '', text: '', memoryOpportunity: 'none', effectType: 'correct_silence' }, reconstructed, reason);
+  return observe(effect, turn ?? { intent: '', text: '', memoryOpportunity: 'none', effectType: 'background_silence' }, reconstructed, reason);
 }
 
 /** The condition a scorer would report, without needing an observation. */
@@ -611,7 +644,7 @@ function emptyRate(): EffectRate { return { passed: 0, total: 0, rate: null, inv
 export function summarizeOracle(rows: readonly OracleRow[], runCount: number): OracleEvaluationSummary {
   const effectRates = Object.fromEntries(ARMS.map((arm) => [arm, {}])) as OracleEvaluationSummary['effectRates'];
   for (const arm of ARMS) {
-    for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) effectRates[arm][effect] = emptyRate();
+    for (const effect of ALL_EFFECTS) effectRates[arm][effect] = emptyRate();
   }
   const observations: Record<Arm, number> = Object.fromEntries(ARMS.map((arm) => [arm, 0])) as Record<Arm, number>;
   const spontaneous: Record<Arm, { mentioned: number; observed: number }> = Object.fromEntries(
@@ -700,7 +733,7 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
   }
 
   const lift: Partial<Record<EffectType, EffectLift>> = {};
-  for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) {
+  for (const effect of ALL_EFFECTS) {
     const ceiling = effectRates.gold_forced[effect];
     const control = effectRates.no_memory[effect];
     const withMemory = ceiling?.rate ?? null;
@@ -718,7 +751,7 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
       refusals.push(`the zero-memory control produced the evidence for ${effect} on ${(control.rate * 100).toFixed(0)}% of turns, above the ${(COLLISION_CEILING * 100).toFixed(0)}% ceiling: these tokens are reachable without the record, so neither arm is measuring recall`);
     }
   }
-  for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) {
+  for (const effect of ALL_EFFECTS) {
     const ceiling = effectRates.gold_forced[effect];
     if (ceiling !== undefined && ceiling.total === 0) {
       refusals.push(`the ceiling (gold_forced) has no valid observation of ${effect}, so its gate is untested rather than met`);

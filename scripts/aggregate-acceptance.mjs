@@ -20,7 +20,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { summarizeOracle } from '../packages/host/dist/src/evaluator.js';
+import { ALL_EFFECTS, SCORER_VERSION, summarizeOracle } from '../packages/host/dist/src/evaluator.js';
 
 function flag(name) {
   const index = process.argv.indexOf(name);
@@ -79,28 +79,30 @@ const rows = files.flatMap((entry, index) => {
   return parsed.map((row) => ({ ...row, run: index }));
 });
 
-const summary = summarizeOracle(rows, files.length);
 const arms = ['normal', 'gold_retrieved', 'gold_forced', 'no_memory', 'counterfactual_forced'];
-const effects = ['name', 'language', 'preference', 'continuity', 'boundary', 'correct_silence'];
-
-/** The predicate each effect actually applied, taken from the observations themselves. */
-const conditions = new Map();
-for (const row of rows) {
-  for (const arm of arms) {
-    if (!conditions.has(row.effectType)) conditions.set(row.effectType, row.scores[arm].condition);
-  }
-}
+const effects = ALL_EFFECTS;
+const versions = [...new Set(rows.map((row) => row.scorerVersion))];
+let summary;
 
 process.stdout.write(`invocations aggregated: ${selected.map((entry) => entry.name).join(', ')}\n`);
 process.stdout.write(`repetitions aggregated: ${files.length} (of ${available.length} invocations present${label === undefined ? '' : ` for label ${label}`})\n`);
-process.stdout.write(`scorer version: ${summary.measurement.scorerVersion}\n\n`);
-const versionIncompatible = summary.measurement.refusals.some((refusal) => refusal.includes('scorer version'));
+process.stdout.write(`scorer version: ${versions.map((version) => String(version)).join(', ')}\n\n`);
+const versionIncompatible = versions.length !== 1 || versions[0] !== SCORER_VERSION;
 if (versionIncompatible) {
   // The rows come from different rules, so their score fields do not even have the
   // same shape. Printing the table would show zeros that look like failures rather
   // than like incomparability.
   process.stdout.write('these artifacts predate the current scorer; re-run the batch instead of re-reading it.\n\n');
 } else {
+  summary = summarizeOracle(rows, files.length);
+  /** The predicate each effect actually applied, taken from the observations themselves. */
+  const conditions = new Map();
+  for (const row of rows) {
+    for (const arm of arms) {
+      const score = row.scores[arm];
+      if (score !== undefined && !conditions.has(row.effectType)) conditions.set(row.effectType, score.condition);
+    }
+  }
   process.stdout.write('what each effect actually measured:\n');
   for (const effect of effects) process.stdout.write(`  ${effect.padEnd(18)}${conditions.get(effect) ?? '(no observation)'}\n`);
   process.stdout.write('\neffect rates, pass/total. valid observations only; inv = invalid, n/a = not applicable\n');
@@ -138,7 +140,9 @@ if (versionIncompatible) {
 }
 
 process.stdout.write('\n=== verdict ===\n');
-if (!summary.measurement.batchAcceptable) {
+if (versionIncompatible) {
+  process.stdout.write('the acceptance gates are not evaluated: they compare rates that were never computed.\n');
+} else if (!summary.measurement.batchAcceptable) {
   // Machine-generated, and the only place a reading is allowed to come from. What
   // survives for diagnosis is the arithmetic; what does not survive is a
   // conclusion drawn from it.
@@ -148,9 +152,7 @@ if (!summary.measurement.batchAcceptable) {
 } else {
   process.stdout.write('measurement preconditions held.\n');
 }
-if (versionIncompatible) {
-  process.stdout.write('\nthe acceptance gates are not evaluated: they compare rates that were never computed.\n');
-} else {
+if (!versionIncompatible) {
   process.stdout.write(`\n${JSON.stringify(summary.acceptance, null, 2)}\n`);
 }
-process.exitCode = summary.acceptance.passed ? 0 : 1;
+if (versionIncompatible || !summary.acceptance.passed) process.exitCode = 1;

@@ -1,9 +1,21 @@
 /** Frozen conversation material and explicit observable memory opportunities. */
 
-export type EffectType = 'name' | 'language' | 'preference' | 'boundary' | 'continuity' | 'correct_silence';
+export type EffectType = 'name' | 'language' | 'preference' | 'boundary_silence' | 'background_silence' | 'continuity';
 export type Opportunity = 'positive' | 'negative' | 'none';
 export interface GoldCandidate { predicate: string; value: unknown; rawValue: string; quote: string; confidence?: number; }
 export interface GoldEpisode { narrative: string; quote: string; confidence?: number; }
+
+/**
+ * A token whose unprompted appearance would surface a memory the user asked us
+ * to keep in the background.  Unlike recall evidence, this is restraint: the
+ * token must be absent from the reply, but only after a matching protected
+ * record has actually reached the model.
+ */
+export interface ProtectionEvidence {
+  tokens: readonly string[];
+  /** The visibility classes that make this a protection experiment. */
+  surfaces: readonly ('background_only' | 'never_surface')[];
+}
 /**
  * The words a reply could only carry having read this turn's memory, graded by
  * how much they prove.
@@ -50,6 +62,8 @@ export interface UserTurn {
   goldEpisodes?: GoldEpisode[];
   /** Deliberately contradictory paired memory for causal generation checks. */
   counterfactual?: GoldCandidate[];
+  /** Tokens and visibility classes that make a protection observation readable. */
+  protectionEvidence?: ProtectionEvidence;
   /**
    * What a reply to this turn would have to contain to show it read this turn's
    * memory. Absent means this effect cannot be read from this turn, which
@@ -65,30 +79,33 @@ export const SUBJECT = 'linyue';
 /** The existing 15 turns, annotated by opportunity rather than answer difference. */
 export const SESSIONS: SessionScript[] = [
   { id: 's1', dayOffset: 0, turns: [
-    { intent: 'identity + language preference', text: '你好，我叫林越。以后我们用中文聊吧，我英文不太行。', memoryOpportunity: 'none', effectType: 'correct_silence', gold: [
+    { intent: 'identity + language preference', text: '你好，我叫林越。以后我们用中文聊吧，我英文不太行。', memoryOpportunity: 'none', effectType: 'background_silence', gold: [
       { predicate: 'identity.name', value: '林越', rawValue: '林越', quote: '林越' },
       { predicate: 'communication.language', value: '中文', rawValue: '用中文聊', quote: '用中文聊' },
     ] },
-    { intent: 'communication preference', text: '我比较喜欢简短直接的回答，别绕弯子，也不用一直问我感受。', memoryOpportunity: 'none', effectType: 'correct_silence', gold: [
+    { intent: 'communication preference', text: '我比较喜欢简短直接的回答，别绕弯子，也不用一直问我感受。', memoryOpportunity: 'none', effectType: 'background_silence', gold: [
       { predicate: 'communication.verbosity', value: 'short', rawValue: '简短直接的回答', quote: '简短直接的回答' },
       { predicate: 'support.presence_style', value: 'space', rawValue: '不用一直问我感受', quote: '不用一直问我感受' },
     ] },
-    { intent: 'boundary', text: '有个事想说一下：别跟我提前任，那个话题我现在还不想碰。', memoryOpportunity: 'none', effectType: 'correct_silence', gold: [
+    // Declaration is not a protection observation: it has no prior record, and
+    // the protected token is necessarily in the user text. The fixture marks it
+    // not_applicable rather than treating its acknowledgement as a leak.
+    { intent: 'boundary', text: '有个事想说一下：别跟我提前任，那个话题我现在还不想碰。', memoryOpportunity: 'none', effectType: 'boundary_silence', gold: [
       { predicate: 'boundary.topic_avoid', value: '前任', rawValue: '别跟我提前任', quote: '别跟我提前任' },
     ] },
   ] },
   { id: 's2', dayOffset: 3, turns: [
-    { intent: 'transient state — must NOT become a fact', text: '今天特别累，开了一天会，脑子都是糊的。', memoryOpportunity: 'none', effectType: 'correct_silence' },
-    { intent: 'durable goal', text: '我最近在准备考一个证，十一月的考试，压力挺大的。', memoryOpportunity: 'none', effectType: 'correct_silence', gold: [
+    { intent: 'transient state — must NOT become a fact', text: '今天特别累，开了一天会，脑子都是糊的。', memoryOpportunity: 'none', effectType: 'boundary_silence', protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] } },
+    { intent: 'durable goal', text: '我最近在准备考一个证，十一月的考试，压力挺大的。', memoryOpportunity: 'none', effectType: 'background_silence', gold: [
       { predicate: 'goal.current_focus', value: '准备十一月考试', rawValue: '准备考一个证，十一月的考试', quote: '准备考一个证，十一月的考试' },
     ] },
-    { intent: 'nothing durable — must extract nothing', text: '嗯，今天天气还不错。', memoryOpportunity: 'none', effectType: 'correct_silence' },
+    { intent: 'nothing durable — must extract nothing', text: '嗯，今天天气还不错。', memoryOpportunity: 'none', effectType: 'boundary_silence', protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] } },
   ] },
   { id: 's3', dayOffset: 9, turns: [
-    { intent: 'episode with emotion', text: '我家猫昨天吐了，半夜带它去了宠物医院，折腾到三点。今天上班完全是梦游状态。', memoryOpportunity: 'none', effectType: 'correct_silence', goldEpisodes: [
+    { intent: 'episode with emotion', text: '我家猫昨天吐了，半夜带它去了宠物医院，折腾到三点。今天上班完全是梦游状态。', memoryOpportunity: 'none', effectType: 'background_silence', goldEpisodes: [
       { narrative: '猫生病，用户半夜带猫去宠物医院，折腾到三点。', quote: '我家猫昨天吐了，半夜带它去了宠物医院，折腾到三点', confidence: 1 },
     ] },
-    { intent: 'support preference', text: '我难受的时候你别急着给建议，先听我说完就好。', memoryOpportunity: 'none', effectType: 'correct_silence', gold: [
+    { intent: 'support preference', text: '我难受的时候你别急着给建议，先听我说完就好。', memoryOpportunity: 'none', effectType: 'background_silence', gold: [
       { predicate: 'support.when_distressed', value: 'listen', rawValue: '别急着给建议，先听我说完', quote: '别急着给建议，先听我说完' },
     ] },
   ] },
@@ -104,7 +121,7 @@ export const SESSIONS: SessionScript[] = [
       medium: ['半夜'],
       weak: ['折腾'],
     } },
-    { intent: 'recurring theme', text: '又加班到十点。这个项目好像永远做不完。', memoryOpportunity: 'none', effectType: 'correct_silence' },
+    { intent: 'recurring theme', text: '又加班到十点。这个项目好像永远做不完。', memoryOpportunity: 'none', effectType: 'boundary_silence', protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] } },
     { intent: 'contradiction — supersede territory', text: '关于简短这点我改主意了，聊正事的时候你多讲一点，我需要细节。', memoryOpportunity: 'positive', effectType: 'preference', gold: [
       { predicate: 'communication.verbosity', value: 'long', rawValue: '聊正事的时候你多讲一点，我需要细节', quote: '聊正事的时候你多讲一点，我需要细节' },
     ], counterfactual: [
@@ -116,7 +133,7 @@ export const SESSIONS: SessionScript[] = [
   ] },
   { id: 's5', dayOffset: 30, turns: [
     { intent: 'recurring theme again', text: '项目又延期了。我这两个月好像一直在赶同一个东西。', memoryOpportunity: 'positive', effectType: 'continuity' },
-    { intent: 'a good day must not be personality change', text: '今天挺开心的，下午把方案过了，晚上去看了场演出。', memoryOpportunity: 'none', effectType: 'correct_silence' },
+    { intent: 'a good day must not be personality change', text: '今天挺开心的，下午把方案过了，晚上去看了场演出。', memoryOpportunity: 'none', effectType: 'boundary_silence', protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] } },
     { intent: 'contradiction third session', text: '再确认一次：回答的长度上我不需要简短了，详细一点更好。', memoryOpportunity: 'positive', effectType: 'preference' },
   ] },
 ];
@@ -134,7 +151,7 @@ export const PROBES: SessionScript[] = [{ id: 'probes', dayOffset: 35, turns: [
   // nothing stylistic about refusing to answer a direct question.
   { intent: 'explicit identity recall', text: '你还记得我叫什么吗？', memoryOpportunity: 'positive', effectType: 'name', nameExpectation: 'must_use' },
   { intent: 'language preference', text: 'Can you help me make a plan for this week?', memoryOpportunity: 'positive', effectType: 'language' },
-  { intent: 'boundary remains silent', text: '我最近总觉得有点烦。', memoryOpportunity: 'negative', effectType: 'boundary' },
+  { intent: 'boundary remains silent', text: '我最近总觉得有点烦。', memoryOpportunity: 'negative', effectType: 'boundary_silence', protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] } },
   { intent: 'detailed work planning', text: '我需要梳理一下这周的工作安排。', memoryOpportunity: 'positive', effectType: 'preference' },
-  { intent: 'unrelated no opportunity', text: '今天晚饭吃什么好？', memoryOpportunity: 'none', effectType: 'correct_silence' },
+  { intent: 'unrelated no opportunity', text: '今天晚饭吃什么好？', memoryOpportunity: 'none', effectType: 'background_silence' },
 ] }];
