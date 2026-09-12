@@ -25,8 +25,8 @@ packages/dsh-plugin/  External DSH 0.1.5-rc.2 Bundle. It renders Rust's usage
                       plan and owns no memory policy of its own.
 packages/host/        Oracle evaluator; it calls the same worker and records
                       causal-chain artifacts rather than answer differences.
-scripts/              Tooling: the worker packager, evaluation inspection and
-                      the MSVC build wrapper.
+scripts/              Tooling: worker packaging, host builds and the MSVC
+                      build wrapper.
 ```
 
 The kernel performs no I/O and calls no model, which is what makes it
