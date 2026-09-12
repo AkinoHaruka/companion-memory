@@ -146,7 +146,12 @@ pub struct Salience {
 
 impl Default for Salience {
     fn default() -> Self {
-        Self { importance: 0.5, recall_count: 0, last_recalled_at: None, do_not_surface: None }
+        Self {
+            importance: 0.5,
+            recall_count: 0,
+            last_recalled_at: None,
+            do_not_surface: None,
+        }
     }
 }
 

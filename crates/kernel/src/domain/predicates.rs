@@ -23,9 +23,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-use crate::domain::predicate_keys::{
-    all_predicate_keys, split_predicate, Domain, PredicateKey,
-};
+use crate::domain::predicate_keys::{all_predicate_keys, split_predicate, Domain, PredicateKey};
 
 /// How many values a predicate may hold for one (entity, qualifier) key.
 ///
@@ -168,8 +166,8 @@ mod cells {
 }
 
 use cells::{
-    BG, CUED, DATE, ENUM, EREF, FREE, HIGH, LOW, MED, NEVER, NUM, ONE, PERM, SESS, SET, T_SINGLE,
-    TXT, UNTIL,
+    BG, CUED, DATE, ENUM, EREF, FREE, HIGH, LOW, MED, NEVER, NUM, ONE, PERM, SESS, SET, TXT,
+    T_SINGLE, UNTIL,
 };
 
 /// Closed enum domains, keyed by **full predicate key**.
@@ -187,7 +185,14 @@ pub mod enums {
     #![allow(missing_docs)]
 
     pub const PRONOUNS: &[&str] = &["she/her", "he/him", "they/them", "ask", "other"];
-    pub const FORMAT: &[&str] = &["prose", "bullets", "markdown", "plain", "code_heavy", "mixed"];
+    pub const FORMAT: &[&str] = &[
+        "prose",
+        "bullets",
+        "markdown",
+        "plain",
+        "code_heavy",
+        "mixed",
+    ];
     pub const VERBOSITY: &[&str] = &["very_short", "short", "medium", "long", "adaptive"];
     pub const TONE: &[&str] = &["warm", "neutral", "direct", "playful", "formal", "gentle"];
     pub const INTERACTION_STYLE: &[&str] = &[
@@ -214,13 +219,26 @@ pub mod enums {
         "problem_solve",
         "be_present_silently",
     ];
-    pub const ADVICE_PERMISSION: &[&str] =
-        &["ask_before_advice", "advice_welcome", "no_advice_unless_asked"];
-    pub const PHYSICAL_CONTEXT: &[&str] =
-        &["mobile", "driving", "at_work", "in_public", "at_home", "unknown"];
+    pub const ADVICE_PERMISSION: &[&str] = &[
+        "ask_before_advice",
+        "advice_welcome",
+        "no_advice_unless_asked",
+    ];
+    pub const PHYSICAL_CONTEXT: &[&str] = &[
+        "mobile",
+        "driving",
+        "at_work",
+        "in_public",
+        "at_home",
+        "unknown",
+    ];
     pub const DIRECTNESS: &[&str] = &["very_direct", "direct", "gentle", "indirect"];
-    pub const REASONING_DEPTH: &[&str] =
-        &["conclusion_only", "brief_reasoning", "detailed_reasoning", "show_work"];
+    pub const REASONING_DEPTH: &[&str] = &[
+        "conclusion_only",
+        "brief_reasoning",
+        "detailed_reasoning",
+        "show_work",
+    ];
     pub const WHEN_TO_OFFER_STEPS: &[&str] = &["on_request", "when_stuck", "proactively", "never"];
     pub const RELATION_LABEL: &[&str] = &[
         "partner",
@@ -247,8 +265,14 @@ pub mod enums {
         "adversarial",
         "other",
     ];
-    pub const CLOSENESS: &[&str] =
-        &["very_close", "close", "moderate", "distant", "strained", "unknown"];
+    pub const CLOSENESS: &[&str] = &[
+        "very_close",
+        "close",
+        "moderate",
+        "distant",
+        "strained",
+        "unknown",
+    ];
 }
 
 /// The enum domain for a predicate key, if it has one.
@@ -356,6 +380,7 @@ pub static ROWS: &[Row] = &[
     // active would make the surfacing pool grow without bound, and the trigger
     // only ever needs the live one.
     ("open_loop.pending_action",         SET,      TXT,  MED,  true,  FREE, UNTIL, "Something the user still has to do."),
+    ("open_loop.low_risk_check_in",      SET,      TXT,  LOW,  true,  FREE, UNTIL, "An explicit low-risk practical task that may receive one greeting follow-up."),
     ("open_loop.waiting_on",             SET,      TXT,  MED,  true,  CUED, UNTIL, "Something the user is waiting for."),
     ("open_loop.promised_followup",      T_SINGLE, TXT,  MED,  false, CUED, UNTIL, "What the companion said it would follow up on. A user-facing commitment, never evidence about the user."),
     ("open_loop.deadline",               T_SINGLE, DATE, MED,  true,  CUED, UNTIL, "A dated commitment; drives authorised time triggers."),
@@ -386,10 +411,21 @@ pub static ROWS: &[Row] = &[
 
 /// Expand one table row into its spec, deriving `domain` from the key.
 fn spec(row: &Row) -> PredicateSpec {
-    let (key, cardinality, kind, sensitivity, inference_allowed, mention_policy, lifetime, description) =
-        *row;
+    let (
+        key,
+        cardinality,
+        kind,
+        sensitivity,
+        inference_allowed,
+        mention_policy,
+        lifetime,
+        description,
+    ) = *row;
     let parsed = split_predicate(key);
-    debug_assert!(parsed.is_some(), "malformed predicate key in the registry: {key}");
+    debug_assert!(
+        parsed.is_some(),
+        "malformed predicate key in the registry: {key}"
+    );
     PredicateSpec {
         key,
         domain: parsed.map_or(Domain::Misc, |(domain, _)| domain),

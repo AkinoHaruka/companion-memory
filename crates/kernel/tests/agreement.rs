@@ -16,8 +16,16 @@ use companion_memory_kernel::domain::predicates::{
 
 #[test]
 fn vocabulary_and_registry_agree() {
-    assert_eq!(missing_specs(), Vec::<&str>::new(), "declared keys without a registry row");
-    assert_eq!(orphan_specs(), Vec::<&str>::new(), "registry rows without a declared key");
+    assert_eq!(
+        missing_specs(),
+        Vec::<&str>::new(),
+        "declared keys without a registry row"
+    );
+    assert_eq!(
+        orphan_specs(),
+        Vec::<&str>::new(),
+        "registry rows without a declared key"
+    );
 }
 
 #[test]
@@ -27,7 +35,8 @@ fn every_declared_key_parses_into_its_own_domain() {
             is_valid_predicate_shape(key),
             "malformed key in the vocabulary: {key}"
         );
-        let (domain, subject) = split_predicate(key).unwrap_or_else(|| panic!("malformed key {key}"));
+        let (domain, subject) =
+            split_predicate(key).unwrap_or_else(|| panic!("malformed key {key}"));
         assert!(!subject.is_empty(), "empty subject in {key}");
         assert_eq!(
             format!("{}.{}", domain.as_str(), subject),
@@ -46,7 +55,10 @@ fn the_key_splitter_rejects_malformed_input() {
     assert!(split_predicate("identity.").is_none(), "empty subject");
     assert!(split_predicate("nope.name").is_none(), "unknown domain");
     assert!(split_predicate("").is_none(), "empty input");
-    assert_eq!(split_predicate("identity.name"), Some((Domain::Identity, "name")));
+    assert_eq!(
+        split_predicate("identity.name"),
+        Some((Domain::Identity, "name"))
+    );
     // A subject may itself contain a dot; only the first separator counts.
     assert_eq!(
         split_predicate("identity.name.extra"),
@@ -64,7 +76,10 @@ fn grouping_matches_the_declared_domains() {
     for (group, domain) in PREDICATE_KEYS.iter().zip(Domain::ALL.iter()) {
         for key in group.iter() {
             let (parsed, _) = split_predicate(key).expect("key parses");
-            assert_eq!(parsed, *domain, "{key} is filed under the wrong domain group");
+            assert_eq!(
+                parsed, *domain,
+                "{key} is filed under the wrong domain group"
+            );
         }
     }
 }
@@ -86,7 +101,11 @@ fn every_registry_row_is_self_consistent() {
             let domain_values = spec
                 .enum_domain
                 .unwrap_or_else(|| panic!("enum predicate {} has no declared domain", spec.key));
-            assert!(!domain_values.is_empty(), "{} has an empty enum domain", spec.key);
+            assert!(
+                !domain_values.is_empty(),
+                "{} has an empty enum domain",
+                spec.key
+            );
         } else {
             assert!(
                 spec.enum_domain.is_none(),
@@ -95,7 +114,11 @@ fn every_registry_row_is_self_consistent() {
             );
         }
 
-        assert!(!spec.description.is_empty(), "{} has no description", spec.key);
+        assert!(
+            !spec.description.is_empty(),
+            "{} has no description",
+            spec.key
+        );
     }
 }
 
@@ -104,12 +127,18 @@ fn misc_is_inert() {
     let spec = require_spec(MISC_PREDICATE);
     assert_eq!(spec.domain, Domain::Misc);
     assert_eq!(spec.cardinality, Cardinality::Set, "a set never supersedes");
-    assert!(!spec.inference_allowed, "unclassified statements must not seed inference");
+    assert!(
+        !spec.inference_allowed,
+        "unclassified statements must not seed inference"
+    );
 }
 
 #[test]
 fn boundary_is_a_constraint_not_a_candidate() {
-    for spec in registry().iter().filter(|spec| spec.domain == Domain::Boundary) {
+    for spec in registry()
+        .iter()
+        .filter(|spec| spec.domain == Domain::Boundary)
+    {
         assert_eq!(
             spec.mention_policy,
             MentionMode::BackgroundOnly,
@@ -129,18 +158,34 @@ fn predicates_that_can_legitimately_hold_several_values_are_sets() {
     // These specific rows encode the fix for "kind + subject is not a memory
     // primary key". If one of them becomes Single, a second concurrent value
     // would silently supersede the first.
-    assert_eq!(require_spec("identity.occupation").cardinality, Cardinality::Set);
+    assert_eq!(
+        require_spec("identity.occupation").cardinality,
+        Cardinality::Set
+    );
     assert_eq!(require_spec("identity.role").cardinality, Cardinality::Set);
-    assert_eq!(require_spec("boundary.topic_avoid").cardinality, Cardinality::Set);
-    assert_eq!(require_spec("identity.name").cardinality, Cardinality::TemporalSingle);
-    assert_eq!(require_spec("communication.verbosity").cardinality, Cardinality::Single);
+    assert_eq!(
+        require_spec("boundary.topic_avoid").cardinality,
+        Cardinality::Set
+    );
+    assert_eq!(
+        require_spec("identity.name").cardinality,
+        Cardinality::TemporalSingle
+    );
+    assert_eq!(
+        require_spec("communication.verbosity").cardinality,
+        Cardinality::Single
+    );
 }
 
 #[test]
 fn text_may_refine_but_never_overwrite_a_structured_value() {
     // The asymmetry is the whole point of the table: prose must not replace a
     // resolved date.
-    for kind in ValueKind::ALL.iter().copied().filter(|k| *k != ValueKind::Text) {
+    for kind in ValueKind::ALL
+        .iter()
+        .copied()
+        .filter(|k| *k != ValueKind::Text)
+    {
         assert!(
             kinds_compatible(ValueKind::Text, kind),
             "text should be able to refine {kind:?}"
@@ -155,7 +200,10 @@ fn text_may_refine_but_never_overwrite_a_structured_value() {
 #[test]
 fn compatibility_is_reflexive() {
     for kind in ValueKind::ALL.iter().copied() {
-        assert!(kinds_compatible(kind, kind), "{kind:?} is not compatible with itself");
+        assert!(
+            kinds_compatible(kind, kind),
+            "{kind:?} is not compatible with itself"
+        );
     }
 }
 
@@ -177,7 +225,9 @@ fn unknown_predicates_default_closed() {
 fn relationship_type_keeps_its_closed_domain() {
     // Regression pin for the subject-keyed lookup defect.
     let spec = require_spec("relationship.type");
-    let values = spec.enum_domain.expect("relationship.type must declare its domain");
+    let values = spec
+        .enum_domain
+        .expect("relationship.type must declare its domain");
     assert!(values.contains(&"romantic"));
     assert!(!values.contains(&"complicated"));
 }

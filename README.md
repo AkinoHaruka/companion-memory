@@ -19,8 +19,14 @@ crates/kernel/        Rust — the decision logic
                       No I/O, no model, no host dependency, no ambient time.
 crates/storage/       Rust — SQLite persistence. The only crate that touches a
                       database; records what the kernel decided and reads it back.
-packages/dsh-plugin/  DeepSeek Harness adapter (not yet written)
-scripts/              Tooling: the Codex delegation helper, the MSVC build wrapper.
+crates/worker/        Versioned JSONL subprocess: the only runtime access to
+                      Rust rules, SQLite, retrieval and admission.
+packages/dsh-plugin/  External DSH 0.1.5-rc.2 Bundle. It renders Rust's usage
+                      plan and owns no memory policy of its own.
+packages/host/        Oracle evaluator; it calls the same worker and records
+                      causal-chain artifacts rather than answer differences.
+scripts/              Tooling: the worker packager, evaluation inspection and
+                      the MSVC build wrapper.
 ```
 
 The kernel performs no I/O and calls no model, which is what makes it
@@ -39,7 +45,7 @@ implementation on exactly the invariant you care about is worse than none.
 
 | Area | State |
 |---|---|
-| Predicate vocabulary + registry (46 predicates) | done |
+| Predicate vocabulary + registry (47 predicates) | done |
 | Record identity: cardinality, supersede, type compatibility | done |
 | Mention gate | done |
 | Evidence graph and suppression | done |
@@ -47,36 +53,72 @@ implementation on exactly the invariant you care about is worse than none.
 | Forgetting: suppression, residue scan, derived recompute | done |
 | Inference lifecycle (confidence cap, review) | done |
 | Storage: schema, migrations, scope-isolated queries | done |
-| DSH adapter: rendering, warm cache, tool, config | done |
-| DSH adapter: composition test on live services | done |
+| JSONL worker: health, warm, admit, query, forget, session closure | done |
+| SQLite v3: accepted evidence, spans, open threads, telemetry, pending review pointers | done |
+| DSH external Bundle: actual `agent/pre-step` snapshot injection | done |
+| Async direct-user extraction and deterministic worker admission | done |
+| Oracle evaluator: normal, Gold retrieval, forced Gold, counterfactual | done |
 | Kernel↔store integration: write, recall, supersede, forget | done |
-| RuntimeState: storage, adapter interface, rendering, expiry | done |
-| DSH adapter: loop-payload adapter and registered handler pair | done |
-| Booting a real DSH agent loop to prove invocation order | not started |
+| RuntimeState / inference promotion | pending extraction-quality threshold |
+| Platform release binaries | CI package workflow (Windows x64, Linux x64) |
 
-Test totals: kernel 110, storage 47, DSH adapter 84.
+The old TypeScript predicate, cardinality, admission, store and `HostKernel`
+implementations were intentionally retired. A TypeScript caller may serialize a
+candidate but cannot decide that it is valid, visible, superseding, or durable.
 
-Two integration suites exist because unit suites pass while a seam is wrong. The
-DSH composition test found that a mount given an explicit kernel handed its
-pre-step handler nothing, so the plugin rendered empty forever. The kernel↔store
-suite found that the two crates disagreed about fingerprint orientation, so the
-resurrection guard compared a fingerprint against a human-readable label and
-never fired — and that the kernel's own round-trip test had been passing
-vacuously, matching on the record id before the fingerprint branch was reached.
+The lifecycle test dispatches a real DSH `agent/pre-step` waterfall through the
+formal Bundle mount and asserts one durable `plugin/snapshot` injection only on
+the first step. The worker's stdio test covers bad JSON recovery, accepted source
+retention and evidence deletion after forgetting.
 
-RuntimeState is the layer this design replaced a dead one to get. Its type and
-table existed for several rounds with nothing reading or writing them, which is
-exactly the failure it was meant to fix, so its wiring is asserted end to end: a
-condition recorded, recalled, rendered into the prompt with its framing, and
-withheld once expired.
+## DSH Bundle installation
 
-The composition tests drive the registered handlers with DSH-shaped payloads, so
-the extraction of the current turn from a message batch and the rendering into an
-assembled prompt are both exercised. What is still unverified is narrower than
-that sentence sounds: no test boots a real agent loop, so nothing here proves the
-host invokes pre-step before assembly for the same step, or that a composed
-profile loads this plugin at all. Both need a booted profile rather than a
-hand-assembled context, and are listed as not started instead of implied.
+Build a release worker for the host platform, stage it in the package, then add
+the package as an external DSH Bundle. Release CI runs the same staging command
+for Windows x64 and Linux x64.
+
+```powershell
+pnpm build:worker:windows
+pnpm --filter @companion-memory/dsh-plugin build
+dsh plugin --profile <profile> add <path-to-companion-memory/packages/dsh-plugin>
+```
+
+`packages/dsh-plugin/cordis.patch.yml` reads the deployment-scoped service,
+owner, default profile, database location and worker command from
+`COMPANION_MEMORY_*` environment variables. The profile id is the DSH Agent
+Preset; if absent, only `COMPANION_MEMORY_DEFAULT_PROFILE` is used. It never
+falls back to Agent ID or Session ID.
+
+Each first `agent/pre-step` reads a fresh `MemoryUsagePlan` from the worker and
+appends it as a durable `plugin/snapshot` user message. Worker failure, timeout
+or protocol damage produces a normal DSH reply with no memory; a prior snapshot
+is never reused. Direct user messages are extracted only after `turn/end` on a
+private, bounded, cancellable queue.
+
+## Evaluation
+
+`packages/host` labels each turn as a positive opportunity, a protected
+negative case, or a no-opportunity silence case. It writes plans, selected ids,
+admission outcomes and replies for four frozen arms: normal chain, Gold with
+normal retrieval, forced Gold injection, and forced counterfactual memory. The
+normal arm shares the production extractor grammar and span validation; only
+the direct user text and Rust-approved records can enter it.
+
+```powershell
+# The bridge runs inside DSH and binds the current Agent route. It must export
+# createEvaluationClient(), implemented with createDshRouteEvaluationClient(ctx, agent).
+$env:COMPANION_MEMORY_DSH_EVALUATION_BRIDGE = 'C:\path\to\dsh-oracle-bridge.mjs'
+# Uses five repetitions by default; set acceptance for ten and enforce gates.
+$env:COMPANION_MEMORY_EVAL_MODE = 'acceptance'
+pnpm --filter @companion-memory/host run
+```
+
+The evaluator keeps “reply differs” out of its score. Its artifact records the
+entire candidate → admission → activation → injection → visible-effect chain and
+uses effect-specific checks for name, language, preference, boundary,
+continuity and correct silence. `oracle-summary.json` reports rates by arm and
+effect; acceptance exits non-zero unless forced Gold reaches 80% for every core
+positive effect, normal reaches 70%, and all protected cases remain 100% safe.
 
 ## Conventions
 

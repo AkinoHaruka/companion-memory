@@ -442,8 +442,10 @@ fn would_resurrect_reports_predicate_entity_all_and_fingerprint_reasons() {
         Some(ResurrectionReason::AllSuppressed),
     );
 
-    let fingerprints =
-        HashMap::from([("claim-forgotten".to_owned(), fingerprint_text("Forgotten value"))]);
+    let fingerprints = HashMap::from([(
+        "claim-forgotten".to_owned(),
+        fingerprint_text("Forgotten value"),
+    )]);
     assert_eq!(
         would_resurrect(
             "identity.occupation",
@@ -460,8 +462,10 @@ fn would_resurrect_reports_predicate_entity_all_and_fingerprint_reasons() {
 
 #[test]
 fn would_resurrect_returns_none_for_a_value_that_was_not_forgotten() {
-    let fingerprints =
-        HashMap::from([("claim-forgotten".to_owned(), fingerprint_text("Forgotten value"))]);
+    let fingerprints = HashMap::from([(
+        "claim-forgotten".to_owned(),
+        fingerprint_text("Forgotten value"),
+    )]);
 
     assert_eq!(
         would_resurrect(
@@ -483,8 +487,7 @@ fn i4_round_trip_refuses_to_write_the_identical_forgotten_value() {
     let suppression = SuppressionSet::from(ForgetTarget::Records {
         source_ids: vec![forgotten_id.into()],
     });
-    let fingerprints =
-        HashMap::from([(forgotten_id.to_owned(), fingerprint(&forgotten_value))]);
+    let fingerprints = HashMap::from([(forgotten_id.to_owned(), fingerprint(&forgotten_value))]);
 
     assert_eq!(
         would_resurrect(
@@ -512,8 +515,10 @@ fn the_fingerprint_guard_fires_without_a_record_level_suppression() {
     let forgotten_value = json!(forgotten_text);
     // Keyed by a label and holding the fingerprint, which is the orientation the
     // storage loader produces.
-    let fingerprints =
-        HashMap::from([("the place they live".to_owned(), fingerprint(&forgotten_value))]);
+    let fingerprints = HashMap::from([(
+        "the place they live".to_owned(),
+        fingerprint(&forgotten_value),
+    )]);
 
     assert_eq!(
         would_resurrect(
@@ -542,8 +547,10 @@ fn the_fingerprint_guard_fires_without_a_record_level_suppression() {
 
     // And the reversed orientation must NOT match, which is what makes the
     // orientation load-bearing rather than incidental.
-    let reversed =
-        HashMap::from([(fingerprint(&forgotten_value), "the place they live".to_owned())]);
+    let reversed = HashMap::from([(
+        fingerprint(&forgotten_value),
+        "the place they live".to_owned(),
+    )]);
     assert_eq!(
         would_resurrect(
             "identity.location",

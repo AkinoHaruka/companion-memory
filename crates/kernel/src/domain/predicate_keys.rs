@@ -168,6 +168,7 @@ pub const PREDICATE_KEYS: &[&[PredicateKey]] = &[
     // open_loop
     &[
         "open_loop.pending_action",
+        "open_loop.low_risk_check_in",
         "open_loop.waiting_on",
         "open_loop.promised_followup",
         "open_loop.deadline",
@@ -200,14 +201,15 @@ pub const PREDICATE_KEYS: &[&[PredicateKey]] = &[
 /// Returning a `Vec` rather than a slice keeps the grouping above as the single
 /// source of truth; this is called at test and startup time, not per turn.
 pub fn all_predicate_keys() -> Vec<PredicateKey> {
-    PREDICATE_KEYS.iter().flat_map(|group| group.iter().copied()).collect()
+    PREDICATE_KEYS
+        .iter()
+        .flat_map(|group| group.iter().copied())
+        .collect()
 }
 
 /// Whether a key is declared in the vocabulary.
 pub fn is_predicate_key(value: &str) -> bool {
-    PREDICATE_KEYS
-        .iter()
-        .any(|group| group.contains(&value))
+    PREDICATE_KEYS.iter().any(|group| group.contains(&value))
 }
 
 /// Split a predicate key into its domain and subject.

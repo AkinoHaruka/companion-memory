@@ -1,0 +1,14 @@
+# Companion Memory external DSH Bundle. Values stay deployment-owned and are
+# intentionally read from the profile environment rather than committed here.
+- insert:
+    - id: companion-memory
+      name: '@companion-memory/dsh-plugin'
+      inject: [agents, llm, sessionProjections, tools]
+      config:
+        serviceId: !!js process.env.COMPANION_MEMORY_SERVICE_ID
+        ownerUserId: !!js process.env.COMPANION_MEMORY_OWNER_USER_ID
+        defaultProfileId: !!js process.env.COMPANION_MEMORY_DEFAULT_PROFILE
+        databasePath: !!js process.env.COMPANION_MEMORY_DATABASE_PATH
+        workerCommand: !!js process.env.COMPANION_MEMORY_WORKER_COMMAND
+        workerRequestTimeoutMs: !!js Number(process.env.COMPANION_MEMORY_WORKER_TIMEOUT_MS ?? 4000)
+        maxQueuedExtractions: !!js Number(process.env.COMPANION_MEMORY_MAX_QUEUE ?? 32)

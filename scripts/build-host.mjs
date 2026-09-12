@@ -1,11 +1,9 @@
 /**
  * Build the host package to plain JavaScript.
  *
- * The host imports the plugin's source, and the two want different extensions:
- * `tsc` and vitest need `./memory.js` to resolve to `memory.ts` under NodeNext,
- * while Node's own TypeScript support needs the literal `.ts` path. Rather than
- * pick one and break the other, this transpiles to JS, where `.js` means `.js`
- * and both consumers agree.
+ * The host imports the plugin's shared protocol, rendering, and extraction
+ * parser. Build it to JavaScript so cross-package `.ts` paths are replaced by
+ * the workspace plugin package before Node executes the evaluator.
  *
  * It also rewrites the relative hops into the plugin package to the linked
  * package path. A `../../dsh-plugin/src/...` import happens to work inside this
@@ -23,7 +21,6 @@ import ts from 'typescript';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const hostSrc = join(root, 'packages', 'host', 'src');
-const pluginSrc = join(root, 'packages', 'dsh-plugin', 'src');
 const outRoot = join(root, 'packages', 'host', 'dist');
 
 /** The package path the plugin's sources are linked at. */
@@ -92,15 +89,5 @@ function sources(dir) {
 }
 
 for (const source of sources(hostSrc)) transpile(source, hostSrc, join(outRoot, 'src'));
-for (const source of sources(pluginSrc)) transpile(source, pluginSrc, join(outRoot, 'plugin'));
-
-// The plugin's own module name has to resolve for the rewritten imports. The
-// built output goes into the plugin package's `dist/plugin`, which is where its
-// export map points: the plugin is consumed as source by tsc and vitest, so its
-// manifest cannot point only at build output, and Node cannot load a source file
-// whose own imports use `.js` extensions.
-const pluginDist = join(root, 'packages', 'dsh-plugin', 'dist', 'plugin');
-for (const source of sources(pluginSrc)) transpile(source, pluginSrc, pluginDist);
 
 process.stdout.write(`built host -> ${outRoot}\n`);
-process.stdout.write(`built plugin -> ${pluginDist}\n`);

@@ -15,7 +15,7 @@
 use rusqlite::Connection;
 
 /// The schema a freshly created database gets.
-pub const CURRENT_SCHEMA_VERSION: i32 = 1;
+pub const CURRENT_SCHEMA_VERSION: i32 = 3;
 
 /// The version a database reports before any migration has run.
 pub const EMPTY_SCHEMA_VERSION: i32 = 0;
@@ -51,11 +51,23 @@ struct Migration {
 /// Every statement uses `IF NOT EXISTS` so that a database which somehow has the
 /// objects but not the version still converges instead of failing. That is worth
 /// the small redundancy: the alternative is an unrecoverable start-up loop.
-static MIGRATIONS: &[Migration] = &[Migration {
-    to: 1,
-    about: "initial companion memory schema",
-    sql: include_str!("schema_v1.sql"),
-}];
+static MIGRATIONS: &[Migration] = &[
+    Migration {
+        to: 1,
+        about: "initial companion memory schema",
+        sql: include_str!("schema_v1.sql"),
+    },
+    Migration {
+        to: 2,
+        about: "source evidence, open threads, and turn telemetry",
+        sql: include_str!("schema_v2.sql"),
+    },
+    Migration {
+        to: 3,
+        about: "pending extraction review pointers",
+        sql: include_str!("schema_v3.sql"),
+    },
+];
 
 /// Read the schema version of an open database.
 pub fn schema_version(connection: &Connection) -> rusqlite::Result<i32> {

@@ -74,7 +74,11 @@ fn claim(id: &str, predicate: &str, value: serde_json::Value) -> Claim {
             semantic_role: None,
         }],
         provenance: provenance(),
-        salience: Salience { importance: 0.6, recall_count: 0, ..Salience::default() },
+        salience: Salience {
+            importance: 0.6,
+            recall_count: 0,
+            ..Salience::default()
+        },
         created_at: NOW.into(),
         updated_at: NOW.into(),
     }
@@ -103,7 +107,9 @@ fn a_new_statement_creates_a_claim_through_the_kernel_decision() {
     );
     assert!(matches!(decision, SupersedeDecision::Create { .. }));
 
-    store.put_claim(&claim("c1", "identity.occupation", value)).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.occupation", value))
+        .expect("write");
     assert_eq!(store.active_claims(&scope()).expect("read").len(), 1);
 }
 
@@ -112,13 +118,17 @@ fn the_slot_query_returns_exactly_what_the_rule_expects() {
     // The seam this test exists for: the rule reads the slot, so the query must
     // return active records only, for this scope, for this predicate.
     let store = store();
-    store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"))).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin")))
+        .expect("write");
     let superseded = claim("c0", "identity.name", json!("Old"));
     store.put_claim(&superseded).expect("write");
     store
         .set_claim_status(&scope(), "c0", ClaimStatus::Superseded, NOW)
         .expect("supersede");
-    store.put_claim(&claim("c2", "identity.occupation", json!("designer"))).expect("write");
+    store
+        .put_claim(&claim("c2", "identity.occupation", json!("designer")))
+        .expect("write");
 
     let slot = store
         .active_claims_in_slot(&scope(), "identity.name", None)
@@ -149,7 +159,9 @@ fn a_correction_leaves_the_old_claim_readable_but_not_competing() {
     // one: the history is what lets the companion explain itself, and the
     // superseded row is what stops it from being offered as current.
     let store = store();
-    store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"))).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin")))
+        .expect("write");
 
     let slot = store
         .active_claims_in_slot(&scope(), "identity.name", None)
@@ -181,7 +193,10 @@ fn a_correction_leaves_the_old_claim_readable_but_not_competing() {
     assert_eq!(active[0].supersedes_id.as_deref(), Some("c1"));
 
     // The old version is still there, reachable by id.
-    let old = store.get_claim(&scope(), "c1").expect("read").expect("present");
+    let old = store
+        .get_claim(&scope(), "c1")
+        .expect("read")
+        .expect("present");
     assert_eq!(old.status, ClaimStatus::Superseded);
     assert_eq!(old.value, json!("Xiaolin"));
 }
@@ -190,7 +205,9 @@ fn a_correction_leaves_the_old_claim_readable_but_not_competing() {
 fn a_set_predicate_accumulates_rather_than_replacing() {
     // "I design, and I also teach painting" must not lose either half.
     let store = store();
-    store.put_claim(&claim("c1", "identity.occupation", json!("designer"))).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.occupation", json!("designer")))
+        .expect("write");
 
     let slot = store
         .active_claims_in_slot(&scope(), "identity.occupation", None)
@@ -207,7 +224,9 @@ fn a_set_predicate_accumulates_rather_than_replacing() {
     );
     assert!(matches!(decision, SupersedeDecision::Append { .. }));
 
-    store.put_claim(&claim("c2", "identity.occupation", value)).expect("write");
+    store
+        .put_claim(&claim("c2", "identity.occupation", value))
+        .expect("write");
     assert_eq!(store.active_claims(&scope()).expect("read").len(), 2);
 }
 
@@ -217,7 +236,11 @@ fn a_type_incompatible_write_is_refused_and_changes_nothing() {
     // not overwrite a resolved instant.
     let store = store();
     store
-        .put_claim(&claim("d1", "open_loop.deadline", json!("2026-06-10T14:00:00Z")))
+        .put_claim(&claim(
+            "d1",
+            "open_loop.deadline",
+            json!("2026-06-10T14:00:00Z"),
+        ))
         .expect("write");
 
     let slot = store
@@ -249,17 +272,30 @@ fn a_type_incompatible_write_is_refused_and_changes_nothing() {
 fn recall_reads_a_stored_claim_and_applies_the_mention_gate() {
     let store = store();
     store
-        .put_claim(&claim("b1", "boundary.topic_avoid", json!("do not bring up my ex")))
+        .put_claim(&claim(
+            "b1",
+            "boundary.topic_avoid",
+            json!("do not bring up my ex"),
+        ))
         .expect("write");
 
     let stored = store.active_claims(&scope()).expect("read");
-    let cues = MentionCues { user_referenced: true, ..MentionCues::default() };
+    let cues = MentionCues {
+        user_referenced: true,
+        ..MentionCues::default()
+    };
 
     // A boundary is a constraint, not a candidate: even with every cue set it
     // stays background, which is what stops the companion announcing its rules.
     let decision = claim_mention(&stored[0], cues);
     assert!(
-        matches!(decision, companion_memory_kernel::rules::mention_gate::MentionDecision::Allowed { background_only: true, .. }),
+        matches!(
+            decision,
+            companion_memory_kernel::rules::mention_gate::MentionDecision::Allowed {
+                background_only: true,
+                ..
+            }
+        ),
         "a boundary must be usable as background and never recited"
     );
 }
@@ -271,7 +307,10 @@ fn scoring_a_recalled_claim_uses_the_salience_it_was_stored_with() {
     important.salience.importance = 0.95;
     store.put_claim(&important).expect("write");
 
-    let stored = store.get_claim(&scope(), "c1").expect("read").expect("present");
+    let stored = store
+        .get_claim(&scope(), "c1")
+        .expect("read")
+        .expect("present");
     assert_eq!(
         stored.salience.importance, 0.95,
         "the ranking projection must survive the round trip or scoring is blind"
@@ -296,9 +335,14 @@ fn feedback_survives_a_write_and_read() {
     // The I6 property through the store: neutral feedback must not move
     // importance, and a real signal must.
     let store = store();
-    store.put_claim(&claim("c1", "goal.current_focus", json!("x"))).expect("write");
+    store
+        .put_claim(&claim("c1", "goal.current_focus", json!("x")))
+        .expect("write");
 
-    let stored = store.get_claim(&scope(), "c1").expect("read").expect("present");
+    let stored = store
+        .get_claim(&scope(), "c1")
+        .expect("read")
+        .expect("present");
     let unchanged = apply_feedback(&stored.salience, FeedbackSignal::None);
     assert_eq!(unchanged, stored.salience);
 
@@ -306,7 +350,10 @@ fn feedback_survives_a_write_and_read() {
     valued.salience = apply_feedback(&stored.salience, FeedbackSignal::UserValued);
     store.put_claim(&valued).expect("write");
 
-    let reread = store.get_claim(&scope(), "c1").expect("read").expect("present");
+    let reread = store
+        .get_claim(&scope(), "c1")
+        .expect("read")
+        .expect("present");
     assert!(reread.salience.importance > stored.salience.importance);
 }
 
@@ -336,7 +383,9 @@ fn forgetting_suppresses_the_fingerprint_and_the_guard_refuses_the_same_value() 
     // leaves the next extraction free to write the same fact again.
     let store = store();
     let text = "the dog was sick that night";
-    store.put_claim(&claim("e1", "event", json!(text))).expect("write");
+    store
+        .put_claim(&claim("e1", "event", json!(text)))
+        .expect("write");
 
     store
         .suppress(
@@ -350,7 +399,9 @@ fn forgetting_suppresses_the_fingerprint_and_the_guard_refuses_the_same_value() 
         .expect("suppress");
 
     let suppression = store.load_suppression_set(&scope()).expect("load set");
-    let fingerprints = store.load_suppressed_fingerprints(&scope()).expect("load fingerprints");
+    let fingerprints = store
+        .load_suppressed_fingerprints(&scope())
+        .expect("load fingerprints");
 
     // The guard fires on an identical value.
     let reason = would_resurrect("event", &json!(text), None, &suppression, &fingerprints);
@@ -373,7 +424,9 @@ fn forgetting_suppresses_the_fingerprint_and_the_guard_refuses_the_same_value() 
 #[test]
 fn a_suppressed_record_is_withheld_from_the_reader() {
     let store = store();
-    store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"))).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin")))
+        .expect("write");
     store
         .suppress(&scope(), "record", "c1", None, None, NOW)
         .expect("suppress");
@@ -387,7 +440,10 @@ fn a_suppressed_record_is_withheld_from_the_reader() {
         .iter()
         .filter(|candidate| !suppression.suppresses_claim(candidate))
         .collect();
-    assert!(visible.is_empty(), "a suppressed record must not be offered");
+    assert!(
+        visible.is_empty(),
+        "a suppressed record must not be offered"
+    );
 }
 
 #[test]
@@ -395,11 +451,15 @@ fn each_suppression_kind_maps_to_the_matching_kernel_field() {
     // A translation that mislabels a kind means the guard silently stops
     // guarding. Each kind is checked against the field it is supposed to fill.
     let store = store();
-    store.suppress(&scope(), "record", "c1", None, None, NOW).expect("suppress");
+    store
+        .suppress(&scope(), "record", "c1", None, None, NOW)
+        .expect("suppress");
     store
         .suppress(&scope(), "predicate", "identity.location", None, None, NOW)
         .expect("suppress");
-    store.suppress(&scope(), "entity", "person-9", None, None, NOW).expect("suppress");
+    store
+        .suppress(&scope(), "entity", "person-9", None, None, NOW)
+        .expect("suppress");
 
     let set = store.load_suppression_set(&scope()).expect("load");
     assert!(set.suppressed.contains("c1"));
@@ -410,11 +470,23 @@ fn each_suppression_kind_maps_to_the_matching_kernel_field() {
     // And the guard consults each one.
     let fingerprints = store.load_suppressed_fingerprints(&scope()).expect("load");
     assert!(matches!(
-        would_resurrect("identity.location", &json!("shanghai"), None, &set, &fingerprints),
+        would_resurrect(
+            "identity.location",
+            &json!("shanghai"),
+            None,
+            &set,
+            &fingerprints
+        ),
         Some(ResurrectionReason::PredicateSuppressed { .. })
     ));
     assert!(matches!(
-        would_resurrect("person.name", &json!("someone"), Some("person-9"), &set, &fingerprints),
+        would_resurrect(
+            "person.name",
+            &json!("someone"),
+            Some("person-9"),
+            &set,
+            &fingerprints
+        ),
         Some(ResurrectionReason::EntitySuppressed { .. })
     ));
 }
@@ -422,12 +494,20 @@ fn each_suppression_kind_maps_to_the_matching_kernel_field() {
 #[test]
 fn suppressing_everything_withholds_every_predicate() {
     let store = store();
-    store.suppress(&scope(), "all", "", None, None, NOW).expect("suppress");
+    store
+        .suppress(&scope(), "all", "", None, None, NOW)
+        .expect("suppress");
 
     let set = store.load_suppression_set(&scope()).expect("load");
     assert!(set.all);
     assert!(matches!(
-        would_resurrect("identity.name", &json!("anything"), None, &set, &Default::default()),
+        would_resurrect(
+            "identity.name",
+            &json!("anything"),
+            None,
+            &set,
+            &Default::default()
+        ),
         Some(ResurrectionReason::AllSuppressed)
     ));
 }
@@ -436,7 +516,9 @@ fn suppressing_everything_withholds_every_predicate() {
 fn an_unrecognised_suppression_kind_is_skipped_rather_than_failing_the_load() {
     // One unreadable row must not make a person's whole history inaccessible.
     let store = store();
-    store.suppress(&scope(), "record", "c1", None, None, NOW).expect("suppress");
+    store
+        .suppress(&scope(), "record", "c1", None, None, NOW)
+        .expect("suppress");
     store
         .suppress(&scope(), "some_future_kind", "x", None, None, NOW)
         .expect("suppress");
@@ -480,11 +562,20 @@ fn suppressing_an_inferences_whole_support_collapses_it() {
     };
     store.put_inference(&inference).expect("write");
 
-    let stored = store.get_inference(&scope(), "i1").expect("read").expect("present");
-    assert_eq!(stored.support_evidence.len(), 1, "evidence must survive the round trip");
+    let stored = store
+        .get_inference(&scope(), "i1")
+        .expect("read")
+        .expect("present");
+    assert_eq!(
+        stored.support_evidence.len(),
+        1,
+        "evidence must survive the round trip"
+    );
 
     // Suppress the supporting claim.
-    store.suppress(&scope(), "record", "c1", None, None, NOW).expect("suppress");
+    store
+        .suppress(&scope(), "record", "c1", None, None, NOW)
+        .expect("suppress");
     let suppression = store.load_suppression_set(&scope()).expect("load");
 
     let mut resolution = EvidenceResolution::default();
@@ -499,7 +590,10 @@ fn suppressing_an_inferences_whole_support_collapses_it() {
     // And the disposition says so rather than leaving the host to infer it.
     let disposition = derived_disposition(&stored, &suppression, &resolution, |_, _| 0.4);
     assert!(
-        matches!(disposition, DerivedDisposition::Collapsed | DerivedDisposition::Withheld),
+        matches!(
+            disposition,
+            DerivedDisposition::Collapsed | DerivedDisposition::Withheld
+        ),
         "expected a collapsed or withheld disposition, got {disposition:?}"
     );
 }
@@ -531,9 +625,14 @@ fn directly_suppressing_an_inference_withholds_it_regardless_of_its_evidence() {
         updated_at: NOW.into(),
     };
     store.put_inference(&inference).expect("write");
-    store.suppress(&scope(), "record", "i1", None, None, NOW).expect("suppress");
+    store
+        .suppress(&scope(), "record", "i1", None, None, NOW)
+        .expect("suppress");
 
-    let stored = store.get_inference(&scope(), "i1").expect("read").expect("present");
+    let stored = store
+        .get_inference(&scope(), "i1")
+        .expect("read")
+        .expect("present");
     let suppression = store.load_suppression_set(&scope()).expect("load");
     // The evidence itself is untouched, so only a direct check catches this.
     let resolution = EvidenceResolution::default();
@@ -595,12 +694,18 @@ fn an_expired_state_is_not_returned_but_is_still_inspectable() {
         .expect("write");
 
     assert!(
-        store.get_runtime_state(&scope(), NOW).expect("read").is_none(),
+        store
+            .get_runtime_state(&scope(), NOW)
+            .expect("read")
+            .is_none(),
         "an expired state must not be served"
     );
     let raw = store.runtime_state_raw(&scope()).expect("read raw");
     assert!(raw.is_some(), "the row is still there for diagnostics");
-    assert_eq!(raw.unwrap().current_affect.unwrap(), vec!["tired", "frustrated"]);
+    assert_eq!(
+        raw.unwrap().current_affect.unwrap(),
+        vec!["tired", "frustrated"]
+    );
 }
 
 #[test]
@@ -609,7 +714,10 @@ fn a_state_expiring_exactly_now_is_already_over() {
     // after it. Getting this backwards extends every state by one turn.
     let store = store();
     store.put_runtime_state(&runtime_state(NOW)).expect("write");
-    assert!(store.get_runtime_state(&scope(), NOW).expect("read").is_none());
+    assert!(store
+        .get_runtime_state(&scope(), NOW)
+        .expect("read")
+        .is_none());
 }
 
 #[test]
@@ -627,7 +735,9 @@ fn writing_runtime_state_replaces_rather_than_accumulating() {
     store.put_runtime_state(&later).expect("write");
 
     assert_eq!(
-        store.count_in_scope(&scope(), "runtime_state").expect("count"),
+        store
+            .count_in_scope(&scope(), "runtime_state")
+            .expect("count"),
         1
     );
     assert_eq!(
@@ -653,7 +763,10 @@ fn runtime_state_does_not_cross_scopes() {
         owner_user_id: "u2".into(),
         companion_profile_id: "p1".into(),
     };
-    assert!(store.get_runtime_state(&other, NOW).expect("read").is_none());
+    assert!(store
+        .get_runtime_state(&other, NOW)
+        .expect("read")
+        .is_none());
     assert!(store.runtime_state_raw(&other).expect("read raw").is_none());
 }
 
@@ -666,7 +779,10 @@ fn clearing_runtime_state_removes_it() {
         .put_runtime_state(&runtime_state("2026-06-10T18:00:00Z"))
         .expect("write");
     assert_eq!(store.clear_runtime_state(&scope()).expect("clear"), 1);
-    assert!(store.runtime_state_raw(&scope()).expect("read raw").is_none());
+    assert!(store
+        .runtime_state_raw(&scope())
+        .expect("read raw")
+        .is_none());
 }
 
 #[test]

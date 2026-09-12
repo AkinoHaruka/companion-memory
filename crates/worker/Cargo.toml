@@ -1,0 +1,18 @@
+[package]
+name = "companion-memory-worker"
+description = "Persistent JSONL worker for companion memory rules and storage."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "companion-memory-worker"
+path = "src/main.rs"
+
+[dependencies]
+companion-memory-kernel.workspace = true
+companion-memory-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true

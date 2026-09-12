@@ -25,7 +25,7 @@ use companion_memory_kernel::rules::evidence::{
     is_collapsed, live_evidence, may_support_user_inference, EvidenceResolution,
 };
 use companion_memory_kernel::rules::forgetting::{fingerprint_text, SuppressionSet};
-use companion_memory_kernel::rules::inference::{clamp_confidence, apply_review};
+use companion_memory_kernel::rules::inference::{apply_review, clamp_confidence};
 use companion_memory_kernel::rules::mention_gate::{
     claim_mention, effective_surface_level, mention_gate, MentionCues, MentionInput,
 };
@@ -62,7 +62,11 @@ fn provenance() -> Provenance {
 }
 
 fn salience(importance: f64) -> Salience {
-    Salience { importance, recall_count: 3, ..Salience::default() }
+    Salience {
+        importance,
+        recall_count: 3,
+        ..Salience::default()
+    }
 }
 
 fn claim(id: &str, predicate: &str, value: serde_json::Value) -> Claim {
@@ -108,7 +112,10 @@ fn inference() -> Inference {
 }
 
 fn cues() -> MentionCues {
-    MentionCues { user_referenced: true, ..MentionCues::default() }
+    MentionCues {
+        user_referenced: true,
+        ..MentionCues::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +125,11 @@ fn cues() -> MentionCues {
 #[test]
 fn slot_identity_is_stable_across_evaluations() {
     let qualifiers = json!({ "b": 2, "a": 1 });
-    let slot = SlotKey { predicate: "identity.location", entity_ref: Some("shanghai"), qualifiers: Some(&qualifiers) };
+    let slot = SlotKey {
+        predicate: "identity.location",
+        entity_ref: Some("shanghai"),
+        qualifiers: Some(&qualifiers),
+    };
     let first = canonical_key_parts(&slot);
     for _ in 0..50 {
         assert_eq!(canonical_key_parts(&slot), first);
@@ -130,7 +141,10 @@ fn text_normalisation_is_stable_and_idempotent() {
     let value = json!("  Mixed   CASE text  ");
     let once = normalize_for_comparison(&value);
     let twice = normalize_for_comparison(&json!(once.clone()));
-    assert_eq!(once, twice, "normalising already-normalised text must not change it");
+    assert_eq!(
+        once, twice,
+        "normalising already-normalised text must not change it"
+    );
 }
 
 #[test]
@@ -182,7 +196,10 @@ fn scoring_is_stable_for_fixed_inputs() {
     };
     let first = candidate_score(&inputs).expect("a scoring predicate");
     for _ in 0..25 {
-        assert_eq!(candidate_score(&inputs).expect("a scoring predicate"), first);
+        assert_eq!(
+            candidate_score(&inputs).expect("a scoring predicate"),
+            first
+        );
     }
 }
 
@@ -247,7 +264,10 @@ fn recording_a_recall_twice_advances_the_count_and_the_stamp_only() {
     assert_eq!(once.last_recalled_at.as_deref(), Some(NOW));
 
     let twice = record_recall(&once, NOW);
-    assert_eq!(twice.importance, start.importance, "recall must not move importance");
+    assert_eq!(
+        twice.importance, start.importance,
+        "recall must not move importance"
+    );
     assert_eq!(twice.recall_count, start.recall_count + 2);
 }
 
@@ -287,7 +307,10 @@ fn live_evidence_filtering_is_idempotent() {
     let once = live_evidence(&refs, &resolution);
     let twice = live_evidence(&refs, &resolution);
     assert_eq!(once, twice);
-    assert_eq!(is_collapsed(&refs, &resolution), is_collapsed(&refs, &resolution));
+    assert_eq!(
+        is_collapsed(&refs, &resolution),
+        is_collapsed(&refs, &resolution)
+    );
 }
 
 #[test]
@@ -336,14 +359,26 @@ fn ranking_a_candidate_list_does_not_depend_on_how_often_it_is_scored() {
         half_life_days: 30,
         explicit_trigger: false,
     };
-    let inputs_b = ScoreInputs { salience: &b, ..inputs_a };
+    let inputs_b = ScoreInputs {
+        salience: &b,
+        ..inputs_a
+    };
     let first_a = candidate_score(&inputs_a).expect("scoring predicate");
     let first_b = candidate_score(&inputs_b).expect("scoring predicate");
     for _ in 0..25 {
-        assert_eq!(candidate_score(&inputs_a).expect("scoring predicate"), first_a);
-        assert_eq!(candidate_score(&inputs_b).expect("scoring predicate"), first_b);
+        assert_eq!(
+            candidate_score(&inputs_a).expect("scoring predicate"),
+            first_a
+        );
+        assert_eq!(
+            candidate_score(&inputs_b).expect("scoring predicate"),
+            first_b
+        );
     }
-    assert!(first_a > first_b, "the more important candidate must outrank the less");
+    assert!(
+        first_a > first_b,
+        "the more important candidate must outrank the less"
+    );
 }
 
 // ---------------------------------------------------------------------------

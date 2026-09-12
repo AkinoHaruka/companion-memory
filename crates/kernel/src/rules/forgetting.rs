@@ -541,11 +541,10 @@ pub enum ResurrectionReason {
 }
 
 /// Clamp an untrusted confidence into the mathematical confidence interval.
-fn clamp_unit(value: f64) -> f64 {    if value.is_nan() {
+fn clamp_unit(value: f64) -> f64 {
+    if value.is_nan() {
         0.0
     } else {
         value.clamp(0.0, 1.0)
     }
 }
-
-

@@ -34,19 +34,28 @@ pub struct OpenOptions {
 
 impl Default for OpenOptions {
     fn default() -> Self {
-        Self { path: None, migrate: true }
+        Self {
+            path: None,
+            migrate: true,
+        }
     }
 }
 
 impl OpenOptions {
     /// An in-memory database, for tests and ephemeral use.
     pub fn in_memory() -> Self {
-        Self { path: None, migrate: true }
+        Self {
+            path: None,
+            migrate: true,
+        }
     }
 
     /// A database at `path`.
     pub fn at(path: impl Into<String>) -> Self {
-        Self { path: Some(path.into()), migrate: true }
+        Self {
+            path: Some(path.into()),
+            migrate: true,
+        }
     }
 
     /// Open without applying migrations.
@@ -62,6 +71,61 @@ impl OpenOptions {
 pub struct Store {
     connection: Connection,
     opened_with: MigrationState,
+}
+
+/// One accepted user message retained for record provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceMessage {
+    /// Stable DSH user-message identifier.
+    pub id: String,
+    /// Session that durably owns the user message.
+    pub session_id: String,
+    /// Full direct-user text, retained only after admission succeeds.
+    pub text: String,
+    /// ISO 8601 admission instant.
+    pub created_at: String,
+}
+
+/// The exact portion of a retained message that supports one record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSpan {
+    /// Claim or episode identifier supported by this span.
+    pub record_id: String,
+    /// The retained message containing the span.
+    pub message_id: String,
+    /// Inclusive UTF-8 byte offset in the message.
+    pub start_offset: i64,
+    /// Exclusive UTF-8 byte offset in the message.
+    pub end_offset: i64,
+    /// Exact text at the stored range.
+    pub quote: String,
+}
+
+/// A user event that can receive one low-pressure continuity follow-up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenThread {
+    /// Stable thread identifier supplied by the extractor.
+    pub id: String,
+    /// Durable record that opened the thread.
+    pub record_id: String,
+    /// Referenced person, project, or other entity when known.
+    pub entity_ref: Option<String>,
+    /// Safe natural-language follow-up topic.
+    pub summary: String,
+    /// Registry-derived sensitivity at opening time.
+    pub sensitivity: String,
+    /// Registry-derived mention policy at opening time.
+    pub mention_mode: String,
+    /// Lifecycle state: open, closed, or expired.
+    pub status: String,
+    /// ISO 8601 creation instant.
+    pub opened_at: String,
+    /// Optional ISO 8601 expiry instant.
+    pub expires_at: Option<String>,
+    /// Session that has already received its one allowed follow-up.
+    pub followup_session_id: Option<String>,
+    /// ISO 8601 of the last lifecycle change.
+    pub updated_at: String,
 }
 
 impl Store {
@@ -86,7 +150,10 @@ impl Store {
             MigrationState { from: 0, to: 0 }
         };
 
-        Ok(Self { connection, opened_with })
+        Ok(Self {
+            connection,
+            opened_with,
+        })
     }
 
     /// What opening this database did to the schema.
@@ -106,6 +173,7 @@ impl Store {
     /// Insert or replace a claim.
     pub fn put_claim(&self, claim: &Claim) -> rusqlite::Result<()> {
         let scope = ScopeKey::of(&claim.scope);
+        ensure_id_scope(&self.connection, "claims", &claim.id, scope.as_str())?;
         self.connection.execute(
             "INSERT OR REPLACE INTO claims (
                 id, scope_key, predicate, entity_ref, qualifiers_json, value_json, raw_value,
@@ -139,6 +207,208 @@ impl Store {
         Ok(())
     }
 
+    /// Commit one worker admission as an all-or-nothing durable transition.
+    ///
+    /// A successful admission may replace an older claim, add the new claim's
+    /// L0 evidence pointer, open one allowed continuity thread, and write its
+    /// audit row. Splitting those writes would let a disk error produce a
+    /// claim that looks accepted but cannot later be explained or forgotten.
+    pub fn admit_claim_with_evidence(
+        &self,
+        claim: &Claim,
+        source: &SourceMessage,
+        span: &SourceSpan,
+        superseded_id: Option<&str>,
+        open_thread: Option<&OpenThread>,
+        now: &str,
+    ) -> rusqlite::Result<()> {
+        let scope = ScopeKey::of(&claim.scope);
+        ensure_id_scope(&self.connection, "claims", &claim.id, scope.as_str())?;
+        let transaction = self.connection.unchecked_transaction()?;
+
+        if let Some(previous) = superseded_id {
+            transaction.execute(
+                "UPDATE claims SET status = ?1, updated_at = ?2
+                 WHERE scope_key = ?3 AND id = ?4",
+                rusqlite::params![
+                    claim_status(ClaimStatus::Superseded),
+                    now,
+                    scope.as_str(),
+                    previous
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE open_threads SET status = 'closed', updated_at = ?3
+                 WHERE scope_key = ?1 AND record_id = ?2 AND status = 'open'",
+                rusqlite::params![scope.as_str(), previous, now],
+            )?;
+        }
+
+        transaction.execute(
+            "INSERT OR REPLACE INTO claims (
+                id, scope_key, predicate, entity_ref, qualifiers_json, value_json, raw_value,
+                valid_from, valid_until, status, supersedes_id, source_refs_json,
+                provenance_json, importance, recall_count, last_recalled_at, do_not_surface,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                       ?16, ?17, ?18, ?19)",
+            rusqlite::params![
+                claim.id,
+                scope.as_str(),
+                claim.predicate,
+                claim.entity_ref,
+                json_opt(&claim.qualifiers)?,
+                value_json(&claim.value),
+                claim.raw_value,
+                claim.valid_from,
+                claim.valid_until,
+                claim_status(claim.status),
+                claim.supersedes_id,
+                refs_json(&claim.source_refs),
+                provenance_json(&claim.provenance),
+                claim.salience.importance,
+                claim.salience.recall_count,
+                claim.salience.last_recalled_at,
+                claim.salience.do_not_surface.map(i64::from),
+                claim.created_at,
+                claim.updated_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO source_messages (scope_key, id, session_id, text, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(scope_key, id) DO UPDATE SET
+                session_id = excluded.session_id,
+                text = excluded.text,
+                created_at = excluded.created_at",
+            rusqlite::params![
+                scope.as_str(),
+                source.id,
+                source.session_id,
+                source.text,
+                source.created_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO source_spans
+             (scope_key, record_id, message_id, start_offset, end_offset, quote)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                scope.as_str(),
+                span.record_id,
+                span.message_id,
+                span.start_offset,
+                span.end_offset,
+                span.quote,
+            ],
+        )?;
+        if let Some(thread) = open_thread {
+            transaction.execute(
+                "INSERT OR REPLACE INTO open_threads (
+                    id, scope_key, record_id, entity_ref, summary, sensitivity, mention_mode,
+                    status, opened_at, expires_at, followup_session_id, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                rusqlite::params![
+                    thread.id,
+                    scope.as_str(),
+                    thread.record_id,
+                    thread.entity_ref,
+                    thread.summary,
+                    thread.sensitivity,
+                    thread.mention_mode,
+                    thread.status,
+                    thread.opened_at,
+                    thread.expires_at,
+                    thread.followup_session_id,
+                    thread.updated_at,
+                ],
+            )?;
+        }
+        let audit_id = format!("audit-{now}-admission_accepted-{}", claim.id);
+        transaction.execute(
+            "INSERT OR REPLACE INTO audit_events (id, scope_key, action, record_id, detail, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![audit_id, scope.as_str(), "admission_accepted", claim.id, Option::<&str>::None, now],
+        )?;
+        transaction.commit()
+    }
+
+    /// Commit a user-described episode with its L0 pointer and audit row.
+    /// Episodes are durable experience records, unlike inferred patterns; their
+    /// admission is still transactional so a partial write cannot surface.
+    pub fn admit_episode_with_evidence(
+        &self,
+        episode: &Episode,
+        source: &SourceMessage,
+        span: &SourceSpan,
+        now: &str,
+    ) -> rusqlite::Result<()> {
+        let scope = ScopeKey::of(&episode.scope);
+        ensure_id_scope(&self.connection, "episodes", &episode.id, scope.as_str())?;
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO episodes (
+                id, scope_key, occurred_from, occurred_to, narrative, participants_json,
+                emotional_arc_json, user_reaction, response_ref, source_refs_json, status,
+                importance, recall_count, last_recalled_at, do_not_surface, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            rusqlite::params![
+                episode.id,
+                scope.as_str(),
+                episode.occurred_from,
+                episode.occurred_to,
+                episode.narrative,
+                serde_json::to_string(&episode.participants).unwrap_or_else(|_| "[]".into()),
+                json_opt(&episode.emotional_arc)?,
+                episode.user_reaction,
+                episode.response_ref,
+                refs_json(&episode.source_refs),
+                episode_status(episode.status),
+                episode.salience.importance,
+                episode.salience.recall_count,
+                episode.salience.last_recalled_at,
+                episode.salience.do_not_surface.map(i64::from),
+                episode.created_at,
+                episode.updated_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO source_messages (scope_key, id, session_id, text, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(scope_key, id) DO UPDATE SET
+                session_id = excluded.session_id,
+                text = excluded.text,
+                created_at = excluded.created_at",
+            rusqlite::params![
+                scope.as_str(),
+                source.id,
+                source.session_id,
+                source.text,
+                source.created_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO source_spans
+             (scope_key, record_id, message_id, start_offset, end_offset, quote)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                scope.as_str(),
+                span.record_id,
+                span.message_id,
+                span.start_offset,
+                span.end_offset,
+                span.quote,
+            ],
+        )?;
+        let audit_id = format!("audit-{now}-episode_accepted-{}", episode.id);
+        transaction.execute(
+            "INSERT OR REPLACE INTO audit_events (id, scope_key, action, record_id, detail, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![audit_id, scope.as_str(), "episode_accepted", episode.id, Option::<&str>::None, now],
+        )?;
+        transaction.commit()
+    }
+
     /// One claim by id, scoped.
     pub fn get_claim(
         &self,
@@ -148,9 +418,7 @@ impl Store {
         let key = ScopeKey::of(scope);
         self.connection
             .query_row(
-                &format!(
-                    "SELECT {CLAIM_COLUMNS} FROM claims WHERE scope_key = ?1 AND id = ?2"
-                ),
+                &format!("SELECT {CLAIM_COLUMNS} FROM claims WHERE scope_key = ?1 AND id = ?2"),
                 rusqlite::params![key.as_str(), id],
                 |row| read_claim(row, scope),
             )
@@ -216,6 +484,7 @@ impl Store {
     /// Insert or replace an episode.
     pub fn put_episode(&self, episode: &Episode) -> rusqlite::Result<()> {
         let scope = ScopeKey::of(&episode.scope);
+        ensure_id_scope(&self.connection, "episodes", &episode.id, scope.as_str())?;
         self.connection.execute(
             "INSERT OR REPLACE INTO episodes (
                 id, scope_key, occurred_from, occurred_to, narrative, participants_json,
@@ -254,9 +523,7 @@ impl Store {
         let key = ScopeKey::of(scope);
         self.connection
             .query_row(
-                &format!(
-                    "SELECT {EPISODE_COLUMNS} FROM episodes WHERE scope_key = ?1 AND id = ?2"
-                ),
+                &format!("SELECT {EPISODE_COLUMNS} FROM episodes WHERE scope_key = ?1 AND id = ?2"),
                 rusqlite::params![key.as_str(), id],
                 |row| read_episode(row, scope),
             )
@@ -281,6 +548,12 @@ impl Store {
     /// Insert or replace an inference.
     pub fn put_inference(&self, inference: &Inference) -> rusqlite::Result<()> {
         let scope = ScopeKey::of(&inference.scope);
+        ensure_id_scope(
+            &self.connection,
+            "inferences",
+            &inference.id,
+            scope.as_str(),
+        )?;
         self.connection.execute(
             "INSERT OR REPLACE INTO inferences (
                 id, scope_key, axis, predicate, value, state, confidence,
@@ -362,7 +635,13 @@ impl Store {
         now: &str,
     ) -> rusqlite::Result<()> {
         let key = ScopeKey::of(scope);
-        let id = format!("sup-{kind}-{target}");
+        // Remove the pre-v2 unscoped-id form for this scope when opening an
+        // upgraded database. A different scope's legacy row is left intact.
+        self.connection.execute(
+            "DELETE FROM suppression WHERE id = ?1 AND scope_key = ?2",
+            rusqlite::params![format!("sup-{kind}-{target}"), key.as_str()],
+        )?;
+        let id = format!("sup-{}-{kind}-{target}", key.as_str());
         self.connection.execute(
             "INSERT OR REPLACE INTO suppression (id, scope_key, kind, target, fingerprint, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -420,7 +699,11 @@ impl Store {
         now: &str,
     ) -> rusqlite::Result<()> {
         let key = ScopeKey::of(scope);
-        let id = format!("audit-{now}-{action}-{}", record_id.unwrap_or(""));
+        let id = format!(
+            "audit-{}-{now}-{action}-{}",
+            key.as_str(),
+            record_id.unwrap_or("")
+        );
         self.connection.execute(
             "INSERT OR REPLACE INTO audit_events (id, scope_key, action, record_id, detail, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -443,14 +726,11 @@ impl Store {
     ///
     /// `table` is validated against a fixed list rather than interpolated from
     /// arbitrary input, because it reaches a query string.
-    pub fn count_in_scope(
-        &self,
-        scope: &RelationshipScope,
-        table: &str,
-    ) -> rusqlite::Result<i64> {
+    pub fn count_in_scope(&self, scope: &RelationshipScope, table: &str) -> rusqlite::Result<i64> {
         let table = match table {
             "claims" | "episodes" | "inferences" | "suppression" | "audit_events"
-            | "runtime_state" => table,
+            | "runtime_state" | "source_messages" | "source_spans" | "open_threads"
+            | "turn_telemetry" | "pending_candidates" => table,
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(other.to_string()));
             }
@@ -461,6 +741,309 @@ impl Store {
             [key.as_str()],
             |row| row.get(0),
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // Accepted source evidence, continuity, and diagnostics
+    // -----------------------------------------------------------------------
+
+    /// Retain a direct user message only after an admission accepted a record.
+    pub fn put_source_message(
+        &self,
+        scope: &RelationshipScope,
+        message: &SourceMessage,
+    ) -> rusqlite::Result<()> {
+        let key = ScopeKey::of(scope);
+        self.connection.execute(
+            "INSERT INTO source_messages (scope_key, id, session_id, text, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(scope_key, id) DO UPDATE SET
+                session_id = excluded.session_id,
+                text = excluded.text,
+                created_at = excluded.created_at",
+            rusqlite::params![
+                key.as_str(),
+                message.id,
+                message.session_id,
+                message.text,
+                message.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Store an exact source span for a record whose admission succeeded.
+    pub fn put_source_span(
+        &self,
+        scope: &RelationshipScope,
+        span: &SourceSpan,
+    ) -> rusqlite::Result<()> {
+        let key = ScopeKey::of(scope);
+        self.connection.execute(
+            "INSERT OR REPLACE INTO source_spans
+             (scope_key, record_id, message_id, start_offset, end_offset, quote)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                key.as_str(),
+                span.record_id,
+                span.message_id,
+                span.start_offset,
+                span.end_offset,
+                span.quote,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Insert or update a continuity thread under its relationship scope.
+    pub fn put_open_thread(
+        &self,
+        scope: &RelationshipScope,
+        thread: &OpenThread,
+    ) -> rusqlite::Result<()> {
+        let key = ScopeKey::of(scope);
+        ensure_id_scope(&self.connection, "open_threads", &thread.id, key.as_str())?;
+        self.connection.execute(
+            "INSERT OR REPLACE INTO open_threads (
+                id, scope_key, record_id, entity_ref, summary, sensitivity, mention_mode,
+                status, opened_at, expires_at, followup_session_id, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                thread.id,
+                key.as_str(),
+                thread.record_id,
+                thread.entity_ref,
+                thread.summary,
+                thread.sensitivity,
+                thread.mention_mode,
+                thread.status,
+                thread.opened_at,
+                thread.expires_at,
+                thread.followup_session_id,
+                thread.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Read active continuity threads in a scope, newest first.
+    pub fn active_open_threads(
+        &self,
+        scope: &RelationshipScope,
+        now: &str,
+    ) -> rusqlite::Result<Vec<OpenThread>> {
+        let key = ScopeKey::of(scope);
+        let mut statement = self.connection.prepare(
+            "SELECT id, record_id, entity_ref, summary, sensitivity, mention_mode, status,
+                    opened_at, expires_at, followup_session_id, updated_at
+             FROM open_threads
+             WHERE scope_key = ?1 AND status = 'open'
+               AND (expires_at IS NULL OR expires_at > ?2)
+             ORDER BY updated_at DESC, id ASC",
+        )?;
+        let rows = statement.query_map(rusqlite::params![key.as_str(), now], |row| {
+            Ok(OpenThread {
+                id: row.get(0)?,
+                record_id: row.get(1)?,
+                entity_ref: row.get(2)?,
+                summary: row.get(3)?,
+                sensitivity: row.get(4)?,
+                mention_mode: row.get(5)?,
+                status: row.get(6)?,
+                opened_at: row.get(7)?,
+                expires_at: row.get(8)?,
+                followup_session_id: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Mark a thread with a lifecycle transition without exposing unscoped SQL.
+    pub fn update_open_thread(
+        &self,
+        scope: &RelationshipScope,
+        id: &str,
+        status: &str,
+        followup_session_id: Option<&str>,
+        now: &str,
+    ) -> rusqlite::Result<usize> {
+        let key = ScopeKey::of(scope);
+        self.connection.execute(
+            "UPDATE open_threads
+             SET status = ?1, followup_session_id = ?2, updated_at = ?3
+             WHERE scope_key = ?4 AND id = ?5",
+            rusqlite::params![status, followup_session_id, now, key.as_str(), id],
+        )
+    }
+
+    /// Close every continuity thread attached to a record that has just been
+    /// replaced. An updated user statement must refresh the thread rather than
+    /// let an old event be revived in a later session.
+    pub fn close_open_threads_for_record(
+        &self,
+        scope: &RelationshipScope,
+        record_id: &str,
+        now: &str,
+    ) -> rusqlite::Result<usize> {
+        let key = ScopeKey::of(scope);
+        self.connection.execute(
+            "UPDATE open_threads SET status = 'closed', updated_at = ?3
+             WHERE scope_key = ?1 AND record_id = ?2 AND status = 'open'",
+            rusqlite::params![key.as_str(), record_id, now],
+        )
+    }
+
+    /// Expire follow-ups that received no update before their session closed.
+    pub fn expire_unanswered_followups(
+        &self,
+        scope: &RelationshipScope,
+        session_id: &str,
+        now: &str,
+    ) -> rusqlite::Result<usize> {
+        let key = ScopeKey::of(scope);
+        self.connection.execute(
+            "UPDATE open_threads SET status = 'expired', updated_at = ?1
+             WHERE scope_key = ?2 AND followup_session_id = ?3 AND status = 'open'",
+            rusqlite::params![now, key.as_str(), session_id],
+        )
+    }
+
+    /// Persist one diagnostic phase without making model-visible context depend on it.
+    pub fn telemetry(
+        &self,
+        scope: &RelationshipScope,
+        id: &str,
+        turn_key: &str,
+        phase: &str,
+        detail_json: &str,
+        now: &str,
+    ) -> rusqlite::Result<()> {
+        let key = ScopeKey::of(scope);
+        let storage_id = format!("telemetry-{}-{id}", key.as_str());
+        self.connection.execute(
+            "INSERT OR REPLACE INTO turn_telemetry
+             (id, scope_key, turn_key, phase, detail_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![storage_id, key.as_str(), turn_key, phase, detail_json, now],
+        )?;
+        Ok(())
+    }
+
+    /// Keep an extraction product out of durable recall until its promotion
+    /// policy has earned enough quality evidence. The source message is an L0
+    /// pointer, not a copied transcript.
+    pub fn put_pending_candidate(
+        &self,
+        scope: &RelationshipScope,
+        id: &str,
+        kind: &str,
+        source_message_id: &str,
+        reason: &str,
+        now: &str,
+    ) -> rusqlite::Result<()> {
+        let key = ScopeKey::of(scope);
+        ensure_id_scope(&self.connection, "pending_candidates", id, key.as_str())?;
+        self.connection.execute(
+            "INSERT OR REPLACE INTO pending_candidates
+             (id, scope_key, kind, source_message_id, reason, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending_review', ?6)",
+            rusqlite::params![id, key.as_str(), kind, source_message_id, reason, now],
+        )?;
+        Ok(())
+    }
+
+    /// Forget one claim and erase the raw evidence that only supported it.
+    pub fn forget_claim(
+        &self,
+        scope: &RelationshipScope,
+        id: &str,
+        now: &str,
+    ) -> rusqlite::Result<bool> {
+        let Some(claim) = self.get_claim(scope, id)? else {
+            return Ok(false);
+        };
+        let fingerprint = companion_memory_kernel::rules::forgetting::fingerprint(&claim.value);
+        self.suppress(scope, "record", id, Some(&fingerprint), Some(id), now)?;
+        let key = ScopeKey::of(scope);
+        self.connection.execute(
+            "DELETE FROM evidence_refs WHERE owner_id = ?1 OR source_id = ?1",
+            [id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM open_threads WHERE scope_key = ?1 AND record_id = ?2",
+            rusqlite::params![key.as_str(), id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM source_spans WHERE scope_key = ?1 AND record_id = ?2",
+            rusqlite::params![key.as_str(), id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM source_messages
+             WHERE scope_key = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM source_spans
+                 WHERE source_spans.scope_key = source_messages.scope_key
+                   AND source_spans.message_id = source_messages.id
+               )",
+            [key.as_str()],
+        )?;
+        self.connection.execute(
+            "DELETE FROM claims WHERE scope_key = ?1 AND id = ?2",
+            rusqlite::params![key.as_str(), id],
+        )?;
+        self.audit(scope, "forgot_claim", Some(id), None, now)?;
+        Ok(true)
+    }
+
+    /// Forget an episode and its reversible evidence while retaining only a
+    /// one-way fingerprint that prevents it from being re-written verbatim.
+    pub fn forget_episode(
+        &self,
+        scope: &RelationshipScope,
+        id: &str,
+        now: &str,
+    ) -> rusqlite::Result<bool> {
+        let Some(episode) = self.get_episode(scope, id)? else {
+            return Ok(false);
+        };
+        let fingerprint =
+            companion_memory_kernel::rules::forgetting::fingerprint_text(&episode.narrative);
+        let key = ScopeKey::of(scope);
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO suppression (id, scope_key, kind, target, fingerprint, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![format!("suppression-{}-{now}-record-{id}", key.as_str()), key.as_str(), "record", id, fingerprint, now],
+        )?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO suppressed_fingerprints (scope_key, fingerprint, label, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![key.as_str(), fingerprint, id, now],
+        )?;
+        transaction.execute(
+            "DELETE FROM evidence_refs WHERE owner_id = ?1 OR source_id = ?1",
+            [id],
+        )?;
+        transaction.execute(
+            "DELETE FROM source_spans WHERE scope_key = ?1 AND record_id = ?2",
+            rusqlite::params![key.as_str(), id],
+        )?;
+        transaction.execute(
+            "DELETE FROM source_messages
+             WHERE scope_key = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM source_spans WHERE source_spans.scope_key = source_messages.scope_key
+                 AND source_spans.message_id = source_messages.id
+               )",
+            [key.as_str()],
+        )?;
+        transaction.execute(
+            "DELETE FROM episodes WHERE scope_key = ?1 AND id = ?2",
+            rusqlite::params![key.as_str(), id],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     // -----------------------------------------------------------------------
@@ -815,6 +1398,30 @@ fn mention_mode_from(text: &str) -> MentionMode {
 // Row readers
 // ---------------------------------------------------------------------------
 
+/// The v1 schema uses a global id primary key and a separate scope column.
+/// Refusing a same-id write from another scope preserves the old schema while
+/// preventing `INSERT OR REPLACE` from deleting a different relationship's
+/// row. New ids are normally globally unique, but isolation must not depend on
+/// that upstream convention.
+fn ensure_id_scope(
+    connection: &Connection,
+    table: &str,
+    id: &str,
+    scope: &str,
+) -> rusqlite::Result<()> {
+    let existing: Option<String> = connection
+        .query_row(
+            &format!("SELECT scope_key FROM {table} WHERE id = ?1"),
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if existing.is_some_and(|existing| existing != scope) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(())
+}
+
 fn read_claim(row: &rusqlite::Row<'_>, scope: &RelationshipScope) -> rusqlite::Result<Claim> {
     Ok(Claim {
         id: row.get(0)?,
@@ -855,7 +1462,10 @@ fn read_episode(row: &rusqlite::Row<'_>, scope: &RelationshipScope) -> rusqlite:
     })
 }
 
-fn read_inference(row: &rusqlite::Row<'_>, scope: &RelationshipScope) -> rusqlite::Result<Inference> {
+fn read_inference(
+    row: &rusqlite::Row<'_>,
+    scope: &RelationshipScope,
+) -> rusqlite::Result<Inference> {
     Ok(Inference {
         id: row.get(0)?,
         scope: scope.clone(),

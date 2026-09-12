@@ -4,6 +4,7 @@
 //! is not a memory primary key, and a misclassified input must not silently
 //! destroy a classified fact.
 
+use companion_memory_kernel::domain::predicates::{require_spec, ValueKind};
 use companion_memory_kernel::domain::types::{
     Claim, ClaimStatus, Provenance, RelationshipScope, Salience,
 };
@@ -12,7 +13,6 @@ use companion_memory_kernel::rules::record_identity::{
     normalize_for_comparison, supersedes_by_cardinality, values_equivalent, SlotKey,
     SupersedeDecision, SupersedeInput, SupersedeRejection, ValueClass,
 };
-use companion_memory_kernel::domain::predicates::{require_spec, ValueKind};
 use serde_json::json;
 
 fn scope() -> RelationshipScope {
@@ -58,7 +58,12 @@ fn claim(id: &str, predicate: &str, value: serde_json::Value, updated_at: &str) 
 }
 
 fn input<'a>(predicate: &'a str, value: &'a serde_json::Value) -> SupersedeInput<'a> {
-    SupersedeInput { predicate, value, entity_ref: None, qualifiers: None }
+    SupersedeInput {
+        predicate,
+        value,
+        entity_ref: None,
+        qualifiers: None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -71,31 +76,59 @@ fn qualifier_order_does_not_change_the_slot() {
     // field order must not accumulate duplicates.
     let first = json!({ "use": "work", "since": 2020 });
     let second = json!({ "since": 2020, "use": "work" });
-    let left = SlotKey { predicate: "identity.location", entity_ref: Some("shanghai"), qualifiers: Some(&first) };
-    let right = SlotKey { predicate: "identity.location", entity_ref: Some("shanghai"), qualifiers: Some(&second) };
+    let left = SlotKey {
+        predicate: "identity.location",
+        entity_ref: Some("shanghai"),
+        qualifiers: Some(&first),
+    };
+    let right = SlotKey {
+        predicate: "identity.location",
+        entity_ref: Some("shanghai"),
+        qualifiers: Some(&second),
+    };
     assert_eq!(canonical_key_parts(&left), canonical_key_parts(&right));
 }
 
 #[test]
 fn different_entities_are_different_slots() {
     let qualifiers = json!({});
-    let left = SlotKey { predicate: "person.name", entity_ref: Some("person-a"), qualifiers: Some(&qualifiers) };
-    let right = SlotKey { predicate: "person.name", entity_ref: Some("person-b"), qualifiers: Some(&qualifiers) };
+    let left = SlotKey {
+        predicate: "person.name",
+        entity_ref: Some("person-a"),
+        qualifiers: Some(&qualifiers),
+    };
+    let right = SlotKey {
+        predicate: "person.name",
+        entity_ref: Some("person-b"),
+        qualifiers: Some(&qualifiers),
+    };
     assert_ne!(canonical_key_parts(&left), canonical_key_parts(&right));
 }
 
 #[test]
 fn a_missing_entity_is_not_the_empty_string_entity() {
     let qualifiers = json!({});
-    let absent = SlotKey { predicate: "person.name", entity_ref: None, qualifiers: Some(&qualifiers) };
-    let empty = SlotKey { predicate: "person.name", entity_ref: Some(""), qualifiers: Some(&qualifiers) };
+    let absent = SlotKey {
+        predicate: "person.name",
+        entity_ref: None,
+        qualifiers: Some(&qualifiers),
+    };
+    let empty = SlotKey {
+        predicate: "person.name",
+        entity_ref: Some(""),
+        qualifiers: Some(&qualifiers),
+    };
     assert_ne!(canonical_key_parts(&absent), canonical_key_parts(&empty));
 }
 
 #[test]
 fn the_readable_key_names_the_entity_and_qualifiers() {
     let qualifiers = json!({ "use": "work" });
-    let slot = SlotKey { predicate: "identity.location", entity_ref: Some("shanghai"), qualifiers: Some(&qualifiers) };
+    let slot = SlotKey {
+        predicate: "identity.location",
+        entity_ref: Some("shanghai"),
+        qualifiers: Some(&qualifiers),
+    };
     assert_eq!(canonical_key(&slot), "identity.location@shanghai{use=work}");
 }
 
@@ -105,9 +138,15 @@ fn the_readable_key_names_the_entity_and_qualifiers() {
 
 #[test]
 fn equivalence_ignores_case_and_whitespace_only() {
-    assert!(values_equivalent(&json!("  I  Design "), &json!("i design")));
+    assert!(values_equivalent(
+        &json!("  I  Design "),
+        &json!("i design")
+    ));
     // Deliberately NOT fuzzy: two different statements stay two statements.
-    assert!(!values_equivalent(&json!("I design"), &json!("I teach painting")));
+    assert!(!values_equivalent(
+        &json!("I design"),
+        &json!("I teach painting")
+    ));
     assert!(!values_equivalent(&json!("designer"), &json!("design")));
 }
 
@@ -131,7 +170,9 @@ fn only_single_cardinalities_supersede() {
 
 #[test]
 fn only_the_misc_domain_is_inert() {
-    assert!(is_inert(companion_memory_kernel::domain::predicate_keys::Domain::Misc));
+    assert!(is_inert(
+        companion_memory_kernel::domain::predicate_keys::Domain::Misc
+    ));
     for domain in companion_memory_kernel::domain::predicate_keys::Domain::ALL {
         if *domain != companion_memory_kernel::domain::predicate_keys::Domain::Misc {
             assert!(!is_inert(*domain), "{domain:?} must not be inert");
@@ -167,7 +208,12 @@ fn an_unknown_predicate_is_refused() {
 fn a_set_predicate_appends_instead_of_replacing() {
     // The defect this encodes: "I design, and I also teach painting" must not
     // lose either half.
-    let existing = claim("c1", "identity.occupation", json!("designer"), "2026-01-01T00:00:00Z");
+    let existing = claim(
+        "c1",
+        "identity.occupation",
+        json!("designer"),
+        "2026-01-01T00:00:00Z",
+    );
     let value = json!("art teacher");
     match decide_supersede(&input("identity.occupation", &value), &[&existing]) {
         SupersedeDecision::Append { spec } => assert_eq!(spec.key, "identity.occupation"),
@@ -177,7 +223,12 @@ fn a_set_predicate_appends_instead_of_replacing() {
 
 #[test]
 fn a_set_predicate_merges_an_equivalent_value() {
-    let existing = claim("c1", "identity.occupation", json!("Designer"), "2026-01-01T00:00:00Z");
+    let existing = claim(
+        "c1",
+        "identity.occupation",
+        json!("Designer"),
+        "2026-01-01T00:00:00Z",
+    );
     let value = json!("  designer ");
     match decide_supersede(&input("identity.occupation", &value), &[&existing]) {
         SupersedeDecision::Merge { into_id, .. } => assert_eq!(into_id, "c1"),
@@ -187,7 +238,12 @@ fn a_set_predicate_merges_an_equivalent_value() {
 
 #[test]
 fn a_temporal_single_predicate_supersedes() {
-    let existing = claim("c1", "identity.name", json!("Xiaolin"), "2026-01-01T00:00:00Z");
+    let existing = claim(
+        "c1",
+        "identity.name",
+        json!("Xiaolin"),
+        "2026-01-01T00:00:00Z",
+    );
     let value = json!("Lin");
     match decide_supersede(&input("identity.name", &value), &[&existing]) {
         SupersedeDecision::Supersede { supersedes_id, .. } => assert_eq!(supersedes_id, "c1"),
@@ -199,7 +255,12 @@ fn a_temporal_single_predicate_supersedes() {
 fn the_misc_escape_hatch_never_displaces_anything() {
     // `misc` is a Set, so it would append; the inert check must fire first and
     // refuse outright, because unclassified sludge must not accumulate either.
-    let existing = claim("c1", "misc.unclassified", json!("something"), "2026-01-01T00:00:00Z");
+    let existing = claim(
+        "c1",
+        "misc.unclassified",
+        json!("something"),
+        "2026-01-01T00:00:00Z",
+    );
     let value = json!("something else");
     match decide_supersede(&input("misc.unclassified", &value), &[&existing]) {
         SupersedeDecision::Reject { reason, .. } => {
@@ -229,12 +290,20 @@ fn prose_never_supersedes_a_structured_value() {
     // stricter and correct outcome: an unresolved time reference is not a Date
     // value at all, so it never reaches the slot. It stays a candidate with the
     // user's wording in `raw_value` until a resolver turns it into an instant.
-    let existing = claim("c1", "open_loop.deadline", json!("2026-06-10T14:00:00Z"), "2026-01-01T00:00:00Z");
+    let existing = claim(
+        "c1",
+        "open_loop.deadline",
+        json!("2026-06-10T14:00:00Z"),
+        "2026-01-01T00:00:00Z",
+    );
     let value = json!("next Wednesday, sometime");
     match decide_supersede(&input("open_loop.deadline", &value), &[&existing]) {
         SupersedeDecision::Reject { reason, detail } => {
             assert_eq!(reason, SupersedeRejection::InvalidValue);
-            assert!(detail.contains("ISO 8601"), "detail should name the shape: {detail}");
+            assert!(
+                detail.contains("ISO 8601"),
+                "detail should name the shape: {detail}"
+            );
         }
         other => panic!("prose must not overwrite a structured value, got {other:?}"),
     }
@@ -244,14 +313,24 @@ fn prose_never_supersedes_a_structured_value() {
 fn a_more_precise_date_may_refine_a_coarser_one() {
     // The refinement direction that does exist: a day resolved to a time, and a
     // month resolved to a day.
-    let day = claim("c1", "open_loop.deadline", json!("2026-06-10"), "2026-01-01T00:00:00Z");
+    let day = claim(
+        "c1",
+        "open_loop.deadline",
+        json!("2026-06-10"),
+        "2026-01-01T00:00:00Z",
+    );
     let with_time = json!("2026-06-10T14:00:00Z");
     match decide_supersede(&input("open_loop.deadline", &with_time), &[&day]) {
         SupersedeDecision::Supersede { supersedes_id, .. } => assert_eq!(supersedes_id, "c1"),
         other => panic!("a resolved time should refine a date, got {other:?}"),
     }
 
-    let month = claim("c2", "open_loop.deadline", json!("2026-06"), "2026-01-01T00:00:00Z");
+    let month = claim(
+        "c2",
+        "open_loop.deadline",
+        json!("2026-06"),
+        "2026-01-01T00:00:00Z",
+    );
     let with_day = json!("2026-06-10");
     match decide_supersede(&input("open_loop.deadline", &with_day), &[&month]) {
         SupersedeDecision::Supersede { supersedes_id, .. } => assert_eq!(supersedes_id, "c2"),
@@ -331,21 +410,45 @@ fn the_newest_record_represents_a_slot_with_several_actives() {
 #[test]
 fn classification_reports_the_declared_kind() {
     let verbosity = require_spec("communication.verbosity");
-    assert_eq!(classify_value(verbosity, &json!("short")), ValueClass::Classifiable(ValueKind::Enum));
-    assert!(matches!(classify_value(verbosity, &json!("banana")), ValueClass::Unclassifiable(_)));
+    assert_eq!(
+        classify_value(verbosity, &json!("short")),
+        ValueClass::Classifiable(ValueKind::Enum)
+    );
+    assert!(matches!(
+        classify_value(verbosity, &json!("banana")),
+        ValueClass::Unclassifiable(_)
+    ));
 
     let age = require_spec("identity.age");
-    assert_eq!(classify_value(age, &json!(1990)), ValueClass::Classifiable(ValueKind::Number));
-    assert_eq!(classify_value(age, &json!("1990")), ValueClass::Classifiable(ValueKind::Number));
-    assert!(matches!(classify_value(age, &json!("old")), ValueClass::Unclassifiable(_)));
+    assert_eq!(
+        classify_value(age, &json!(1990)),
+        ValueClass::Classifiable(ValueKind::Number)
+    );
+    assert_eq!(
+        classify_value(age, &json!("1990")),
+        ValueClass::Classifiable(ValueKind::Number)
+    );
+    assert!(matches!(
+        classify_value(age, &json!("old")),
+        ValueClass::Unclassifiable(_)
+    ));
 }
 
 #[test]
 fn classification_refuses_empty_and_ill_typed_values() {
     let name = require_spec("identity.name");
-    assert!(matches!(classify_value(name, &json!(null)), ValueClass::Unclassifiable(_)));
-    assert!(matches!(classify_value(name, &json!("   ")), ValueClass::Unclassifiable(_)));
-    assert!(matches!(classify_value(name, &json!(42)), ValueClass::Unclassifiable(_)));
+    assert!(matches!(
+        classify_value(name, &json!(null)),
+        ValueClass::Unclassifiable(_)
+    ));
+    assert!(matches!(
+        classify_value(name, &json!("   ")),
+        ValueClass::Unclassifiable(_)
+    ));
+    assert!(matches!(
+        classify_value(name, &json!(42)),
+        ValueClass::Unclassifiable(_)
+    ));
 }
 
 #[test]
@@ -353,7 +456,10 @@ fn numeric_text_recognition_rejects_partial_numbers() {
     let age = require_spec("identity.age");
     for bad in ["", "-", ".", "1.2.3", "12a", "1e5"] {
         assert!(
-            matches!(classify_value(age, &json!(bad)), ValueClass::Unclassifiable(_)),
+            matches!(
+                classify_value(age, &json!(bad)),
+                ValueClass::Unclassifiable(_)
+            ),
             "{bad:?} must not classify as a number"
         );
     }

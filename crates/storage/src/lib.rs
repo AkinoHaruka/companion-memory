@@ -24,4 +24,4 @@ pub mod store;
 
 pub use migrations::{apply_migrations, MigrationState, CURRENT_SCHEMA_VERSION};
 pub use scope::ScopeKey;
-pub use store::{OpenOptions, Store};
+pub use store::{OpenOptions, OpenThread, SourceMessage, SourceSpan, Store};

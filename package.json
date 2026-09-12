@@ -11,7 +11,9 @@
   "scripts": {
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "build": "pnpm -r build"
+    "build": "pnpm -r build",
+    "build:worker:windows": "cargo build --release --target x86_64-pc-windows-msvc -p companion-memory-worker && node scripts/package-worker.mjs --target x86_64-pc-windows-msvc",
+    "build:worker:linux": "cargo build --release --target x86_64-unknown-linux-gnu -p companion-memory-worker && node scripts/package-worker.mjs --target x86_64-unknown-linux-gnu"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

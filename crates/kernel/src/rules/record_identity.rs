@@ -226,9 +226,9 @@ pub fn classify_value(spec: &PredicateSpec, value: &serde_json::Value) -> ValueC
     match spec.kind {
         ValueKind::Enum => match value {
             Value::String(text) => match spec.enum_domain {
-                Some(domain) if !domain.contains(&text.as_str()) => ValueClass::Unclassifiable(
-                    "value is outside the declared enum domain".into(),
-                ),
+                Some(domain) if !domain.contains(&text.as_str()) => {
+                    ValueClass::Unclassifiable("value is outside the declared enum domain".into())
+                }
                 _ => ValueClass::Classifiable(ValueKind::Enum),
             },
             _ => ValueClass::Unclassifiable("enum value must be a string".into()),
@@ -246,9 +246,7 @@ pub fn classify_value(spec: &PredicateSpec, value: &serde_json::Value) -> ValueC
             Value::String(text) if is_iso_date_shape(text) => {
                 ValueClass::Classifiable(ValueKind::Date)
             }
-            Value::String(_) => {
-                ValueClass::Unclassifiable("not an ISO 8601 date".into())
-            }
+            Value::String(_) => ValueClass::Unclassifiable("not an ISO 8601 date".into()),
             _ => ValueClass::Unclassifiable("date value expected".into()),
         },
         ValueKind::Duration => match value {
@@ -286,7 +284,9 @@ fn is_numeric(text: &str) -> bool {
         return false;
     }
     whole.bytes().all(|b| b.is_ascii_digit())
-        && fraction.map_or(true, |f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
+        && fraction.map_or(true, |f| {
+            !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit())
+        })
 }
 
 /// Decide what a new statement does to the records already in its slot.
@@ -343,7 +343,10 @@ pub fn decide_supersede(
         .iter()
         .find(|claim| values_equivalent(&claim.value, input.value))
     {
-        return SupersedeDecision::Merge { spec, into_id: equivalent.id.clone() };
+        return SupersedeDecision::Merge {
+            spec,
+            into_id: equivalent.id.clone(),
+        };
     }
 
     let incumbent = pick_most_authoritative(same_slot_active);
@@ -382,7 +385,10 @@ pub fn decide_supersede(
         };
     }
 
-    SupersedeDecision::Supersede { spec, supersedes_id: incumbent.id.clone() }
+    SupersedeDecision::Supersede {
+        spec,
+        supersedes_id: incumbent.id.clone(),
+    }
 }
 
 /// Choose which active record represents a slot when several coexist.

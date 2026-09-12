@@ -1,378 +1,262 @@
-/**
- * Companion memory for DeepSeek Harness.
- *
- * Wires a memory implementation into the host's seams:
- *
- *   - `agent/pre-step` — asynchronous, where recall happens
- *   - `systemPrompt.section` — a stable block in the system prompt, which does
- *     not invalidate the request prefix between turns
- *   - `systemPrompt.context` — this turn's relevant records, materialised as a
- *     user-role snapshot so a per-turn change does not rewrite the prefix
- *   - `tools.register` — the model asking a direct question
- *
- * The first is separate from the other three because the host requires it to be:
- * prompt providers are evaluated synchronously during assembly and so cannot
- * perform I/O. `TurnCache` carries the result across that seam, and this module
- * only ever publishes after a read succeeded.
- *
- * Nothing here reaches into the kernel. The adapter talks to the `MemoryKernel`
- * interface, so where decisions are made — in-process, or over JSON-RPC to the
- * compiled Rust binary — is not this file's concern.
- *
- * @module @companion-memory/dsh-plugin
- */
+/** Real DeepSeek Harness bundle integration backed only by the Rust worker. */
 
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
-
-// Imported for their declaration merging, not their values.
-//
-// Cordis composes its `Context` interface through module augmentation, so
-// `ctx.systemPrompt` and `ctx.tools` exist on the type only once the package
-// declaring them has been imported. Without these the plugin typechecks as if
-// those services did not exist, which is how the mistake presents: a plugin that
-// looks correct and cannot mount.
-import type {} from '@deepseek-ai/dsh-system-prompt';
-import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt';
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent';
+import { createUserMessage, type ContentBlock, type Message, type UserMessage } from '@deepseek-ai/dsh-llm';
+import type { Session } from '@deepseek-ai/dsh-session';
+import type {} from '@deepseek-ai/dsh-session-projection';
 import type {} from '@deepseek-ai/dsh-tools';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-import type { MemoryKernel, MemoryScope } from './memory.js';
-import { loopPreStep, observedMessages, type LoopMessage } from './loop-adapter.js';
-import { renderOverlay, renderQueryResult, renderStable } from './render.js';
-import { TurnCache, WarmCoalescer } from './turn-cache.js';
+import { extractFromUserMessage } from './extractor.js';
+import { ExtractionQueue } from './queue.js';
+import type { ExtractedCandidate, Extraction, MemoryScope } from './protocol.js';
+import { toWorkerScope } from './protocol.js';
+import { renderMemoryUsagePlan, renderQueryResult, renderedRecordIds } from './render.js';
+import { acquireWorker, type WorkerClient } from './worker-client.js';
 
 export const name = 'companion-memory';
+export const inject = ['agents', 'llm', 'sessionProjections', 'tools'];
 
-/**
- * Services this plugin reads.
- *
- * Declared rather than reached for. The property proxy is topology-sensitive,
- * while `ctx.get` reads the global store, so an undeclared access can resolve to
- * nothing depending on where the plugin is mounted.
- */
-export const inject = ['systemPrompt', 'tools'];
-
-/** Deployment settings. */
-export interface CompanionMemoryConfig {
-  /** Tenant the memories belong to. */
+export interface Config {
   serviceId: string;
-  /** The person being remembered. */
   ownerUserId: string;
-  /** Which companion persona. */
-  companionProfileId: string;
-  /** Section order for the stable block in the system prompt. */
-  stableOrder?: number;
-  /** Context order for this turn's records. */
-  overlayOrder?: number;
-  /** Name the model calls to ask memory a direct question. */
+  /** Used only when DSH has no Agent Preset; never an Agent or Session id. */
+  defaultProfileId: string;
+  databasePath: string;
+  workerCommand?: string;
+  workerArgs?: string[];
+  workerRequestTimeoutMs?: number;
+  maxQueuedExtractions?: number;
   toolName?: string;
 }
 
-/**
- * Schema for the configuration.
- *
- * Validated at load so a missing tenant or owner fails immediately rather than
- * producing a plugin that silently remembers nothing.
- */
-export const Config = z.object({
+export const Config: z<Config> = z.object({
   serviceId: z.string().required(),
   ownerUserId: z.string().required(),
-  companionProfileId: z.string().required(),
-  stableOrder: z.natural().default(700),
-  overlayOrder: z.natural().default(700),
+  defaultProfileId: z.string().required(),
+  databasePath: z.string().required(),
+  workerCommand: z.string(),
+  workerArgs: z.array(z.string()),
+  workerRequestTimeoutMs: z.natural().default(4_000),
+  maxQueuedExtractions: z.natural().default(32),
   toolName: z.string().default('companion_memory'),
 });
 
-/** Section order: after the tool schemas, so memory reads as background. */
-const DEFAULT_STABLE_ORDER = 700;
-const DEFAULT_OVERLAY_ORDER = 700;
-const DEFAULT_TOOL_NAME = 'companion_memory';
+interface DirectUserInput { id: string; sessionId: string; text: string; }
 
-/**
- * Build the plugin for one memory implementation.
- *
- * The kernel is a factory argument rather than module state. An earlier version
- * kept it in a module-level variable that a mount and its pre-step handler each
- * read separately, and they disagreed: a mount created with an explicit kernel
- * handed its handler `undefined`, which then returned early so the plugin
- * silently remembered nothing. Passing it once, here, removes the class of bug
- * rather than the instance.
- *
- * @param kernel - the memory implementation this deployment uses.
- * @returns a cordis function plugin to mount with `ctx.plugin`.
- */
-export function createCompanionMemory(kernel: MemoryKernel): {
-  name: string;
-  inject: string[];
-  Config: typeof Config;
-  apply: (ctx: Context, config: CompanionMemoryConfig) => void;
-} {
+function textContent(content: readonly ContentBlock[]): string {
+  return content
+    .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+    .map((block) => block.text).join('\n').trim();
+}
+
+/** Excludes plugin snapshots, tool results, and model content. */
+function isDirectUserMessage(message: Message): message is UserMessage {
+  return message.role === 'user' && message.source.kind === 'user';
+}
+
+function lastDirectUserText(messages: readonly Message[]): string {
+  for (const message of messages.toReversed()) {
+    if (isDirectUserMessage(message)) return textContent(message.content);
+  }
+  return '';
+}
+
+function scopeFor(agent: Agent, config: Config): MemoryScope {
+  const preset = agent.session.header.agentPreset;
   return {
-    name,
-    inject: [...inject],
-    Config,
-    apply: (ctx, config) => applyWith(ctx, config, kernel),
-  };
-}
-
-/** The caches, owned per mount. */
-export interface MemoryMount {
-  /** The warm cache the prompt providers read. */
-  readonly cache: TurnCache;
-  /** The coalescer the pre-step hook uses. */
-  readonly coalescer: WarmCoalescer;
-  /** The scope this mount serves. */
-  readonly relationship: MemoryScope;
-  /** The memory implementation this mount uses. */
-  readonly kernel: MemoryKernel;
-}
-
-/**
- * The mount produced by the last `apply`.
- *
- * A record of the most recent mount, for diagnostics and for wiring the
- * pre-step handler. It is deliberately **not** how either finds its state: a
- * second mount in one process would overwrite this, and a handler holding it
- * would then warm the wrong profile. {@link createPreStep} closes over its own
- * mount instead.
- *
- * Known limitation: with several mounts alive at once this returns only the most
- * recent, so a caller wiring pre-step for two agents at the same time would get
- * the wrong one for the first. A composition that mounts more than one
- * relationship should keep the fork it got from `ctx.plugin` and derive the
- * mount from it rather than reading this.
- */
-let lastMount: MemoryMount | undefined;
-
-/** The mount produced by the last `apply`, for diagnostics. */
-export function currentMount(): MemoryMount | undefined {
-  return lastMount;
-}
-
-/**
- * Mount the adapter onto a context.
- *
- * Exported for a composition root that already has a kernel in hand. Prefer
- * {@link createCompanionMemory} with `ctx.plugin`, which scopes the
- * contributions to that mount so disposing it removes them.
- *
- * @param ctx - the cordis context to contribute to.
- * @param config - deployment settings, including which relationship this serves.
- * @param kernel - the memory implementation.
- */
-export function applyWith(
-  ctx: Context,
-  config: CompanionMemoryConfig,
-  kernel: MemoryKernel,
-): void {
-  const scope: MemoryScope = {
     serviceId: config.serviceId,
     ownerUserId: config.ownerUserId,
-    companionProfileId: config.companionProfileId,
+    companionProfileId: typeof preset === 'string' && preset.trim().length > 0 ? preset : config.defaultProfileId,
   };
+}
 
-  const cache = new TurnCache();
-  const coalescer = new WarmCoalescer();
-  const mount: MemoryMount = { cache, coalescer, relationship: scope, kernel };
-  lastMount = mount;
+function now(): string { return new Date().toISOString(); }
 
-  // Every registration goes through ctx.effect so disposal removes it. The
-  // registries return their own disposers; wrapping them here means fiber
-  // teardown unregisters everything without this plugin tracking it separately.
-  ctx.effect(() =>
-    ctx.systemPrompt.section({
-      name: 'companion-memory-stable',
-      order: config.stableOrder ?? DEFAULT_STABLE_ORDER,
-      // Synchronous by necessity: this runs while the request is assembled. A
-      // profile that has not warmed renders nothing rather than a previous
-      // turn's profile.
-      text: () => {
-        const warmed = cache.read(scope);
-        return warmed ? renderStable(warmed) : '';
+function workerCandidates(candidates: readonly ExtractedCandidate[]): unknown[] {
+  return candidates.map((candidate) => ({
+    id: candidate.id,
+    predicate: candidate.predicate,
+    value: candidate.value,
+    ...(candidate.rawValue === undefined ? {} : { raw_value: candidate.rawValue }),
+    ...(candidate.entityRef === undefined ? {} : { entity_ref: candidate.entityRef }),
+    ...(candidate.qualifiers === undefined ? {} : { qualifiers: candidate.qualifiers }),
+    start_offset: candidate.sourceSpan.startOffset,
+    end_offset: candidate.sourceSpan.endOffset,
+    quote: candidate.sourceSpan.quote,
+    confidence: candidate.confidence,
+    ...(candidate.openThread === undefined ? {} : {
+      open_thread: {
+        id: candidate.openThread.id,
+        summary: candidate.openThread.summary,
+        ...(candidate.openThread.entityRef === undefined ? {} : { entity_ref: candidate.openThread.entityRef }),
+        ...(candidate.openThread.expiresAt === undefined ? {} : { expires_at: candidate.openThread.expiresAt }),
       },
     }),
+  }));
+}
+
+function workerEpisodes(episodes: readonly Extract<Extraction, { kind: 'episode' }>[]): unknown[] {
+  return episodes.map((item) => ({
+    id: item.candidate.id,
+    narrative: item.candidate.narrative,
+    start_offset: item.candidate.sourceSpan.startOffset,
+    end_offset: item.candidate.sourceSpan.endOffset,
+    quote: item.candidate.sourceSpan.quote,
+    confidence: item.candidate.confidence,
+  }));
+}
+
+async function extractAndAdmit(
+  ctx: Context,
+  worker: WorkerClient,
+  agent: Agent,
+  scope: MemoryScope,
+  input: DirectUserInput,
+  signal: AbortSignal,
+): Promise<void> {
+  const health = await worker.health();
+  const extracted = await extractFromUserMessage(ctx, agent, input.text, input.id, health.predicateSchemas, signal);
+  const candidates = extracted
+    .filter((item): item is Extract<typeof item, { kind: 'claim' }> => item.kind === 'claim')
+    .map((item) => item.candidate);
+  const episodes = extracted.filter((item): item is Extract<typeof item, { kind: 'episode' }> => item.kind === 'episode');
+  const pending = extracted.flatMap((item, index) => item.kind === 'runtime_state'
+    ? [{ id: `${input.id}-pending-${index}`, kind: item.kind, reason: item.reason }]
+    : []);
+  // Empty admission telemetry measures an extractor that correctly retained no
+  // text; Rust retains source evidence only when a candidate is accepted.
+  await worker.admit({
+    scope: toWorkerScope(scope), now: now(),
+    source: { id: input.id, session_id: input.sessionId, text: input.text },
+    candidates: workerCandidates(candidates),
+    episodes: workerEpisodes(episodes),
+    pending,
+  });
+}
+
+/** Mount one shared reconnecting worker client and the actual DSH lifecycle. */
+export function apply(ctx: Context, config: Config): void {
+  const acquired = acquireWorker({
+    ...(config.workerCommand === undefined ? {} : { command: config.workerCommand }),
+    ...(config.workerArgs === undefined ? {} : { args: config.workerArgs }),
+    databasePath: config.databasePath,
+    requestTimeoutMs: config.workerRequestTimeoutMs ?? 4_000,
+    onWarning: (message) => ctx.logger.warn(`companion-memory: ${message}`),
+  });
+  const queue = new ExtractionQueue(
+    config.maxQueuedExtractions ?? 32,
+    (error) => ctx.logger.warn(`companion-memory: asynchronous extraction failed: ${error instanceof Error ? error.message : 'unknown error'}`),
   );
+  const firstWarm = new WeakSet<Session>();
+  const agents = new WeakMap<Session, Agent>();
+  const scopes = new WeakMap<Session, MemoryScope>();
+  const pending = new WeakMap<Session, DirectUserInput[]>();
 
-  ctx.effect(() =>
-    ctx.systemPrompt.context({
-      name: 'companion-memory-overlay',
-      order: config.overlayOrder ?? DEFAULT_OVERLAY_ORDER,
-      text: () => {
-        const warmed = cache.read(scope);
-        return warmed ? renderOverlay(warmed) : '';
-      },
-    }),
-  );
+  ctx.effect(() => async () => {
+    await queue.close();
+    await acquired.release();
+  }, 'companion-memory worker lifecycle');
 
-  ctx.effect(() =>
-    ctx.tools.register(
-      defineTool({
-        name: config.toolName ?? DEFAULT_TOOL_NAME,
-        description:
-          'Ask what the companion remembers about the user, or ask for something to be '
-          + 'forgotten. Use `search` when the user refers to something you may have '
-          + 'discussed before and you need the detail. Use `forget` when the user asks '
-          + 'you not to bring something up again. Do not use this to recite memories at '
-          + 'the user unprompted.',
-        parameters: {
-          query: {
-            type: 'string',
-            required: true,
-            description: 'What to look up, or the text to forget.',
-          },
-          action: {
-            type: 'string',
-            // No `required: false`: the parameter schema treats `required: true`
-            // as the only marker, and omission is what makes it optional.
-            enum: ['search', 'forget'],
-            description: 'Whether to search memory or request a deletion. Defaults to search.',
-          },
-        },
-        output: {
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              text: { type: 'string', required: true },
-              recordIds: {
-                type: 'array',
-                required: true,
-                items: { type: 'string' },
-              },
-            },
-          },
-          render: (_args, value) => [
-            { type: 'text', text: renderQueryResult(value.text, value.recordIds) },
-          ],
-        },
-        async execute(args) {
-          // Narrowed rather than asserted: the inferred schema type keeps every
-          // parameter optional at the type level even when the JSON Schema marks
-          // it required, so a missing value has to be handled rather than cast.
-          const query = typeof args.query === 'string' ? args.query : '';
-          if (!query) return { text: 'No query was provided.', recordIds: [] };
-          const action = args.action === 'forget' ? 'forget' : 'search';
-          const result = await kernel.query(
-            scope,
-            action === 'forget'
-              ? { kind: 'forget', target: query }
-              : { kind: 'search', terms: query },
-          );
-          // The return value is the canonical output value declared above; the
-          // registry renders it through `output.render` exactly once.
-          return { text: result.text, recordIds: result.recordIds };
-        },
-      }),
-    ),
-  );
+  ctx.on('agent/pre-step', async ({ agent, messages, turn, step, signal }, next): Promise<PreStepDecision> => {
+    const decision = await next();
+    if (decision.kind === 'reject' || signal.aborted || step !== 1) return decision;
+    const scope = scopeFor(agent, config);
+    agents.set(agent.session, agent);
+    scopes.set(agent.session, scope);
+    try {
+      const warmed = await acquired.client.warm({
+        scope: toWorkerScope(scope),
+        current_message: lastDirectUserText(messages),
+        now: now(), session_id: agent.session.id,
+        new_session: !firstWarm.has(agent.session), turn_key: `${agent.session.id}:${turn}`,
+      });
+      firstWarm.add(agent.session);
+      const text = renderMemoryUsagePlan(warmed);
+      return {
+        ...decision,
+        messages: [...decision.messages, createUserMessage({
+          content: [{ type: 'text', text }],
+          source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text }] },
+        })],
+      };
+    } catch (error: unknown) {
+      // Fail closed for memory, but never fail the normal DSH reply.
+      ctx.logger.warn(`companion-memory: warm unavailable; continuing without memory (${error instanceof Error ? error.message : 'unknown error'})`);
+      return decision;
+    }
+  }, { prepend: true });
+
+  ctx.on('session/event', (session, event) => {
+    if (event.type === 'user/message' && isDirectUserMessage(event.data)) {
+      const text = textContent(event.data.content);
+      if (text.length > 0) {
+        const messages = pending.get(session) ?? [];
+        messages.push({ id: event.data.id, sessionId: session.id, text });
+        pending.set(session, messages);
+      }
+      return;
+    }
+    if (event.type !== 'turn/end') return;
+    const messages = pending.get(session);
+    pending.delete(session);
+    const agent = agents.get(session);
+    const scope = scopes.get(session);
+    if (messages === undefined || agent === undefined || scope === undefined) return;
+    for (const input of messages) {
+      if (!queue.enqueue((signal) => extractAndAdmit(ctx, acquired.client, agent, scope, input, signal))) {
+        ctx.logger.warn('companion-memory: extraction queue is full; skipped a non-blocking extraction');
+      }
+    }
+  });
+
+  ctx.on('session/disposed', (session) => {
+    const scope = scopes.get(session);
+    pending.delete(session);
+    if (scope === undefined) return;
+    void acquired.client.sessionClosed({ scope: toWorkerScope(scope), session_id: session.id, now: now() })
+      .catch(() => ctx.logger.warn('companion-memory: could not close continuity state'));
+  });
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: config.toolName ?? 'companion_memory',
+    description: 'Search permitted companion memory by user-cued terms, or forget one exact record id when the user asks to delete it.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['search', 'forget'], description: 'search or forget' },
+      query: { type: 'string', required: true, description: 'Search terms, or the exact record id for forget.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        text: { type: 'string', required: true },
+        recordIds: { type: 'array', required: true, items: { type: 'string' } },
+      } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args, context) {
+      const query = typeof args.query === 'string' ? args.query.trim() : '';
+      if (query.length === 0) return { text: 'No memory query was provided.', recordIds: [] };
+      if (context.agent === undefined) {
+        return { text: 'Companion memory is unavailable outside an agent session.', recordIds: [] };
+      }
+      const scope = scopeFor(context.agent, config);
+      if (args.action === 'forget') {
+        const result = await acquired.client.forget({
+          scope: toWorkerScope(scope), action: 'forget', record_id: query, now: now(),
+        });
+        return { text: result.forgotten ? `Forgot record ${query}.` : 'No matching record was found.', recordIds: result.recordIds };
+      }
+      const records = await acquired.client.query({
+        scope: toWorkerScope(scope), action: 'search', terms: query, now: now(),
+      });
+      return { text: renderQueryResult(records), recordIds: records.map((record) => record.id) };
+    },
+  })));
 }
 
-/**
- * Build the recall handler for a mount.
- *
- * The host registers the returned function on `agent/pre-step`, where it runs
- * before the step's prompt is assembled. It is a factory rather than a free
- * function so the handler closes over *its own* mount: a second mount in one
- * process would otherwise leave an earlier handler warming the wrong profile,
- * which is silent because both profiles return plausible memory.
- *
- * The kernel comes from the mount, so a mount created with an explicit kernel
- * cannot hand its handler a different one.
- *
- * The result is published only on success. A failed read leaves the cache
- * untouched, so the turn renders no memory rather than the previous turn's —
- * the failure that would otherwise be invisible, because stale memory looks
- * exactly like correct memory.
- *
- * @param mount - the mount produced by {@link apply}.
- * @returns a function that recalls memory for one step.
- */
-export function createPreStep(
-  mount: MemoryMount,
-): (currentMessage: string, now: string) => Promise<void> {
-  return async (currentMessage, now) => {
-    const warmed = await mount.coalescer.run(mount.relationship, () =>
-      mount.kernel.warm(mount.relationship, currentMessage, now),
-    );
-    mount.cache.publish(mount.relationship, warmed);
-  };
-}
-
-/**
- * Build the observer for a mount.
- *
- * Kept beside {@link createPreStep} so both handlers share one lifecycle and one
- * way of finding their kernel.
- *
- * @param mount - the mount produced by {@link apply}.
- * @returns a function that reports one step's messages.
- */
-export function createObserver(
-  mount: MemoryMount,
-): (
-  messages: readonly { role: 'user' | 'assistant'; text: string; id: string }[],
-  now: string,
-) => Promise<void> {
-  return async (messages, now) => {
-    await mount.kernel.observe(mount.relationship, messages, now);
-  };
-}
-
-/**
- * The handlers the host registers on the agent loop.
- *
- * Provided as a pair because they share the mount and the instant source. A
- * composition root registers `preStep` on `agent/pre-step` and `observe` where
- * it records turns, without reaching into this package's internals.
- */
-export interface LoopHandlers {
-  /**
-   * Register on `agent/pre-step`. Recalls memory for the step about to be
-   * admitted.
-   *
-   * Takes the payload's admitted messages rather than a string, and extracts the
-   * current turn's text itself, because that extraction is where a mistake is
-   * silent — see `./loop-adapter`.
-   */
-  preStep: (messages: readonly LoopMessage[]) => Promise<void>;
-  /** Report a step's messages so the kernel can observe them. */
-  observe: (messages: readonly LoopMessage[], now: string) => Promise<void>;
-}
-
-/**
- * Build the loop handlers for a mount.
- *
- * @param mount - the mount produced by {@link apply} or `ctx.plugin`.
- * @param now - supplies the current instant, injectable so a test is reproducible.
- * @returns the handlers to register on the agent loop.
- */
-export function createLoopHandlers(
-  mount: MemoryMount,
-  now: () => string = () => new Date().toISOString(),
-): LoopHandlers {
-  const recall = createPreStep(mount);
-  const observe = createObserver(mount);
-  return {
-    preStep: loopPreStep(recall, now),
-    observe: async (messages, instant) => observe(observedMessages(messages), instant),
-  };
-}
-
-export { InMemoryKernel, type MemoryRecord } from './in-memory-kernel.js';
-export {
-  latestUserText,
-  observedMessages,
-  type LoopMessage,
-} from './loop-adapter.js';
-export type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt';
-export { TurnCache, WarmCoalescer, profileKey } from './turn-cache.js';
-export * from './memory.js';
-export {
-  escapeText,
-  renderOverlay,
-  renderQueryResult,
-  renderStable,
-  renderTurnState,
-  renderedIds,
-} from './render.js';
+export { renderMemoryUsagePlan, renderedRecordIds } from './render.js';
+export type { MemoryScope, MemoryUsagePlan, WarmResult } from './protocol.js';
+export { WorkerClient, WorkerClientError } from './worker-client.js';
+export { createDshRouteEvaluationClient } from './route-client.js';
+export type { DshRouteEvaluationClient, RoutedEvaluationMessage } from './route-client.js';

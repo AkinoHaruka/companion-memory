@@ -11,9 +11,10 @@ use companion_memory_kernel::domain::types::{
     InferenceAxis, InferenceState, Provenance, RelationshipScope, Salience, Speaker,
 };
 use companion_memory_storage::migrations::{
-    apply_migrations, known_migrations, schema_version, CURRENT_SCHEMA_VERSION, EMPTY_SCHEMA_VERSION,
+    apply_migrations, known_migrations, schema_version, CURRENT_SCHEMA_VERSION,
+    EMPTY_SCHEMA_VERSION,
 };
-use companion_memory_storage::{OpenOptions, Store};
+use companion_memory_storage::{OpenOptions, OpenThread, SourceMessage, SourceSpan, Store};
 use serde_json::json;
 
 const NOW: &str = "2026-06-10T12:00:00Z";
@@ -58,7 +59,11 @@ fn claim(id: &str, predicate: &str, value: serde_json::Value, user: &str) -> Cla
             semantic_role: None,
         }],
         provenance: provenance(),
-        salience: Salience { importance: 0.7, recall_count: 2, ..Salience::default() },
+        salience: Salience {
+            importance: 0.7,
+            recall_count: 2,
+            ..Salience::default()
+        },
         created_at: NOW.into(),
         updated_at: NOW.into(),
     }
@@ -131,7 +136,10 @@ impl TempDb {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("memory.db");
-        Self { dir, path: path.to_string_lossy().into_owned() }
+        Self {
+            dir,
+            path: path.to_string_lossy().into_owned(),
+        }
     }
 
     fn options(&self) -> OpenOptions {
@@ -187,11 +195,16 @@ fn reopening_preserves_existing_rows() {
     let db = TempDb::new("preserve");
     {
         let store = Store::open(&db.options()).expect("first open");
-        store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1")).expect("write");
+        store
+            .put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1"))
+            .expect("write");
     }
     let store = Store::open(&db.options()).expect("second open");
     let found = store.get_claim(&scope("u1"), "c1").expect("read");
-    assert!(found.is_some(), "the row written before the re-open must survive");
+    assert!(
+        found.is_some(),
+        "the row written before the re-open must survive"
+    );
 }
 
 #[test]
@@ -207,7 +220,10 @@ fn applying_migrations_twice_directly_is_a_no_op() {
 fn an_unmigrated_database_reports_the_empty_version_and_has_no_tables() {
     let db = TempDb::new("unmigrated");
     let store = Store::open(&db.options().unmigrated()).expect("open");
-    assert_eq!(schema_version(store.connection()).expect("version"), EMPTY_SCHEMA_VERSION);
+    assert_eq!(
+        schema_version(store.connection()).expect("version"),
+        EMPTY_SCHEMA_VERSION
+    );
     // Reading must fail cleanly rather than silently returning nothing.
     assert!(store.get_claim(&scope("u1"), "c1").is_err());
 }
@@ -238,6 +254,359 @@ fn the_migration_list_is_ordered_and_distinct() {
     assert_eq!(previous, CURRENT_SCHEMA_VERSION);
 }
 
+#[test]
+fn version_two_database_upgrades_without_replaying_old_schema() {
+    let db = TempDb::new("upgrade-v2-to-v3");
+    {
+        let connection = rusqlite::Connection::open(&db.path).expect("open old database");
+        connection
+            .execute_batch(concat!(
+                include_str!("../src/schema_v1.sql"),
+                "\n",
+                include_str!("../src/schema_v2.sql"),
+            ))
+            .expect("version two schema");
+        connection
+            .pragma_update(None, "user_version", 2_i32)
+            .expect("mark v2");
+    }
+
+    let store = Store::open(&db.options()).expect("upgrade");
+    assert_eq!(store.opened_with().from, 2);
+    assert_eq!(store.opened_with().to, CURRENT_SCHEMA_VERSION);
+    let pending_table: String = store
+        .connection()
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_candidates'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("pending table");
+    assert_eq!(pending_table, "pending_candidates");
+}
+
+#[test]
+fn pending_extractions_remain_review_pointers_not_recallable_records() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    store
+        .put_pending_candidate(
+            &relationship,
+            "pending-runtime-1",
+            "runtime_state",
+            "message-1",
+            "await extraction quality threshold",
+            NOW,
+        )
+        .expect("pending pointer");
+
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "pending_candidates")
+            .expect("pending count"),
+        1
+    );
+    assert!(
+        store
+            .active_claims(&relationship)
+            .expect("claims")
+            .is_empty(),
+        "a pending extraction must not become an injectable claim"
+    );
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_messages")
+            .expect("source count"),
+        0,
+        "the companion store must not duplicate the L0 transcript for a pending extraction"
+    );
+}
+
+#[test]
+fn worker_admission_commits_replacement_evidence_thread_and_audit_together() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    let old = claim("old", "communication.verbosity", json!("brief"), "u1");
+    store.put_claim(&old).expect("old claim");
+    store
+        .put_open_thread(
+            &relationship,
+            &OpenThread {
+                id: "old-thread".into(),
+                record_id: "old".into(),
+                entity_ref: None,
+                summary: "outdated follow-up".into(),
+                sensitivity: "low".into(),
+                mention_mode: "freely_mentionable".into(),
+                status: "open".into(),
+                opened_at: NOW.into(),
+                expires_at: None,
+                followup_session_id: None,
+                updated_at: NOW.into(),
+            },
+        )
+        .expect("old thread");
+    let mut replacement = claim("new", "communication.verbosity", json!("detailed"), "u1");
+    replacement.supersedes_id = Some("old".into());
+    replacement.source_refs[0].source_id = "message-2".into();
+    store
+        .admit_claim_with_evidence(
+            &replacement,
+            &SourceMessage {
+                id: "message-2".into(),
+                session_id: "session-2".into(),
+                text: "Please use detailed replies.".into(),
+                created_at: NOW.into(),
+            },
+            &SourceSpan {
+                record_id: "new".into(),
+                message_id: "message-2".into(),
+                start_offset: 11,
+                end_offset: 19,
+                quote: "detailed".into(),
+            },
+            Some("old"),
+            Some(&OpenThread {
+                id: "new-thread".into(),
+                record_id: "new".into(),
+                entity_ref: None,
+                summary: "allowed low-risk follow-up".into(),
+                sensitivity: "low".into(),
+                mention_mode: "freely_mentionable".into(),
+                status: "open".into(),
+                opened_at: NOW.into(),
+                expires_at: None,
+                followup_session_id: None,
+                updated_at: NOW.into(),
+            }),
+            NOW,
+        )
+        .expect("atomic admission");
+
+    assert_eq!(
+        store
+            .active_claims(&relationship)
+            .expect("active claims")
+            .iter()
+            .map(|claim| claim.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["new"]
+    );
+    assert_eq!(
+        store
+            .active_open_threads(&relationship, NOW)
+            .expect("active threads")
+            .iter()
+            .map(|thread| thread.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["new-thread"]
+    );
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_messages")
+            .expect("source count"),
+        1
+    );
+    assert_eq!(store.audit_count(&relationship).expect("audit count"), 1);
+}
+
+#[test]
+fn two_records_from_one_message_keep_both_source_spans() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    let source = SourceMessage {
+        id: "message-many".into(),
+        session_id: "session-1".into(),
+        text: "My name is Xiaolin and I prefer Chinese.".into(),
+        created_at: NOW.into(),
+    };
+    let name = claim("name", "identity.name", json!("Xiaolin"), "u1");
+    let language = claim("language", "communication.language", json!("Chinese"), "u1");
+    store
+        .admit_claim_with_evidence(
+            &name,
+            &source,
+            &SourceSpan {
+                record_id: "name".into(),
+                message_id: source.id.clone(),
+                start_offset: 11,
+                end_offset: 18,
+                quote: "Xiaolin".into(),
+            },
+            None,
+            None,
+            NOW,
+        )
+        .expect("first record");
+    store
+        .admit_claim_with_evidence(
+            &language,
+            &source,
+            &SourceSpan {
+                record_id: "language".into(),
+                message_id: source.id.clone(),
+                start_offset: 32,
+                end_offset: 39,
+                quote: "Chinese".into(),
+            },
+            None,
+            None,
+            NOW,
+        )
+        .expect("second record");
+
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_messages")
+            .expect("one source"),
+        1
+    );
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_spans")
+            .expect("both spans"),
+        2
+    );
+}
+
+#[test]
+fn forgetting_claim_removes_recoverable_evidence_and_keeps_a_suppression_fingerprint() {
+    let db = TempDb::new("forget-evidence");
+    let store = Store::open(&db.options()).expect("open");
+    let relationship = scope("u1");
+    let mut accepted = claim("c1", "identity.name", json!("Xiaolin"), "u1");
+    accepted.source_refs[0].source_id = "message-1".into();
+    store.put_claim(&accepted).expect("claim");
+    store
+        .put_source_message(
+            &relationship,
+            &SourceMessage {
+                id: "message-1".into(),
+                session_id: "session-1".into(),
+                text: "My name is Xiaolin.".into(),
+                created_at: NOW.into(),
+            },
+        )
+        .expect("source message");
+    store
+        .put_source_span(
+            &relationship,
+            &SourceSpan {
+                record_id: "c1".into(),
+                message_id: "message-1".into(),
+                start_offset: 11,
+                end_offset: 18,
+                quote: "Xiaolin".into(),
+            },
+        )
+        .expect("source span");
+    store
+        .put_open_thread(
+            &relationship,
+            &OpenThread {
+                id: "thread-1".into(),
+                record_id: "c1".into(),
+                entity_ref: None,
+                summary: "Ask how the name preference feels.".into(),
+                sensitivity: "low".into(),
+                mention_mode: "freely_mentionable".into(),
+                status: "open".into(),
+                opened_at: NOW.into(),
+                expires_at: None,
+                followup_session_id: None,
+                updated_at: NOW.into(),
+            },
+        )
+        .expect("thread");
+
+    assert!(store
+        .forget_claim(&relationship, "c1", NOW)
+        .expect("forget"));
+    assert!(store
+        .get_claim(&relationship, "c1")
+        .expect("claim read")
+        .is_none());
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_messages")
+            .expect("sources"),
+        0
+    );
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_spans")
+            .expect("spans"),
+        0
+    );
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "open_threads")
+            .expect("threads"),
+        0
+    );
+    assert!(
+        !store
+            .load_suppressed_fingerprints(&relationship)
+            .expect("fingerprints")
+            .is_empty(),
+        "a non-reversible suppression fingerprint prevents the same claim returning",
+    );
+}
+
+#[test]
+fn forgetting_episode_removes_its_evidence_and_keeps_a_suppression_fingerprint() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    let accepted = episode("episode-forget", "u1");
+    let source = SourceMessage {
+        id: "episode-message".into(),
+        session_id: "session-1".into(),
+        text: "My dog was sick and we went to the vet.".into(),
+        created_at: NOW.into(),
+    };
+    store
+        .admit_episode_with_evidence(
+            &accepted,
+            &source,
+            &SourceSpan {
+                record_id: accepted.id.clone(),
+                message_id: source.id.clone(),
+                start_offset: 3,
+                end_offset: 19,
+                quote: "dog was sick".into(),
+            },
+            NOW,
+        )
+        .expect("admit episode");
+
+    assert!(store
+        .forget_episode(&relationship, &accepted.id, NOW)
+        .expect("forget"));
+    assert!(store
+        .get_episode(&relationship, &accepted.id)
+        .expect("episode read")
+        .is_none());
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_messages")
+            .expect("sources"),
+        0
+    );
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_spans")
+            .expect("spans"),
+        0
+    );
+    assert!(
+        !store
+            .load_suppressed_fingerprints(&relationship)
+            .expect("fingerprints")
+            .is_empty(),
+        "the episode remains blocked without retaining recoverable text",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Scope isolation
 // ---------------------------------------------------------------------------
@@ -245,7 +614,9 @@ fn the_migration_list_is_ordered_and_distinct() {
 #[test]
 fn a_claim_is_invisible_to_another_user() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1")).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1"))
+        .expect("write");
 
     assert!(store.get_claim(&scope("u1"), "c1").expect("read").is_some());
     assert!(
@@ -256,38 +627,76 @@ fn a_claim_is_invisible_to_another_user() {
 }
 
 #[test]
+fn a_same_id_in_another_scope_is_rejected_without_overwriting_the_owner() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    store
+        .put_claim(&claim("shared-id", "identity.name", json!("A"), "u1"))
+        .expect("first write");
+    assert!(store
+        .put_claim(&claim("shared-id", "identity.name", json!("B"), "u2"))
+        .is_err());
+
+    assert_eq!(
+        store
+            .get_claim(&scope("u1"), "shared-id")
+            .expect("owner read")
+            .expect("owner record")
+            .value,
+        json!("A")
+    );
+    assert!(store
+        .get_claim(&scope("u2"), "shared-id")
+        .expect("other read")
+        .is_none());
+}
+
+#[test]
 fn a_different_profile_is_a_different_scope() {
     // The same user with two companions must not share memory unless the product
     // decides they do, so profile is part of the key.
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1")).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1"))
+        .expect("write");
 
     let other_profile = RelationshipScope {
         service_id: "svc".into(),
         owner_user_id: "u1".into(),
         companion_profile_id: "other".into(),
     };
-    assert!(store.get_claim(&other_profile, "c1").expect("read").is_none());
+    assert!(store
+        .get_claim(&other_profile, "c1")
+        .expect("read")
+        .is_none());
 }
 
 #[test]
 fn a_different_service_is_a_different_scope() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1")).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1"))
+        .expect("write");
 
     let other_service = RelationshipScope {
         service_id: "other-svc".into(),
         owner_user_id: "u1".into(),
         companion_profile_id: "profile".into(),
     };
-    assert!(store.get_claim(&other_service, "c1").expect("read").is_none());
+    assert!(store
+        .get_claim(&other_service, "c1")
+        .expect("read")
+        .is_none());
 }
 
 #[test]
 fn listing_is_confined_to_the_scope() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("a", "identity.name", json!("A"), "u1")).expect("write");
-    store.put_claim(&claim("b", "identity.name", json!("B"), "u2")).expect("write");
+    store
+        .put_claim(&claim("a", "identity.name", json!("A"), "u1"))
+        .expect("write");
+    store
+        .put_claim(&claim("b", "identity.name", json!("B"), "u2"))
+        .expect("write");
     store.put_episode(&episode("e1", "u1")).expect("write");
     store.put_inference(&inference("i1", "u2")).expect("write");
 
@@ -303,12 +712,25 @@ fn listing_is_confined_to_the_scope() {
 fn suppression_does_not_cross_scopes() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
     store
-        .suppress(&scope("u1"), "predicate", "identity.location", None, None, NOW)
+        .suppress(
+            &scope("u1"),
+            "predicate",
+            "identity.location",
+            None,
+            None,
+            NOW,
+        )
         .expect("suppress");
 
-    assert_eq!(store.suppression_entries(&scope("u1")).expect("read").len(), 1);
+    assert_eq!(
+        store.suppression_entries(&scope("u1")).expect("read").len(),
+        1
+    );
     assert!(
-        store.suppression_entries(&scope("u2")).expect("read").is_empty(),
+        store
+            .suppression_entries(&scope("u2"))
+            .expect("read")
+            .is_empty(),
         "one user forgetting something must not affect another"
     );
 }
@@ -327,7 +749,10 @@ fn a_claim_survives_a_round_trip_intact() {
     };
     store.put_claim(&original).expect("write");
 
-    let read = store.get_claim(&scope("u1"), "c1").expect("read").expect("present");
+    let read = store
+        .get_claim(&scope("u1"), "c1")
+        .expect("read")
+        .expect("present");
     assert_eq!(read, original);
 }
 
@@ -337,7 +762,10 @@ fn an_episode_survives_a_round_trip_intact() {
     let original = episode("e1", "u1");
     store.put_episode(&original).expect("write");
 
-    let read = store.get_episode(&scope("u1"), "e1").expect("read").expect("present");
+    let read = store
+        .get_episode(&scope("u1"), "e1")
+        .expect("read")
+        .expect("present");
     assert_eq!(read, original);
 }
 
@@ -347,15 +775,22 @@ fn an_inference_survives_a_round_trip_intact() {
     let original = inference("i1", "u1");
     store.put_inference(&original).expect("write");
 
-    let read = store.get_inference(&scope("u1"), "i1").expect("read").expect("present");
+    let read = store
+        .get_inference(&scope("u1"), "i1")
+        .expect("read")
+        .expect("present");
     assert_eq!(read, original);
 }
 
 #[test]
 fn writing_the_same_id_twice_replaces_rather_than_duplicates() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("c1", "identity.name", json!("First"), "u1")).expect("write");
-    store.put_claim(&claim("c1", "identity.name", json!("Second"), "u1")).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("First"), "u1"))
+        .expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Second"), "u1"))
+        .expect("write");
 
     let all = store.active_claims(&scope("u1")).expect("list");
     assert_eq!(all.len(), 1);
@@ -386,7 +821,9 @@ fn a_slot_query_returns_only_the_matching_entity() {
 #[test]
 fn a_slot_query_distinguishes_no_entity_from_a_named_one() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1")).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1"))
+        .expect("write");
     let mut tagged = claim("c2", "identity.name", json!("Other"), "u1");
     tagged.entity_ref = Some("someone".into());
     store.put_claim(&tagged).expect("write");
@@ -403,7 +840,9 @@ fn a_slot_query_excludes_non_active_records() {
     // decide_supersede must only ever see active records, or a superseded value
     // would be treated as a competitor and could be replaced twice.
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("c1", "identity.name", json!("Old"), "u1")).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Old"), "u1"))
+        .expect("write");
     store
         .set_claim_status(&scope("u1"), "c1", ClaimStatus::Superseded, NOW)
         .expect("supersede");
@@ -420,14 +859,23 @@ fn a_slot_query_excludes_non_active_records() {
 #[test]
 fn a_status_change_does_not_cross_scopes() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.put_claim(&claim("c1", "identity.name", json!("X"), "u1")).expect("write");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("X"), "u1"))
+        .expect("write");
 
     let changed = store
         .set_claim_status(&scope("u2"), "c1", ClaimStatus::Revoked, NOW)
         .expect("update");
-    assert_eq!(changed, 0, "another scope must not be able to change the row");
     assert_eq!(
-        store.get_claim(&scope("u1"), "c1").expect("read").expect("present").status,
+        changed, 0,
+        "another scope must not be able to change the row"
+    );
+    assert_eq!(
+        store
+            .get_claim(&scope("u1"), "c1")
+            .expect("read")
+            .expect("present")
+            .status,
         ClaimStatus::Active
     );
 }
@@ -466,16 +914,23 @@ fn suppressing_the_same_target_twice_does_not_duplicate() {
             .suppress(&scope("u1"), "entity", "person-1", None, None, NOW)
             .expect("suppress");
     }
-    assert_eq!(store.suppression_entries(&scope("u1")).expect("read").len(), 1);
+    assert_eq!(
+        store.suppression_entries(&scope("u1")).expect("read").len(),
+        1
+    );
 }
 
 #[test]
 fn audit_entries_are_scope_confined_and_repeatable() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
-    store.audit(&scope("u1"), "create", Some("c1"), None, NOW).expect("audit");
+    store
+        .audit(&scope("u1"), "create", Some("c1"), None, NOW)
+        .expect("audit");
     // The same action at the same instant must not duplicate, so the kernel's
     // determinism survives the storage layer.
-    store.audit(&scope("u1"), "create", Some("c1"), None, NOW).expect("audit again");
+    store
+        .audit(&scope("u1"), "create", Some("c1"), None, NOW)
+        .expect("audit again");
     assert_eq!(store.audit_count(&scope("u1")).expect("count"), 1);
     assert_eq!(store.audit_count(&scope("u2")).expect("count"), 0);
 }
@@ -485,5 +940,7 @@ fn counting_an_unknown_table_is_refused() {
     let store = Store::open(&OpenOptions::in_memory()).expect("open");
     assert!(store.count_in_scope(&scope("u1"), "claims").is_ok());
     assert!(store.count_in_scope(&scope("u1"), "sqlite_master").is_err());
-    assert!(store.count_in_scope(&scope("u1"), "claims; DROP TABLE claims").is_err());
+    assert!(store
+        .count_in_scope(&scope("u1"), "claims; DROP TABLE claims")
+        .is_err());
 }
