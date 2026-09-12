@@ -198,6 +198,7 @@ pub fn channels(response: &Value) -> Value {
     let plan = &response["result"]["plan"];
     json!({
         "constraints": plan["constraints"],
+        "identity": plan["identity"],
         "responseStyle": plan["responseStyle"],
         "continuity": plan["continuity"],
         "topicActivated": plan["topicActivated"],

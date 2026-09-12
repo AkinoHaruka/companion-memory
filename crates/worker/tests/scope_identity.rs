@@ -135,7 +135,7 @@ fn the_first_relationship_still_holds_its_record_afterwards() {
     let responses = worker.responses();
 
     let plan = channels(&responses[2]);
-    let placed: Vec<&str> = ["constraints", "responseStyle", "continuity", "topicActivated", "deepRecall"]
+    let placed: Vec<&str> = ["constraints", "identity", "responseStyle", "continuity", "topicActivated", "deepRecall"]
         .iter()
         .flat_map(|channel| plan[channel].as_array().expect(channel).iter())
         .filter_map(|entry| entry["recordId"].as_str())

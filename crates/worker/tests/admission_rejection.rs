@@ -377,6 +377,7 @@ fn a_statement_the_vocabulary_cannot_name_is_kept() {
 fn occupied(plan: &serde_json::Value) -> usize {
     [
         "constraints",
+        "identity",
         "responseStyle",
         "continuity",
         "topicActivated",

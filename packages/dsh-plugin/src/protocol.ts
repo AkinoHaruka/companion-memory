@@ -47,9 +47,19 @@ export interface PlanEntry {
   reason: string;
 }
 
-/** The six explicit response-use channels computed by the Rust authority. */
+/** The seven explicit response-use channels computed by the Rust authority. */
 export interface MemoryUsagePlan {
   constraints: PlanEntry[];
+  /**
+   * Who the user is, so a name can be a name.
+   *
+   * Separate from `responseStyle` because the two are different kinds of
+   * information: a style channel tells the model how to speak, and an identity
+   * channel tells it who it is speaking to. `identity.name` in the style channel
+   * measured as a name the model never said, which was reported as memory
+   * failing rather than as a name filed in the wrong place.
+   */
+  identity: PlanEntry[];
   responseStyle: PlanEntry[];
   continuity: PlanEntry[];
   topicActivated: PlanEntry[];

@@ -198,6 +198,15 @@ struct PlanEntry {
 #[serde(rename_all = "camelCase")]
 struct MemoryUsagePlan {
     constraints: Vec<PlanEntry>,
+    /// Who the user is, as something to address them by rather than a style knob.
+    ///
+    /// `identity.name` used to be rendered into `responseStyle`, whose guidance
+    /// tells the model the record is there to choose "language, tone, format, and
+    /// level of detail". Measured: eight forced records with the name in the plan
+    /// and not one reply used it, which was reported as the name memory not
+    /// working. The mention gate decides whether a name may be used; that is a
+    /// different question from whether this is a name at all.
+    identity: Vec<PlanEntry>,
     response_style: Vec<PlanEntry>,
     continuity: Vec<PlanEntry>,
     topic_activated: Vec<PlanEntry>,
@@ -373,6 +382,16 @@ fn warm(store: &Store, input: WarmInput) -> Result<Value, Failure> {
                 reason: "constraint_policy".into(),
                 ..entry
             });
+        } else if is_identity_claim(&claim.predicate) {
+            // Identity is not a style preference. It goes where a name can be a
+            // name; the gate above has already decided whether it may be said.
+            match decision {
+                MentionDecision::Denied {
+                    level: SurfaceLevel::NeverSurface,
+                    ..
+                } => plan.do_not_surface.push(entry),
+                _ => plan.identity.push(entry),
+            }
         } else if is_policy_claim(&claim.predicate) {
             if !matches!(
                 decision,
@@ -847,9 +866,15 @@ fn claim_text(claim: &Claim) -> String {
     format!("{}: {}", claim.predicate, value)
 }
 
-fn is_policy_claim(predicate: &str) -> bool {
+/// Who the user is. Rendered into its own channel, not into the style channel:
+/// a name is something to address someone by, and the style channel's guidance
+/// is about language, tone, format and level of detail.
+fn is_identity_claim(predicate: &str) -> bool {
     predicate.starts_with("identity.")
-        || predicate.starts_with("communication.")
+}
+
+fn is_policy_claim(predicate: &str) -> bool {
+    predicate.starts_with("communication.")
         || predicate.starts_with("preference.")
         || predicate.starts_with("support.")
         || predicate.starts_with("advice.")

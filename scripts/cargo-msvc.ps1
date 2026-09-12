@@ -33,5 +33,12 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $quoted = ($CargoArgs | ForEach-Object { if ($_ -match '\s') { '"{0}"' -f $_ } else { $_ } }) -join ' '
 $command = "call `"$vcvars`" >nul 2>&1 && cd /d `"$root`" && cargo $quoted"
 
+# cargo writes its progress to stderr. With the caller's `Stop` still in force
+# every one of those lines is a terminating NativeCommandError, which is how a
+# redirected run was dying after its first "Compiling" line with no error from
+# rustc at all. Progress is not failure; the exit code below is.
+$ErrorActionPreference = 'Continue'
 cmd /c $command
-exit $LASTEXITCODE
+$code = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+exit $code

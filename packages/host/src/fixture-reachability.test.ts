@@ -41,6 +41,7 @@ interface PlanChannel { text?: string; }
 
 interface PlanShape {
   constraints?: PlanChannel[];
+  identity?: PlanChannel[];
   responseStyle?: PlanChannel[];
   continuity?: PlanChannel[];
   topicActivated?: PlanChannel[];
@@ -142,38 +143,29 @@ describe.skipIf(!existsSync(workerCommand))('Oracle fixture reachability', () =>
     expect(missing).toEqual([]);
   });
 
-  // Expected to fail, and deliberately so. It pins a live product defect whose fix
-  // is outside the evaluator: `crates/worker/src/main.rs:850` classifies
-  // `identity.name` as a policy claim, and `main.rs:384` renders every policy
-  // claim into `<response_style>` under "Use these to choose language, tone,
-  // format, and level of detail". A model reading that correctly concludes the
-  // name is not something to say. Measured: eight forced records, the name in the
-  // plan, and not one reply used it — and the batch reported that as the name
-  // memory not working.
-  //
-  // The fix is a channel that means "who this is", not a style knob, which is a
-  // worker rule change plus a renderer change. Until then the evaluator declares
-  // the name observation `not_applicable` instead of scoring it, so the defect is
-  // reported rather than measured. When someone fixes it, this test starts
-  // passing and the suite fails until the marker is removed — which is the point.
-  it.fails('never renders identity.name into the style channel (live defect, see crates/worker/src/main.rs:850)', async () => {
-    // The measured defect, asserted statically. `identity.name` arrived inside
-    // `<response_style>`, whose guidance is "Use these to choose language, tone,
-    // format, and level of detail", so a model reading it correctly concludes the
-    // name is not something to say. Eight forced records, and not one reply used
-    // it -- and the batch reported that as the name memory not working.
+  it('gives the name a channel where a name is a name, and keeps it out of the style channel', async () => {
+    // The measured defect, asserted statically. `identity.name` used to arrive
+    // inside `<response_style>`, whose guidance is "Use these to choose language,
+    // tone, format, and level of detail", so a model reading it correctly
+    // concludes the name is not something to say. Eight forced records, and not
+    // one reply used it -- and the batch reported that as the name memory not
+    // working. It now has its own channel, and this test is what keeps it there.
     const rows = await replayFixture();
     const misplaced: string[] = [];
     for (const row of rows) {
       for (const arm of ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'] as const) {
-        for (const entry of row.arms[arm].plan?.responseStyle ?? []) {
-          if ((entry.text ?? '').startsWith('identity.name')) misplaced.push(`${label(row)} ${arm}`);
+        const plan = row.arms[arm].plan ?? {};
+        for (const [name, channel] of Object.entries(plan)) {
+          if (name === 'identity' || name === 'doNotSurface') continue;
+          for (const entry of channel ?? []) {
+            if ((entry.text ?? '').startsWith('identity.name')) misplaced.push(`${label(row)} ${arm} -> ${name}`);
+          }
         }
       }
     }
     expect(
       misplaced,
-      'identity.name was handed to the model as a style parameter, so no reply can be read for it',
+      'an identity record reached the model through a channel that is not about who the user is, so no reply can be read for it',
     ).toEqual([]);
   });
 

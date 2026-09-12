@@ -31,6 +31,19 @@ export interface RecallEvidence {
 
 export interface UserTurn {
   intent: string; text: string; memoryOpportunity: Opportunity; effectType: EffectType;
+  /**
+   * What the fixture asks of the name, on turns scored for using it.
+   *
+   * `must_use` is an explicit question about the name, where not answering is a
+   * memory failure and the effect gates. `may_use` is ordinary conversation, where
+   * addressing someone by name is a stylistic choice -- gating it rewards a model
+   * that opens every sentence with "林越，", which is worse than never naming
+   * anyone. Measured: eight forced records and not one spontaneous mention, while
+   * an explicit question is answerable from the same record.
+   *
+   * Defaults to `may_use`. Nothing here asks a model never to use a name.
+   */
+  nameExpectation?: 'must_use' | 'may_use' | 'should_not_use';
   /** Human-verified direct claims, consumed only by Gold arms. */
   gold?: GoldCandidate[];
   /** Human-verified direct experience records, used only by Gold arms. */
@@ -110,9 +123,16 @@ export const SESSIONS: SessionScript[] = [
 
 /** New probes turn “memory works” into observable behaviour instead of a name-only metric. */
 export const PROBES: SessionScript[] = [{ id: 'probes', dayOffset: 35, turns: [
-  { intent: 'name use only when natural', text: '我想继续聊聊最近的状态。', memoryOpportunity: 'positive', effectType: 'name', counterfactual: [
+  // No cue, so addressing by name is a stylistic choice. Recorded once as a
+  // hard gate this turn reported a ceiling of zero; it is now reported and not
+  // gated.
+  { intent: 'name use only when natural', text: '我想继续聊聊最近的状态。', memoryOpportunity: 'positive', effectType: 'name', nameExpectation: 'may_use', counterfactual: [
     { predicate: 'identity.name', value: '周然', rawValue: '周然', quote: '我想继续' },
   ] },
+  // An explicit question about the name. The same record answers it, but here a
+  // reply that does not say the name is a memory failure, because there is
+  // nothing stylistic about refusing to answer a direct question.
+  { intent: 'explicit identity recall', text: '你还记得我叫什么吗？', memoryOpportunity: 'positive', effectType: 'name', nameExpectation: 'must_use' },
   { intent: 'language preference', text: 'Can you help me make a plan for this week?', memoryOpportunity: 'positive', effectType: 'language' },
   { intent: 'boundary remains silent', text: '我最近总觉得有点烦。', memoryOpportunity: 'negative', effectType: 'boundary' },
   { intent: 'detailed work planning', text: '我需要梳理一下这周的工作安排。', memoryOpportunity: 'positive', effectType: 'preference' },

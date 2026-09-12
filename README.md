@@ -99,10 +99,31 @@ private, bounded, cancellable queue.
 
 `packages/host` labels each turn as a positive opportunity, a protected
 negative case, or a no-opportunity silence case. It writes plans, selected ids,
-admission outcomes and replies for four frozen arms: normal chain, Gold with
-normal retrieval, forced Gold injection, and forced counterfactual memory. The
-normal arm shares the production extractor grammar and span validation; only
-the direct user text and Rust-approved records can enter it.
+admission outcomes and replies for frozen arms: the normal chain, Gold with
+normal retrieval, forced Gold injection, and a **zero-memory control** whose
+scope is never written to. The normal arm shares the production extractor
+grammar and span validation; only the direct user text and Rust-approved records
+can enter it.
+
+A fifth arm, forced wrong memory, runs on the turn that declares a
+counterfactual and on the turns after it while the wrong fact is still in its
+store. It is a pressure test -- does the model repeat a fact it was handed, does
+the gate suppress a topic the user asked it to avoid. It used to run on every
+turn, admitting the gold proposals wherever no counterfactual was declared,
+which made it gold under another label and its distance from the ceiling a
+sampling artifact read as a causal floor.
+
+Every conclusion here is a difference between having memory and not having it,
+and `oracle-summary.json` reports that difference as `lift`, ceiling minus
+control, per effect. A rate against an absolute floor cannot separate "memory
+worked" from "the model does this anyway".
+
+Before the first model call, `validateFixture` refuses a fixture that
+contradicts itself -- an evidence token no earlier record contains, a token the
+user said themselves, a counterfactual that restates gold, a session that does
+not advance. A turn that declares a recall effect without declaring what a reply
+would have to contain is not a contradiction: its observation is
+`not_applicable`, and the summary says so rather than scoring a failure.
 
 ```powershell
 # The bridge runs inside DSH and binds the current Agent route. It must export

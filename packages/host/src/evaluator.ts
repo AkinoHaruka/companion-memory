@@ -100,8 +100,8 @@ interface ArmResult {
   replyFailed: boolean;
   /** Present when the client reports what the route did; absent for the harness route. */
   route?: RouteReport;
-  /** The plan put `identity.name` in the style channel, so no reply can be read for it. */
-  nameRenderedAsStyle: boolean;
+  /** An identity record reached the model outside the identity channel, so no reply can be read for it. */
+  identityRenderedElsewhere: boolean;
   /**
    * This arm was not run on this turn, and why. A skipped arm is not a failure and
    * not a success: it is an arm the turn did not ask for, and it must be countable
@@ -136,6 +136,14 @@ export interface ScoredEffect {
    */
   condition: string;
   evidence: string;
+  /**
+   * Whether this observation counts towards the acceptance gates.
+   *
+   * False for the name on turns where addressing by name is a stylistic choice:
+   * those are reported, and gating them would reward a model that opens every
+   * sentence with the user's name.
+   */
+  nonGating: boolean;
 }
 
 interface OracleRow {
@@ -205,6 +213,14 @@ export interface OracleEvaluationSummary {
   extractionFailures: number;
   /** Ceiling minus zero-memory control, per effect. See {@link EffectLift}. */
   lift: Partial<Record<EffectType, EffectLift>>;
+  /**
+   * Name mentions on turns where addressing by name is a stylistic choice.
+   *
+   * Reported and not gated. Gating this measured a ceiling of zero on eight
+   * forced records and offered, as the remedy, a model that opens every sentence
+   * with the user's name.
+   */
+  spontaneousNameMentions: Record<Arm, { mentioned: number; observed: number }>;
   /**
    * Whether this batch may be read as a result at all.
    *
@@ -423,18 +439,22 @@ const SCORERS: Record<EffectType, ScorerSpec> = {
 };
 
 /**
- * Whether the user's name arrived in a channel that a scorer may read as an
- * address.
+ * Whether the user's name reached the model in a channel that is not about who
+ * the user is.
  *
- * It is rendered into `<response_style>` under "Use these to choose language,
- * tone, format, and level of detail", which tells a model the name is a style
- * parameter rather than a way to address the user. Measured: eight forced
- * records, name present in the plan, and not one reply used it. The effect
- * cannot be attributed while this holds, so it is declared unreadable from the
- * plan itself rather than judged and reported as a zero.
+ * It measured in `<response_style>` under "Use these to choose language, tone,
+ * format, and level of detail", which tells a model the name is a style
+ * parameter rather than a way to address someone. Eight forced records, the name
+ * present in the plan, and not one reply used it -- reported, at the time, as the
+ * name memory not working. The channel that means "who this is" is `identity`;
+ * anywhere else it is a rendering defect, and the effect cannot be attributed, so
+ * it is declared unreadable from the plan itself rather than judged and reported
+ * as a zero.
  */
-function nameRenderedAsStyle(plan: MemoryUsagePlan): boolean {
-  return plan.responseStyle.some((entry) => entry.text.startsWith('identity.name'));
+function identityRenderedElsewhere(plan: MemoryUsagePlan): boolean {
+  return Object.entries(plan).some(([channel, entries]) => channel !== 'identity'
+    && Array.isArray(entries)
+    && entries.some((entry) => entry.text.startsWith('identity.')));
 }
 
 /**
@@ -453,12 +473,12 @@ function observe(
   unmeasurableReason: string | undefined,
 ): ScoredEffect {
   const spec = SCORERS[effect];
-  const invalid = (evidence: string): ScoredEffect => ({ state: 'invalid', condition: spec.condition, evidence });
+  const invalid = (evidence: string): ScoredEffect => ({ state: 'invalid', condition: spec.condition, evidence, nonGating: false });
   if (arm.skipped !== undefined) {
-    return { state: 'not_applicable', condition: spec.condition, evidence: arm.skipped };
+    return { state: 'not_applicable', condition: spec.condition, evidence: arm.skipped, nonGating: false };
   }
   if (unmeasurableReason !== undefined) {
-    return { state: 'not_applicable', condition: spec.condition, evidence: unmeasurableReason };
+    return { state: 'not_applicable', condition: spec.condition, evidence: unmeasurableReason, nonGating: false };
   }
   if (arm.replyFailed) {
     if (routeRefused(arm.route)) return invalid(`the route refused: ${arm.route?.error ?? 'unknown'}`);
@@ -468,15 +488,36 @@ function observe(
   if (arm.route?.finishReason === 'length' && arm.route.textLength > 0) {
     return invalid(`the reply was cut by the token budget after ${arm.route.textLength} characters`);
   }
-  if (effect === 'name' && arm.nameRenderedAsStyle) {
+  if (effect === 'name' && arm.identityRenderedElsewhere) {
     return {
       state: 'not_applicable',
       condition: spec.condition,
-      evidence: 'identity.name was rendered in the response_style channel, so a reply that omits it cannot be read as a memory failure',
+      evidence: 'an identity record reached the model outside the identity channel, so a reply that omits it cannot be read as a memory failure',
+      nonGating: false,
+    };
+  }
+  if (effect === 'name') {
+    // Two constructs share one predicate and differ in what the fixture asks of
+    // it. An explicit question has no stylistic component, so not answering is a
+    // memory failure and it gates. Ordinary conversation does not gate, because
+    // the alternative is rewarding a model that opens every sentence with the
+    // user's name -- which was measured as a ceiling of zero on eight forced
+    // records, and would have been "fixed" by exactly that habit.
+    const expectation = turn.nameExpectation ?? 'may_use';
+    if (expectation === 'should_not_use') {
+      const avoided = !arm.reply.includes('林越');
+      return { state: avoided ? 'pass' : 'fail', condition: '!reply.includes("林越")', evidence: avoided ? 'the name was not used, as the turn asks' : 'the turn asks that the name not be used and it was', nonGating: false };
+    }
+    const mentioned = arm.reply.includes('林越');
+    return {
+      state: mentioned ? 'pass' : 'fail',
+      condition: 'reply.includes("林越")',
+      evidence: mentioned ? 'the name was used' : 'the name was not used',
+      nonGating: expectation !== 'must_use',
     };
   }
   const passed = spec.test(arm.reply, turn);
-  return { state: passed ? 'pass' : 'fail', condition: spec.condition, evidence: passed ? 'condition held' : 'condition did not hold' };
+  return { state: passed ? 'pass' : 'fail', condition: spec.condition, evidence: passed ? 'condition held' : 'condition did not hold', nonGating: false };
 }
 
 function emptyRate(): EffectRate { return { passed: 0, total: 0, rate: null, invalid: 0, notApplicable: 0 }; }
@@ -498,6 +539,9 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
     for (const effect of [...CORE_POSITIVE_EFFECTS, ...PROTECTED_EFFECTS]) effectRates[arm][effect] = emptyRate();
   }
   const observations: Record<Arm, number> = Object.fromEntries(ARMS.map((arm) => [arm, 0])) as Record<Arm, number>;
+  const spontaneous: Record<Arm, { mentioned: number; observed: number }> = Object.fromEntries(
+    ARMS.map((arm) => [arm, { mentioned: 0, observed: 0 }]),
+  ) as Record<Arm, { mentioned: number; observed: number }>;
   for (const row of rows) {
     for (const arm of ARMS) {
       const rate = effectRates[arm][row.effectType];
@@ -506,6 +550,7 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
       const score = row.scores[arm];
       if (score.state === 'invalid') { rate.invalid += 1; continue; }
       if (score.state === 'not_applicable') { rate.notApplicable += 1; continue; }
+      if (score.nonGating) { spontaneous[arm].observed += 1; if (score.state === 'pass') spontaneous[arm].mentioned += 1; continue; }
       rate.total += 1;
       if (score.state === 'pass') rate.passed += 1;
     }
@@ -616,6 +661,7 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
     starvedReplies,
     extractionFailures: rows.filter((row) => row.extractionFailed).length,
     lift,
+    spontaneousNameMentions: spontaneous,
     measurement: {
       scorerVersion: SCORER_VERSION,
       invalidShare,
@@ -731,7 +777,7 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
           const running = armsForTurn(turn, states.counterfactual_forced.forcedRecordIds.length > 0);
           const skipped = Object.fromEntries(
             ARMS.filter((arm) => !running.includes(arm)).map((arm) => [arm, {
-              plan: {}, injectedRecordIds: [], reply: '', replyFailed: false, nameRenderedAsStyle: false,
+              plan: {}, injectedRecordIds: [], reply: '', replyFailed: false, identityRenderedElsewhere: false,
               skipped: 'this turn declares no counterfactual and the arm is not yet carrying one, so there is no wrong-memory intervention to test',
             } satisfies ArmResult]),
           );
@@ -761,7 +807,7 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
               injectedRecordIds: renderedRecordIds(result.plan.plan),
               reply,
               replyFailed: reply.length === 0,
-              nameRenderedAsStyle: nameRenderedAsStyle(result.plan.plan),
+              identityRenderedElsewhere: identityRenderedElsewhere(result.plan.plan),
               ...(route === undefined ? {} : { route }),
             } satisfies ArmResult] as const;
           }))) as Record<string, ArmResult>;

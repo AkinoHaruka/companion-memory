@@ -187,6 +187,7 @@ fn the_cue_gate_is_what_hides_a_high_sensitivity_goal_not_a_missing_channel() {
     let plan = channels(&responses[1]);
     let visible = [
         "constraints",
+        "identity",
         "responseStyle",
         "continuity",
         "topicActivated",
@@ -284,6 +285,7 @@ fn every_admitted_record_lands_in_exactly_one_channel() {
     let mut ids: Vec<String> = Vec::new();
     for channel in [
         "constraints",
+        "identity",
         "responseStyle",
         "continuity",
         "topicActivated",

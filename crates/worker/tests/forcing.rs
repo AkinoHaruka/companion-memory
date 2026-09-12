@@ -38,7 +38,7 @@ fn record(worker: &mut Worker, id: &str, predicate: &str, value: &str, value_jso
 
 /// The record ids a plan placed in a channel that the model can see.
 fn spoken(plan: &serde_json::Value) -> Vec<String> {
-    ["constraints", "responseStyle", "continuity", "topicActivated", "deepRecall"]
+    ["constraints", "identity", "responseStyle", "continuity", "topicActivated", "deepRecall"]
         .iter()
         .flat_map(|channel| {
             plan[channel]

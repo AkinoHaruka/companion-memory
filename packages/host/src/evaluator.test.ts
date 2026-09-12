@@ -16,7 +16,7 @@ import { SESSIONS, type SessionScript } from './script.js';
  * produced not one reply that used the name. That batch reported the name effect
  * as zero. It is a mutation case, not a hypothetical.
  */
-function workerProgram(deepChannel: 'deepRecall' | 'responseStyle'): string {
+function workerProgram(deepChannel: 'identity' | 'deepRecall' | 'responseStyle'): string {
   return [
     "const readline=require('node:readline'); const memories=new Map();",
     "const input=readline.createInterface({input:process.stdin});",
@@ -24,13 +24,13 @@ function workerProgram(deepChannel: 'deepRecall' | 'responseStyle'): string {
     "input.on('line',(line)=>{const q=JSON.parse(line);const p=q.params||{};const profile=p.scope&&p.scope.companion_profile_id||'';let result={};",
     "if(q.op==='health')result={protocolVersion:1,schemaVersion:3,predicateKeys:['identity.name'],predicateSchemas:[{key:'identity.name',valueKind:'text',enumValues:[]}]};",
     "if(q.op==='admit'){const rows=memories.get(profile)||[];for(const c of p.candidates||[])rows.push({id:'claim-'+c.id,text:c.predicate+': '+(c.raw_value||c.value)});memories.set(profile,rows);result={accepted:(p.candidates||[]).map(c=>'claim-'+c.id),rejected:[],pending:(p.pending||[]).length};}",
-    "if(q.op==='warm'){let rows=memories.get(profile)||[];if(Array.isArray(p.force_record_ids))rows=rows.filter(r=>p.force_record_ids.includes(r.id));const plan={constraints:[],responseStyle:[],continuity:[],topicActivated:[],deepRecall:[],doNotSurface:[]};plan[DEEP_CHANNEL]=rows.map(r=>({recordId:r.id,text:r.text,surface:'freely_mentionable',reason:'test'}));result={revision:rows.length,plan};}",
+    "if(q.op==='warm'){let rows=memories.get(profile)||[];if(Array.isArray(p.force_record_ids))rows=rows.filter(r=>p.force_record_ids.includes(r.id));const plan={constraints:[],identity:[],responseStyle:[],continuity:[],topicActivated:[],deepRecall:[],doNotSurface:[]};plan[DEEP_CHANNEL]=rows.map(r=>({recordId:r.id,text:r.text,surface:'freely_mentionable',reason:'test'}));result={revision:rows.length,plan};}",
     "if(q.op==='query')result={records:[]};if(q.op==='forget')result={forgotten:false,recordIds:[]};if(q.op==='session_closed')result={expired:0};",
     "console.log(JSON.stringify({version:1,id:q.id,ok:true,result}));});",
   ].join('');
 }
 
-const workerArgs = (deepChannel: 'deepRecall' | 'responseStyle'): string[] => ['-e', workerProgram(deepChannel), '--'];
+const workerArgs = (deepChannel: 'identity' | 'deepRecall' | 'responseStyle'): string[] => ['-e', workerProgram(deepChannel), '--'];
 
 const script: readonly SessionScript[] = [{
   id: 'oracle-contract', dayOffset: 0, turns: [
@@ -39,7 +39,9 @@ const script: readonly SessionScript[] = [{
       gold: [{ predicate: 'identity.name', value: '林越', rawValue: '林越', quote: '林越' }],
       counterfactual: [{ predicate: 'identity.name', value: '周然', rawValue: '周然', quote: '林越' }],
     },
-    { intent: 'natural name probe', text: '我想继续聊聊。', memoryOpportunity: 'positive', effectType: 'name' },
+    // must_use because the assertion below treats the name as a gated effect;
+    // a turn with no cue would be reported and excluded instead.
+    { intent: 'natural name probe', text: '我想继续聊聊。', memoryOpportunity: 'positive', effectType: 'name', nameExpectation: 'must_use' },
   ],
 }];
 
@@ -66,7 +68,7 @@ describe('Oracle evaluator causal artifacts', () => {
         client: fakeModel,
         databasePath: join(outputDirectory, 'oracle.db'),
         workerCommand: process.execPath,
-        workerArgs: workerArgs('deepRecall'),
+        workerArgs: workerArgs('identity'),
         runCount: 2,
         outputDirectory,
         sessions: script,
@@ -112,7 +114,7 @@ describe('Oracle evaluator causal artifacts', () => {
         client: { async chat() { return { text: '' }; }, chatJson: fakeModel.chatJson },
         databasePath: join(outputDirectory, 'oracle.db'),
         workerCommand: process.execPath,
-        workerArgs: workerArgs('deepRecall'),
+        workerArgs: workerArgs('identity'),
         runCount: 1,
         outputDirectory,
         sessions: script,
@@ -152,7 +154,7 @@ describe('Oracle evaluator causal artifacts', () => {
       const rows = JSON.parse(readFileSync(join(outputDirectory, 'oracle-run-1.json'), 'utf8')) as Array<{ scores: Record<string, { state: string; evidence: string }> }>;
       const nameTurn = rows[1];
       expect(nameTurn?.scores.normal?.state).toBe('not_applicable');
-      expect(nameTurn?.scores.normal?.evidence).toContain('response_style');
+      expect(nameTurn?.scores.normal?.evidence).toContain('outside the identity channel');
       expect(summary.effectRates.normal.name).toMatchObject({ total: 0, notApplicable: 1 });
       expect(summary.measurement.notApplicable).toBeGreaterThan(0);
       expect(summary.measurement.batchAcceptable).toBe(false);
@@ -190,7 +192,7 @@ describe('Oracle evaluator causal artifacts', () => {
         client: cutClient,
         databasePath: join(outputDirectory, 'oracle.db'),
         workerCommand: process.execPath,
-        workerArgs: workerArgs('deepRecall'),
+        workerArgs: workerArgs('identity'),
         runCount: 1,
         outputDirectory,
         sessions: script,
@@ -235,7 +237,7 @@ describe('Oracle evaluator causal artifacts', () => {
         client: countingClient,
         databasePath: join(outputDirectory, 'oracle.db'),
         workerCommand: process.execPath,
-        workerArgs: workerArgs('deepRecall'),
+        workerArgs: workerArgs('identity'),
         runCount: 1,
         outputDirectory,
         sessions: contradictory,
@@ -263,7 +265,7 @@ describe('Oracle evaluator causal artifacts', () => {
         client: fakeModel,
         databasePath: join(outputDirectory, 'oracle.db'),
         workerCommand: process.execPath,
-        workerArgs: workerArgs('deepRecall'),
+        workerArgs: workerArgs('identity'),
         runCount: 1,
         outputDirectory,
         sessions: [{ ...s5, turns: [s5.turns[0]!] }],
@@ -293,7 +295,8 @@ describe('Oracle evaluator causal artifacts', () => {
           intent: 'establish identity', text: '我叫林越。', memoryOpportunity: 'none', effectType: 'correct_silence',
           gold: [{ predicate: 'identity.name', value: '林越', rawValue: '林越', quote: '林越' }],
         },
-        { intent: 'natural name probe', text: '我想继续聊聊。', memoryOpportunity: 'positive', effectType: 'name' },
+        { intent: 'natural name probe', text: '我想继续聊聊。', memoryOpportunity: 'positive', effectType: 'name', nameExpectation: 'may_use' },
+        { intent: 'explicit identity recall', text: '你还记得我叫什么吗？', memoryOpportunity: 'positive', effectType: 'name', nameExpectation: 'must_use' },
       ],
     }];
     try {
@@ -301,28 +304,39 @@ describe('Oracle evaluator causal artifacts', () => {
         client: fakeModel,
         databasePath: join(outputDirectory, 'oracle.db'),
         workerCommand: process.execPath,
-        workerArgs: workerArgs('deepRecall'),
+        workerArgs: workerArgs('identity'),
         runCount: 1,
         outputDirectory,
         sessions: noDeclaration,
       });
       const rows = JSON.parse(readFileSync(join(outputDirectory, 'oracle-run-1.json'), 'utf8')) as Array<{
         arms: Record<string, { reply: string; injectedRecordIds: string[] }>;
-        scores: Record<string, { state: string; evidence: string }>;
+        scores: Record<string, { state: string; evidence: string; nonGating: boolean }>;
       }>;
-      const probe = rows[1];
       // Nothing is ever written to the control's scope, so it answers from no memory.
-      expect(probe?.arms.no_memory?.injectedRecordIds).toEqual([]);
-      expect(probe?.arms.no_memory?.reply).toBe('我在。');
-      expect(probe?.scores.no_memory?.state).toBe('fail');
-      // The ceiling answers from the record, so the difference is memory.
-      expect(probe?.scores.gold_forced?.state).toBe('pass');
+      const spontaneous = rows[1];
+      expect(spontaneous?.arms.no_memory?.injectedRecordIds).toEqual([]);
+      expect(spontaneous?.arms.no_memory?.reply).toBe('我在。');
+      expect(spontaneous?.scores.no_memory?.state).toBe('fail');
+      // A turn with no cue reports the name and does not gate on it: gating this
+      // is what measured a ceiling of zero on eight forced records.
+      expect(spontaneous?.scores.gold_forced?.state).toBe('pass');
+      expect(spontaneous?.scores.gold_forced?.nonGating).toBe(true);
+      expect(summary.spontaneousNameMentions.gold_forced).toEqual({ mentioned: 1, observed: 1 });
+      expect(summary.spontaneousNameMentions.no_memory).toEqual({ mentioned: 0, observed: 1 });
+      // The spontaneous turn is excluded from the rate; the explicit one is what it counts.
+      expect(summary.effectRates.gold_forced.name).toMatchObject({ passed: 1, total: 1, rate: 1, notApplicable: 0 });
+      // An explicit question is the hard form: the same record, gated.
+      const asked = rows[2];
+      expect(asked?.scores.gold_forced?.state).toBe('pass');
+      expect(asked?.scores.gold_forced?.nonGating).toBe(false);
+      expect(asked?.scores.no_memory?.state).toBe('fail');
       expect(summary.lift.name).toMatchObject({ withMemory: 1, withoutMemory: 0, delta: 1 });
       // No counterfactual is declared anywhere here, so that arm never runs and is
       // excluded rather than scored.
-      expect(probe?.scores.counterfactual_forced?.state).toBe('not_applicable');
-      expect(probe?.scores.counterfactual_forced?.evidence).toContain('no wrong-memory intervention');
-      expect(summary.effectRates.counterfactual_forced.name).toMatchObject({ total: 0, notApplicable: 1 });
+      expect(asked?.scores.counterfactual_forced?.state).toBe('not_applicable');
+      expect(asked?.scores.counterfactual_forced?.evidence).toContain('no wrong-memory intervention');
+      expect(summary.effectRates.counterfactual_forced.name).toMatchObject({ total: 0, notApplicable: 2 });
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
     }
@@ -347,7 +361,7 @@ describe('Oracle evaluator causal artifacts', () => {
         client: fakeModel,
         databasePath,
         workerCommand: process.execPath,
-        workerArgs: workerArgs('deepRecall'),
+        workerArgs: workerArgs('identity'),
         runCount: 1,
         outputDirectory,
         sessions: script,
