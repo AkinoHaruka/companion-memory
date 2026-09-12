@@ -113,6 +113,38 @@ $env:COMPANION_MEMORY_EVAL_MODE = 'acceptance'
 pnpm --filter @companion-memory/host run
 ```
 
+A route can also be configured directly, which needs no DSH session, no mounted
+profile and no agent, and reports what the provider did per call. That last part
+is not a convenience: on a reasoning route the hidden reasoning is billed out of
+the same budget as the visible answer, and a 400-token reply budget was measured
+to be spent 397 tokens deep on reasoning, returning `content: ""` with
+`finish_reason: "length"`. Without the report that is indistinguishable from a
+provider refusal and from a model that chose to say nothing, and a scoring rule
+built on it will read as a product finding.
+
+```sh
+export COMPANION_MEMORY_EVAL_BASE_URLS='https://open.bigmodel.cn/api/paas/v4,https://api.z.ai/api/paas/v4'
+export COMPANION_MEMORY_EVAL_MODEL='GLM-4.7-Flash'
+export COMPANION_MEMORY_EVAL_API_KEYS='key-one,key-two'          # environment only, never a file
+export COMPANION_MEMORY_EVAL_BODY_JSON='{"thinking":{"type":"disabled"}}'
+node scripts/run-acceptance-http.mjs --runs 10 --label glm
+```
+
+Every host is crossed with every key and the client rotates on a retryable
+refusal, which is the normal case rather than an exception on these tiers: both
+`1305 访问量过大` and `1113 余额不足或无可用资源包` arrive as HTTP 429, and the
+useful answer to either is the next credential instead of the same one again.
+The report says which host and which credential index served a call, never the
+key.
+
+`run-acceptance-http.mjs` runs one repetition per child process, because ten
+inside one launcher process aborted with `0xC0000409` partway through the first
+and a crash there loses every repetition after it. `oracle-summary.json` and the
+run line report `routeRefusals` (the provider refused, so the turn measured
+nothing) and `starvedReplies` (the budget ran out before the answer started)
+separately from `unreplied`, so a run that failed for a route reason can be told
+apart from one that failed for a memory reason.
+
 The evaluator keeps “reply differs” out of its score. Its artifact records the
 entire candidate → admission → activation → injection → visible-effect chain and
 uses effect-specific checks for name, language, preference, boundary,

@@ -8,6 +8,7 @@ import { toWorkerScope, type ExtractedCandidate, type MemoryScope, type Predicat
 import { renderMemoryUsagePlan, renderedRecordIds } from '../../dsh-plugin/src/render.js';
 import { WorkerClient } from '../../dsh-plugin/src/worker-client.js';
 import { extractionPrompt, parseExtractionItems } from '../../dsh-plugin/src/extractor.js';
+import { routeRefused, starvedByReasoning, type RouteReport } from './route-report.js';
 
 export type Arm = 'normal' | 'gold_retrieved' | 'gold_forced' | 'counterfactual_forced';
 const ARMS: readonly Arm[] = ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'];
@@ -34,8 +35,19 @@ export interface EvaluationOptions {
 }
 
 /** Minimal model boundary so the evaluator does not own credentials or routing. */
+export interface EvaluationReply {
+  text: string;
+  /**
+   * What the route did, when the client can say. The harness route cannot, and
+   * reports nothing; a client that can name an overload or a starved budget
+   * should, because an empty `text` alone cannot be told apart from a model
+   * that produced nothing.
+   */
+  route?: RouteReport;
+}
+
 export interface EvaluationClient {
-  chat(messages: readonly EvaluationMessage[], options: { maxTokens: number }): Promise<{ text: string }>;
+  chat(messages: readonly EvaluationMessage[], options: { maxTokens: number }): Promise<EvaluationReply>;
   chatJson(messages: readonly EvaluationMessage[], options: { maxTokens: number }): Promise<Record<string, unknown>>;
 }
 
@@ -47,6 +59,8 @@ interface ArmResult {
   reply: string;
   /** The route returned no text twice, so this turn has no answer to judge. */
   replyFailed: boolean;
+  /** Present when the client reports what the route did; absent for the harness route. */
+  route?: RouteReport;
 }
 
 interface ScoredEffect { passed: boolean; evidence: string; }
@@ -64,6 +78,13 @@ interface OracleRow {
   admissions: Record<Arm, string[]>;
   rejections: Record<Arm, Array<{ candidateId: string; reason: string }>>;
   scores: Record<Arm, ScoredEffect>;
+  /**
+   * The normal arm's extraction call did not answer, so this turn had nothing to
+   * store. `agent/pre-step` must never block a turn, so the failure is swallowed
+   * by design -- and a swallowed extraction failure looks exactly like an
+   * extractor that found nothing.
+   */
+  extractionFailed: boolean;
 }
 
 export interface EffectRate { passed: number; total: number; rate: number | null; }
@@ -73,6 +94,17 @@ export interface OracleEvaluationSummary {
   effectRates: Record<Arm, Partial<Record<EffectType, EffectRate>>>;
   /** Turns per arm with no reply at all, excluded from every rate. */
   unreplied: Record<Arm, number>;
+  /**
+   * Unanswered turns the route refused, per arm. These are not a model choosing
+   * silence, and a run with many of them measured the provider rather than the
+   * memory. Zero for a client that cannot report, which is why the field is
+   * named after the report rather than after the empty reply.
+   */
+  routeRefusals: Record<Arm, number>;
+  /** Unanswered turns where the provider stopped on the budget with no text written. */
+  starvedReplies: Record<Arm, number>;
+  /** Turns where the normal arm's extraction call did not answer, so it stored nothing. */
+  extractionFailures: number;
   acceptance: {
     goldForcedCoreAtLeastEightOfTen: boolean;
     normalCoreAtLeastSevenOfTen: boolean;
@@ -86,6 +118,19 @@ export interface OracleEvaluationSummary {
 
 /** Below this share of answered turns, the rates describe the route rather than the model. */
 const MIN_ANSWERED_SHARE = 0.95;
+
+/**
+ * Reply budget per arm per turn.
+ *
+ * Kept at the value every recorded run used, so a new run stays comparable with
+ * the ten that already exist. It is only safe while the route does not think in
+ * silence: measured on a reasoning route, the same 400 tokens were spent 397
+ * deep on hidden reasoning and the visible answer never started. The route
+ * report records `finishReason: "length"` with zero text when that happens, and
+ * `starvedReplies` counts it, so the failure is named instead of read as a
+ * silent model.
+ */
+const REPLY_MAX_TOKENS = 400;
 
 function addDays(iso: string, days: number): string {
   return new Date(Date.parse(iso) + days * 86_400_000).toISOString();
@@ -236,6 +281,12 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
   const unreplied = Object.fromEntries(
     ARMS.map((arm) => [arm, rows.filter((row) => row.arms[arm].replyFailed).length]),
   ) as Record<Arm, number>;
+  const routeRefusals = Object.fromEntries(
+    ARMS.map((arm) => [arm, rows.filter((row) => routeRefused(row.arms[arm].route)).length]),
+  ) as Record<Arm, number>;
+  const starvedReplies = Object.fromEntries(
+    ARMS.map((arm) => [arm, rows.filter((row) => starvedByReasoning(row.arms[arm].route)).length]),
+  ) as Record<Arm, number>;
   const answeredShare = Object.fromEntries(
     ARMS.map((arm) => [arm, rows.length === 0 ? 0 : (rows.length - unreplied[arm]) / rows.length]),
   ) as Record<Arm, number>;
@@ -247,6 +298,9 @@ export function summarizeOracle(rows: readonly OracleRow[], runCount: number): O
     runCount,
     effectRates,
     unreplied,
+    routeRefusals,
+    starvedReplies,
+    extractionFailures: rows.filter((row) => row.extractionFailed).length,
     acceptance: {
       goldForcedCoreAtLeastEightOfTen,
       normalCoreAtLeastSevenOfTen,
@@ -342,15 +396,27 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
             // One retry. Against a real route an occasional empty stream is
             // transient, and a single re-ask is far cheaper than discarding a run
             // that has already paid for every other turn in the fixture.
-            let reply = (await options.client.chat(prompt(snapshot, turn.text), { maxTokens: 400 })).text.trim();
+            //
+            // The route's own report is carried through, because an empty reply
+            // has three causes that need three different responses: the provider
+            // refused (retry, or the run is void), a reasoning route spent the
+            // whole budget before writing anything (raise the budget or stop the
+            // silent thinking), or the model wrote nothing (a real observation).
+            // Only the third belongs in a memory conclusion.
+            const first = await options.client.chat(prompt(snapshot, turn.text), { maxTokens: REPLY_MAX_TOKENS });
+            let reply = first.text.trim();
+            let route = first.route;
             if (reply.length === 0) {
-              reply = (await options.client.chat(prompt(snapshot, turn.text), { maxTokens: 400 })).text.trim();
+              const second = await options.client.chat(prompt(snapshot, turn.text), { maxTokens: REPLY_MAX_TOKENS });
+              reply = second.text.trim();
+              route = second.route;
             }
             return [arm, {
               plan: result.plan.plan,
               injectedRecordIds: renderedRecordIds(result.plan.plan),
               reply,
               replyFailed: reply.length === 0,
+              ...(route === undefined ? {} : { route }),
             } satisfies ArmResult] as const;
           }))) as Record<Arm, ArmResult>;
 
@@ -368,8 +434,16 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
           const armSource = Object.fromEntries(
             ARMS.map((arm) => [arm, `${arm}-${sourceId}`]),
           ) as Record<Arm, string>;
+          // The extractor is the one model call whose failure is swallowed by
+          // design: `agent/pre-step` must never block a turn, so a failed
+          // extraction leaves the normal arm with no candidates and the run
+          // continues. That is the right behaviour and the wrong measurement --
+          // a run whose extractor was refused reads as a normal arm that had no
+          // memory, which is the same artifact as an extractor that found
+          // nothing. Recorded per turn so the two can be told apart.
+          let extractionFailed = false;
           const normal = await normalExtraction(options.client, predicateSchemas, armSource.normal, turn.text)
-            .catch((): NormalExtraction => ({ candidates: [], episodes: [] }));
+            .catch((): NormalExtraction => { extractionFailed = true; return { candidates: [], episodes: [] }; });
           const accepted = await Promise.all([
             admit(worker, states.normal, armSource.normal, session.id, turn.text, at, normal.candidates, normal.episodes),
             admit(worker, states.gold_retrieved, armSource.gold_retrieved, session.id, turn.text, at, candidates(armSource.gold_retrieved, turn.text, turn.gold ?? []), episodeCandidates(armSource.gold_retrieved, turn.text, turn.goldEpisodes ?? [])),
@@ -388,7 +462,7 @@ export async function runOracleEvaluation(options: EvaluationOptions): Promise<O
           rows.push({
             run, session: session.id, day: session.dayOffset, turn: index, intent: turn.intent, user: turn.text,
             memoryOpportunity: turn.memoryOpportunity, effectType: turn.effectType,
-            arms: armResults, admissions, rejections, scores,
+            arms: armResults, admissions, rejections, scores, extractionFailed,
           });
         }
       }

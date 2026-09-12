@@ -13,7 +13,8 @@
  * the harness defines and not a restatement of it that can drift.
  *
  *   node scripts/aggregate-acceptance.mjs <runs/oracle directory>
- *   node scripts/aggregate-acceptance.mjs <directory> --runs 7   # first seven only
+ *   node scripts/aggregate-acceptance.mjs <directory> --runs 7          # newest seven
+ *   node scripts/aggregate-acceptance.mjs <directory> --label or-ling   # one batch only
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -21,31 +22,56 @@ import { join } from 'node:path';
 
 import { summarizeOracle } from '../packages/host/dist/src/evaluator.js';
 
-const root = process.argv[2];
-if (root === undefined) throw new Error('usage: aggregate-acceptance.mjs <runs/oracle directory>');
-
-const limitFlag = process.argv.indexOf('--runs');
-const limit = limitFlag < 0 ? Infinity : Number(process.argv[limitFlag + 1]);
-
-/** Repetition artifacts, oldest invocation first. */
-function artifacts(directory) {
-  const found = [];
-  for (const name of readdirSync(directory)) {
-    const invocation = join(directory, name);
-    if (!statSync(invocation).isDirectory()) continue;
-    for (const file of readdirSync(invocation)) {
-      if (/^oracle-run-\d+\.json$/.test(file)) found.push({ invocation: name, file, path: join(invocation, file) });
-    }
-  }
-  return found
-    .sort((left, right) => (left.invocation === right.invocation
-      ? left.file.localeCompare(right.file, undefined, { numeric: true })
-      : left.invocation.localeCompare(right.invocation)))
-    .slice(0, limit);
+function flag(name) {
+  const index = process.argv.indexOf(name);
+  return index < 0 ? undefined : process.argv[index + 1];
 }
 
-const files = artifacts(root);
-if (files.length === 0) throw new Error(`no repetition artifacts under ${root}`);
+const root = process.argv[2];
+if (root === undefined) throw new Error('usage: aggregate-acceptance.mjs <runs/oracle directory> [--runs N] [--label prefix]');
+
+const runsFlag = flag('--runs');
+const limit = runsFlag === undefined ? Infinity : Number(runsFlag);
+const label = flag('--label');
+
+/**
+ * The invocations this aggregate is over, newest last.
+ *
+ * Ordered by directory modification time, not by name. The names are not
+ * comparable: an invocation is named either an ISO timestamp or a
+ * caller-supplied label, and `or-ling-1` sorts after `2026-09-12T04-...` while
+ * being hours newer. Ordering by name and taking the first `--runs` therefore
+ * aggregated whichever batch sorted first and reported it as the run just made
+ * -- measured with twelve older invocations present, `--runs 2` scored two of
+ * those. `--label` selects a batch explicitly; the names that entered the
+ * aggregate are printed either way.
+ */
+function invocations(directory) {
+  return readdirSync(directory)
+    .map((name) => ({ name, path: join(directory, name) }))
+    .filter((entry) => {
+      try {
+        return statSync(entry.path).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .filter((entry) => label === undefined || entry.name.startsWith(label))
+    .sort((left, right) => statSync(left.path).mtimeMs - statSync(right.path).mtimeMs);
+}
+
+const available = invocations(root);
+const selected = available.slice(limit === Infinity ? 0 : Math.max(0, available.length - limit));
+
+const files = selected.flatMap((invocation) => readdirSync(invocation.path)
+  .filter((name) => /^oracle-run-\d+\.json$/.test(name))
+  .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
+  .map((name) => ({ invocation: invocation.name, path: join(invocation.path, name) })));
+if (files.length === 0) {
+  throw new Error(label === undefined
+    ? `no repetition artifacts under ${root}`
+    : `no repetition artifacts under ${root} for label ${label}`);
+}
 
 /** Every row, with the run index rewritten so repetitions stay distinguishable. */
 const rows = files.flatMap((entry, index) => {
@@ -57,7 +83,8 @@ const summary = summarizeOracle(rows, files.length);
 const arms = ['normal', 'gold_retrieved', 'gold_forced', 'counterfactual_forced'];
 const effects = ['name', 'language', 'preference', 'continuity', 'boundary', 'correct_silence'];
 
-process.stdout.write(`repetitions aggregated: ${files.length} (of ${artifacts(root).length} present)\n\n`);
+process.stdout.write(`invocations aggregated: ${selected.map((entry) => entry.name).join(', ')}\n`);
+process.stdout.write(`repetitions aggregated: ${files.length} (of ${available.length} invocations present${label === undefined ? '' : ` for label ${label}`})\n\n`);
 process.stdout.write('effect rates, unanswered turns excluded:\n');
 process.stdout.write(`  ${'arm'.padEnd(22)}${effects.map((effect) => effect.padStart(16)).join('')}\n`);
 for (const arm of arms) {
@@ -70,6 +97,13 @@ for (const arm of arms) {
 }
 process.stdout.write('\nunanswered turns per arm:\n');
 for (const arm of arms) {
-  process.stdout.write(`  ${arm.padEnd(22)}${summary.unreplied[arm]}  (answered ${(summary.acceptance.answeredShare[arm] * 100).toFixed(1)}%)\n`);
+  process.stdout.write(`  ${arm.padEnd(22)}${summary.unreplied[arm]}  (answered ${(summary.acceptance.answeredShare[arm] * 100).toFixed(1)}%)`);
+  const refused = summary.routeRefusals?.[arm] ?? 0;
+  const starved = summary.starvedReplies?.[arm] ?? 0;
+  process.stdout.write(`  refused ${refused}  starved ${starved}\n`);
 }
+// Not a per-arm effect: the extractor runs once per turn, for the normal arm.
+// A refusal here leaves the normal arm with nothing to store, which reads as
+// "the normal arm had no memory" unless it is counted.
+process.stdout.write(`\nextractor refusals: ${summary.extractionFailures ?? 0} of ${rows.length} turns\n`);
 process.stdout.write(`\n${JSON.stringify(summary.acceptance, null, 2)}\n`);
