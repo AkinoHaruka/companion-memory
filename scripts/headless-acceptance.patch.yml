@@ -1,0 +1,16 @@
+# Mount the Companion Memory acceptance tool into a shipped profile.
+#
+# The memory plugin and this gateway live outside the harness checkout, so they
+# are addressed by absolute file URL rather than by package name: a shipped
+# profile has no directory of its own to resolve a bare specifier from.
+#
+#   node apps/cli/lib/bin.js --profile headless \
+#     --patch <this file> "Call companion_memory_acceptance with note 'acceptance'."
+- insert:
+    - id: companion-memory-oracle
+      name: 'file:///C:/TRAE/Riko-dsh-TencentDB/companion-memory/packages/host/dist/src/gateway.js'
+      config:
+        outputDirectory: 'C:/TRAE/Riko-dsh-TencentDB/companion-memory/runs/oracle'
+        workerCommand: 'C:/TRAE/Riko-dsh-TencentDB/companion-memory/target/debug/companion-memory-worker.exe'
+        runCount: 1
+        includeProbes: true
