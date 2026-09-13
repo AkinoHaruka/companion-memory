@@ -49,7 +49,10 @@ fn a_candidate_with_no_predicate_is_refused() {
     let response = responses.pop().expect("one response");
 
     assert!(
-        response["result"]["accepted"].as_array().expect("accepted").is_empty(),
+        response["result"]["accepted"]
+            .as_array()
+            .expect("accepted")
+            .is_empty(),
         "nothing may be accepted without a predicate: {response}"
     );
     let reasons = rejections(&response);
@@ -59,6 +62,31 @@ fn a_candidate_with_no_predicate_is_refused() {
         "the reason must name the problem, got {:?}",
         reasons[0]
     );
+}
+
+#[test]
+fn undeclared_qualifiers_are_refused_instead_of_creating_parallel_slots() {
+    let mut worker = Worker::start();
+    let mut proposal = candidate(
+        "name-qualified",
+        "identity.name",
+        "Xiaolin",
+        "My name is Xiaolin.",
+    );
+    proposal["qualifiers"] = json!({ "context": "work" });
+    worker.send(
+        "admit",
+        "admit",
+        admit_params(
+            "2026-09-12T00:00:00Z",
+            "message-qualifier",
+            "My name is Xiaolin.",
+            vec![proposal],
+        ),
+    );
+    let responses = worker.responses();
+    let reasons = rejections(&responses[0]);
+    assert_eq!(reasons[0].1, "qualifiers do not match predicate contract");
 }
 
 #[test]
@@ -119,7 +147,10 @@ fn a_quote_that_does_not_appear_in_the_message_is_refused() {
     let response = responses.pop().expect("one response");
 
     assert!(
-        response["result"]["accepted"].as_array().expect("accepted").is_empty(),
+        response["result"]["accepted"]
+            .as_array()
+            .expect("accepted")
+            .is_empty(),
         "a quote absent from the message must not be admitted: {response}"
     );
     let reasons = rejections(&response);
@@ -132,12 +163,64 @@ fn a_quote_that_does_not_appear_in_the_message_is_refused() {
 }
 
 #[test]
+fn malformed_episode_structure_is_refused_before_persistence() {
+    let mut worker = Worker::start();
+    worker.send(
+        "admit",
+        "admit",
+        json!({
+            "scope": scope(),
+            "now": "2026-09-12T00:00:00Z",
+            "source": {
+                "id": "message-episode",
+                "session_id": "session-1",
+                "text": "我和猫咪去了医院。"
+            },
+            "episodes": [{
+                "id": "episode-invalid",
+                "narrative": "我和猫咪去了医院。",
+                "start_offset": 0,
+                "end_offset": 27,
+                "quote": "我和猫咪去了医院。",
+                "confidence": 0.9,
+                "participants": [{ "role": "user", "entity_ref": "   " }],
+                "emotional_arc": [{
+                    "at_turn": 1,
+                    "labels": ["担心"],
+                    "intensity": 1.5,
+                    "source": "user_expressed"
+                }]
+            }]
+        }),
+    );
+    let mut responses = worker.responses();
+    let response = responses.pop().expect("one response");
+
+    assert!(
+        response["result"]["accepted"]
+            .as_array()
+            .expect("accepted")
+            .is_empty(),
+        "invalid structured fields must not be persisted: {response}"
+    );
+    let reasons = rejections(&response);
+    assert_eq!(reasons.len(), 1);
+    assert!(
+        reasons[0].1.contains("structured fields"),
+        "the rejection should identify the structured-field contract: {reasons:?}"
+    );
+}
+
+#[test]
 fn a_restatement_of_a_held_value_is_reported_as_merged_rather_than_accepted() {
     // Merged is not the same as refused. The model proposed something the system
     // already holds, so nothing is written and nothing is wrong; the reason has
     // to say which, or a healthy dedup rate reads as an extraction failure.
     let mut worker = Worker::start();
-    for (id, at) in [("first", "2026-09-12T00:00:00Z"), ("second", "2026-09-12T00:00:01Z")] {
+    for (id, at) in [
+        ("first", "2026-09-12T00:00:00Z"),
+        ("second", "2026-09-12T00:00:01Z"),
+    ] {
         worker.send(
             id,
             "admit",
@@ -145,7 +228,12 @@ fn a_restatement_of_a_held_value_is_reported_as_merged_rather_than_accepted() {
                 at,
                 "message-1",
                 "My name is Xiaolin.",
-                vec![candidate("name-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+                vec![candidate(
+                    "name-1",
+                    "identity.name",
+                    "Xiaolin",
+                    "My name is Xiaolin.",
+                )],
             ),
         );
     }
@@ -175,7 +263,12 @@ fn a_forgotten_value_cannot_be_written_back() {
             "2026-09-12T00:00:00Z",
             "message-1",
             "My name is Xiaolin.",
-            vec![candidate("name-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+            vec![candidate(
+                "name-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
         ),
     );
     worker.send(
@@ -185,6 +278,7 @@ fn a_forgotten_value_cannot_be_written_back() {
             "scope": scope(),
             "action": "forget",
             "record_id": "claim-name-1",
+            "current_message": "请忘掉 claim-name-1",
             "now": "2026-09-12T00:00:01Z",
         }),
     );
@@ -205,10 +299,15 @@ fn a_forgotten_value_cannot_be_written_back() {
     );
     let responses = worker.responses();
 
-    assert_eq!(responses[1]["result"]["forgotten"], true, "the forget must land first");
+    assert_eq!(
+        responses[1]["result"]["forgotten"], true,
+        "the forget must land first"
+    );
     let reasons = rejections(&responses[2]);
     assert!(
-        reasons.iter().any(|(_, reason)| reason.contains("resurrect")),
+        reasons
+            .iter()
+            .any(|(_, reason)| reason.contains("resurrect")),
         "the same value must not be writable after being forgotten, got {reasons:?}"
     );
     assert!(
@@ -219,6 +318,40 @@ fn a_forgotten_value_cannot_be_written_back() {
         "nothing may be accepted: {}",
         responses[2]
     );
+}
+
+#[test]
+fn forgetting_requires_a_direct_user_request() {
+    let mut worker = Worker::start();
+    worker.send(
+        "admit",
+        "admit",
+        admit_params(
+            "2026-09-12T00:00:00Z",
+            "message-1",
+            "My name is Xiaolin.",
+            vec![candidate(
+                "name-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
+        ),
+    );
+    worker.send(
+        "forget",
+        "forget",
+        json!({
+            "scope": scope(),
+            "action": "forget",
+            "record_id": "claim-name-1",
+            "current_message": "请继续聊聊你的名字",
+            "now": "2026-09-12T00:00:01Z",
+        }),
+    );
+    let responses = worker.responses();
+    assert_eq!(responses[1]["ok"], false);
+    assert_eq!(responses[1]["error"]["code"], "INVALID_REQUEST");
 }
 
 #[test]

@@ -2,12 +2,12 @@
 
 use companion_memory_kernel::domain::predicates::{mention_policy_for, MentionMode};
 use companion_memory_kernel::domain::types::{
-    Claim, ClaimStatus, Inference, InferenceAxis, InferenceState, Provenance, RelationshipScope,
-    Salience,
+    Claim, ClaimStatus, Episode, EpisodeStatus, Inference, InferenceAxis, InferenceState,
+    Provenance, RelationshipScope, Salience,
 };
 use companion_memory_kernel::rules::mention_gate::{
-    claim_mention, effective_surface_level, inference_mention, is_constraint, mention_gate,
-    GateDenial, MentionCues, MentionDecision, MentionInput, SurfaceLevel,
+    claim_mention, effective_surface_level, episode_mention, inference_mention, is_constraint,
+    mention_gate, GateDenial, MentionCues, MentionDecision, MentionInput, SurfaceLevel,
 };
 
 fn scope() -> RelationshipScope {
@@ -84,6 +84,28 @@ fn inference(
     }
 }
 
+fn episode(do_not_surface: Option<bool>) -> Episode {
+    Episode {
+        id: "episode-1".into(),
+        scope: scope(),
+        occurred_from: "2026-01-01T00:00:00Z".into(),
+        occurred_to: None,
+        narrative: "用户带猫去医院".into(),
+        participants: Vec::new(),
+        emotional_arc: None,
+        user_reaction: None,
+        response_ref: None,
+        source_refs: Vec::new(),
+        status: EpisodeStatus::Active,
+        salience: Salience {
+            do_not_surface,
+            ..Salience::default()
+        },
+        created_at: "2026-01-01T00:00:00Z".into(),
+        updated_at: "2026-01-01T00:00:00Z".into(),
+    }
+}
+
 fn input<'a>(predicate: Option<&'a str>, record_mode: Option<MentionMode>) -> MentionInput<'a> {
     MentionInput {
         predicate,
@@ -109,6 +131,25 @@ fn effective_level_is_monotone_for_record_mode_and_predicate_policy() {
     assert_eq!(
         effective_surface_level(&predicate_quieter),
         SurfaceLevel::BackgroundOnly
+    );
+}
+
+#[test]
+fn episode_mention_honours_the_record_level_do_not_surface_flag() {
+    let decision = episode_mention(
+        &episode(Some(true)),
+        MentionCues {
+            user_referenced: true,
+            topic_implies: true,
+            ..MentionCues::default()
+        },
+    );
+    assert_eq!(
+        decision,
+        MentionDecision::Denied {
+            reason: GateDenial::DoNotSurface,
+            level: SurfaceLevel::NeverSurface,
+        }
     );
 }
 

@@ -159,6 +159,7 @@ fn jsonl_protocol_recovers_after_bad_json_and_forgets_retained_evidence() {
                 "scope": { "service_id": "service", "owner_user_id": "owner", "companion_profile_id": "preset" },
                 "action": "forget",
                 "record_id": "claim-name-1",
+                "current_message": "请忘掉 claim-name-1",
                 "now": "2026-09-12T00:00:01Z",
             }),
         )
@@ -174,6 +175,7 @@ fn jsonl_protocol_recovers_after_bad_json_and_forgets_retained_evidence() {
                 "scope": { "service_id": "service", "owner_user_id": "owner", "companion_profile_id": "preset" },
                 "action": "forget",
                 "record_id": "episode-watering-episode-1",
+                "current_message": "请忘掉 episode-watering-episode-1",
                 "now": "2026-09-12T00:00:02Z",
             }),
         )
@@ -218,8 +220,27 @@ fn jsonl_protocol_recovers_after_bad_json_and_forgets_retained_evidence() {
             .iter()
             .any(|schema| schema["key"] == "communication.verbosity"
                 && schema["valueKind"] == "enum"
+                && schema["cardinality"] == "single"
+                && schema["requiresEntityRef"] == false
                 && schema["enumValues"].as_array().expect("enum values").iter().any(|value| value == "short")),
         "Rust must give extractors the closed enum values rather than relying on a TypeScript mirror"
+    );
+    assert!(
+        lines[1]["result"]["predicateSchemas"]
+            .as_array()
+            .expect("predicate schemas")
+            .iter()
+            .any(|schema| schema["key"] == "identity.location"
+                && schema["requiresEntityRef"] == true
+                && schema["qualifierSchema"]["properties"]["context"]["enum"]
+                    .as_array()
+                    .expect("location contexts")
+                    .iter()
+                    .any(|value| value == "work")
+                && schema["description"]
+                    .as_str()
+                    .is_some_and(|text| !text.is_empty())),
+        "Rust must expose the entity and qualifier contract needed by the extractor"
     );
     assert_eq!(lines[2]["result"]["accepted"][0], "claim-name-1");
     assert_eq!(lines[2]["result"]["pending"], 1);
@@ -232,6 +253,10 @@ fn jsonl_protocol_recovers_after_bad_json_and_forgets_retained_evidence() {
         lines[4]["result"]["plan"]["continuity"][0]["recordId"],
         "claim-watering-1"
     );
+    // The greeting consumes the open thread's one follow-up slot, which is a
+    // durable memory change in its own right and advances the scope revision.
+    assert_eq!(lines[4]["result"]["revision"], 4);
+    assert_eq!(lines[5]["result"]["revision"], 4);
     assert!(lines[5]["result"]["plan"]["continuity"]
         .as_array()
         .expect("continuity")

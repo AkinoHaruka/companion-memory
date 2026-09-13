@@ -7,8 +7,9 @@
 
 use companion_memory_kernel::domain::predicates::MentionMode;
 use companion_memory_kernel::domain::types::{
-    Claim, ClaimStatus, Episode, EpisodeStatus, EvidenceRef, EvidenceSourceType, Inference,
-    InferenceAxis, InferenceState, Provenance, RelationshipScope, Salience, Speaker,
+    ArcSource, Claim, ClaimStatus, EmotionalArcPoint, Episode, EpisodeParticipant, EpisodeStatus,
+    EvidenceRef, EvidenceSourceType, Inference, InferenceAxis, InferenceState, ParticipantRole,
+    Provenance, RelationshipScope, Salience, Speaker,
 };
 use companion_memory_storage::migrations::{
     apply_migrations, known_migrations, schema_version, CURRENT_SCHEMA_VERSION,
@@ -76,8 +77,16 @@ fn episode(id: &str, user: &str) -> Episode {
         occurred_from: EARLIER.into(),
         occurred_to: None,
         narrative: "The dog was sick that night.".into(),
-        participants: Vec::new(),
-        emotional_arc: None,
+        participants: vec![EpisodeParticipant {
+            entity_ref: Some("pet:dog".into()),
+            role: ParticipantRole::User,
+        }],
+        emotional_arc: Some(vec![EmotionalArcPoint {
+            at_turn: 2,
+            labels: vec!["worried".into()],
+            intensity: Some(0.7),
+            source: ArcSource::UserExpressed,
+        }]),
         user_reaction: Some("said it helped".into()),
         response_ref: None,
         source_refs: vec![EvidenceRef {
@@ -256,7 +265,7 @@ fn the_migration_list_is_ordered_and_distinct() {
 
 #[test]
 fn version_two_database_upgrades_without_replaying_old_schema() {
-    let db = TempDb::new("upgrade-v2-to-v3");
+    let db = TempDb::new("upgrade-v2-to-v4");
     {
         let connection = rusqlite::Connection::open(&db.path).expect("open old database");
         connection
@@ -466,6 +475,86 @@ fn two_records_from_one_message_keep_both_source_spans() {
             .count_in_scope(&relationship, "source_spans")
             .expect("both spans"),
         2
+    );
+}
+
+#[test]
+fn a_source_message_id_is_immutable_once_retained() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    store
+        .put_source_message(
+            &relationship,
+            &SourceMessage {
+                id: "message-1".into(),
+                session_id: "session-1".into(),
+                text: "My name is Xiaolin.".into(),
+                created_at: NOW.into(),
+            },
+        )
+        .expect("first source message");
+
+    let conflict = store.put_source_message(
+        &relationship,
+        &SourceMessage {
+            id: "message-1".into(),
+            session_id: "session-retry".into(),
+            text: "My name is different.".into(),
+            created_at: "2026-09-13T00:00:00Z".into(),
+        },
+    );
+    assert!(
+        conflict.is_err(),
+        "a changed message body must be a hard conflict"
+    );
+    assert_eq!(
+        store
+            .count_in_scope(&relationship, "source_messages")
+            .expect("source count"),
+        1
+    );
+}
+
+#[test]
+fn a_source_span_is_immutable_once_retained() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    store
+        .put_source_message(
+            &relationship,
+            &SourceMessage {
+                id: "message-1".into(),
+                session_id: "session-1".into(),
+                text: "Xiaolin.".into(),
+                created_at: NOW.into(),
+            },
+        )
+        .expect("source message");
+    store
+        .put_source_span(
+            &relationship,
+            &SourceSpan {
+                record_id: "claim-1".into(),
+                message_id: "message-1".into(),
+                start_offset: 0,
+                end_offset: 7,
+                quote: "Xiaolin".into(),
+            },
+        )
+        .expect("first source span");
+    let conflict = store.put_source_span(
+        &relationship,
+        &SourceSpan {
+            record_id: "claim-1".into(),
+            message_id: "message-1".into(),
+            start_offset: 1,
+            end_offset: 8,
+            quote: "iaolin.".into(),
+        },
+    );
+    assert!(
+        conflict.is_err(),
+        "a span retry must not rewrite provenance"
     );
 }
 
@@ -797,6 +886,84 @@ fn writing_the_same_id_twice_replaces_rather_than_duplicates() {
     assert_eq!(all[0].value, json!("Second"));
 }
 
+#[test]
+fn memory_revision_is_monotonic_across_replace_and_forget() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    assert_eq!(store.memory_revision(&relationship).expect("revision"), 0);
+    store
+        .put_claim(&claim("c1", "identity.name", json!("First"), "u1"))
+        .expect("write");
+    let first = store.memory_revision(&relationship).expect("revision");
+    assert!(first > 0);
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Second"), "u1"))
+        .expect("replace");
+    let replaced = store.memory_revision(&relationship).expect("revision");
+    assert!(replaced > first);
+    assert!(store
+        .forget_claim(&relationship, "c1", NOW)
+        .expect("forget"));
+    let forgotten = store.memory_revision(&relationship).expect("revision");
+    assert!(forgotten > replaced);
+}
+
+#[test]
+fn warm_snapshot_keeps_rows_suppression_and_revision_consistent() {
+    let store = Store::open(&OpenOptions::in_memory()).expect("open");
+    let relationship = scope("u1");
+    store
+        .put_claim(&claim("c1", "identity.name", json!("Xiaolin"), "u1"))
+        .expect("claim");
+    store.put_episode(&episode("e1", "u1")).expect("episode");
+    store
+        .suppress(&relationship, "record", "c1", None, None, NOW)
+        .expect("suppress");
+
+    let snapshot = store
+        .warm_snapshot(&relationship, NOW)
+        .expect("consistent snapshot");
+    assert!(snapshot.claims.iter().all(|claim| claim.id != "c1"));
+    assert_eq!(snapshot.episodes.len(), 1);
+    assert!(snapshot.revision >= 3);
+}
+
+#[test]
+fn stale_single_slot_admission_is_rejected_under_the_write_transaction() {
+    let db = TempDb::new("stale-slot");
+    let first = Store::open(&db.options()).expect("first open");
+    let second = Store::open(&db.options()).expect("second open");
+    first
+        .put_claim(&claim("old", "identity.name", json!("Old"), "u1"))
+        .expect("old claim");
+
+    let incoming = claim("new", "identity.name", json!("New"), "u1");
+    let result = second.admit_claim_with_evidence(
+        &incoming,
+        &SourceMessage {
+            id: "message-new".into(),
+            session_id: "session-1".into(),
+            text: "New".into(),
+            created_at: NOW.into(),
+        },
+        &SourceSpan {
+            record_id: "new".into(),
+            message_id: "message-new".into(),
+            start_offset: 0,
+            end_offset: 3,
+            quote: "New".into(),
+        },
+        None,
+        None,
+        NOW,
+    );
+    assert!(
+        result.is_err(),
+        "a stale create must not create two active names"
+    );
+    assert_eq!(first.active_claims(&scope("u1")).expect("claims").len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Slot queries and status transitions
 // ---------------------------------------------------------------------------
@@ -812,7 +979,7 @@ fn a_slot_query_returns_only_the_matching_entity() {
     store.put_claim(&wuhan).expect("write");
 
     let slot = store
-        .active_claims_in_slot(&scope("u1"), "identity.location", Some("shanghai"))
+        .active_claims_in_slot(&scope("u1"), "identity.location", Some("shanghai"), None)
         .expect("slot");
     assert_eq!(slot.len(), 1);
     assert_eq!(slot[0].id, "c1");
@@ -829,7 +996,7 @@ fn a_slot_query_distinguishes_no_entity_from_a_named_one() {
     store.put_claim(&tagged).expect("write");
 
     let unnamed = store
-        .active_claims_in_slot(&scope("u1"), "identity.name", None)
+        .active_claims_in_slot(&scope("u1"), "identity.name", None, None)
         .expect("slot");
     assert_eq!(unnamed.len(), 1);
     assert_eq!(unnamed[0].id, "c1");
@@ -848,7 +1015,7 @@ fn a_slot_query_excludes_non_active_records() {
         .expect("supersede");
 
     assert!(store
-        .active_claims_in_slot(&scope("u1"), "identity.name", None)
+        .active_claims_in_slot(&scope("u1"), "identity.name", None, None)
         .expect("slot")
         .is_empty());
     assert!(store.active_claims(&scope("u1")).expect("list").is_empty());

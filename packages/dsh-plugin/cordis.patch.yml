@@ -12,3 +12,5 @@
         workerCommand: !!js process.env.COMPANION_MEMORY_WORKER_COMMAND
         workerRequestTimeoutMs: !!js Number(process.env.COMPANION_MEMORY_WORKER_TIMEOUT_MS ?? 4000)
         maxQueuedExtractions: !!js Number(process.env.COMPANION_MEMORY_MAX_QUEUE ?? 32)
+        maxExtractionQueueBytes: !!js Number(process.env.COMPANION_MEMORY_MAX_QUEUE_BYTES ?? 67108864)
+        extractionQueuePath: !!js process.env.COMPANION_MEMORY_QUEUE_PATH

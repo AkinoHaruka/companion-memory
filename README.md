@@ -66,7 +66,7 @@ Oracle 评估、反事实实验和因果链产物记录。
 | `packages/dsh-plugin` | 直接用户文本、Rust schema、worker 结果 | 抽取编排、队列、协议适配、计划渲染、工具注册 | 不自行决定准入、替代或持久化 |
 | `crates/worker` | JSONL 请求 | 串联存储和内核，输出可注入计划 | 不调用 LLM，不把未知候选强行写入 |
 | `crates/kernel` | 已结构化的候选和当前回合信号 | 谓词、类型、身份、证据、闸门、评分与遗忘规则 | 不读数据库、不发网络请求、不猜测语言含义 |
-| `crates/storage` | worker 的明确读写命令 | SQLite 模式、迁移、范围隔离、来源和审计保留 | 不重新实现一套业务规则 |
+| `crates/storage` | worker 的明确读写命令 | SQLite 模式、迁移、范围隔离、来源和审计保留、每 scope 单调 revision | 不重新实现一套业务规则 |
 | `packages/host` | 冻结 fixture、真实 DSH route | 评估候选→准入→激活→注入→可见效果链路 | 不把回答差异直接当成记忆因果证据 |
 
 这个拆分的核心是：**模型可以提出候选，但只有 Rust authority 可以批准记忆**。这样抽取质量的波动不会改变去重、替代、边界和遗忘规则；反过来，内核也不需要承担模型调用、重试和会话生命周期。
@@ -100,8 +100,8 @@ Oracle 评估、反事实实验和因果链产物记录。
 
 ### 记忆如何被整理
 
-1. DSH 回合结束后，插件把直接用户消息放入有界、可取消的异步队列；插件快照、工具结果和助手回答不会进入用户记忆抽取。
-2. 当前路由的模型按照 Rust worker 提供的谓词注册表输出候选 `Claim`、`Episode`、临时 `RuntimeState` 或 `no_memory`。TypeScript 先验证 JSON 和原文片段，Rust 再执行最终准入。
+1. DSH 回合结束后，插件把直接用户消息放入单并发、可取消的异步抽取队列；文件数据库默认带 durable inbox，只有内存测试库才受进程内有界回退限制。插件快照、工具结果和助手回答不会进入用户记忆抽取。
+2. 当前路由的模型按照 Rust worker 提供的完整谓词 contract（值类型、cardinality、实体引用要求、已声明的 qualifier schema 和描述）输出候选 `Claim`、`Episode`、临时 `RuntimeState` 或 `no_memory`。这些元数据只帮助模型少犯结构错误，不授予它任何提及权限；TypeScript 先验证 JSON 和原文片段，Rust 再执行最终准入。
 3. Rust worker 检查范围、谓词、值类型、原文片段、遗忘抑制集和证据引用，然后执行合并、替代或拒绝。每条已接受记录都保留来源消息和片段，便于审计和遗忘。
 4. 明确的开放事项才会生成可跟进的 continuity thread；情绪猜测、已解决事件和敏感事项不会偷偷变成下一次对话的提醒。
 5. 遗忘不是简单删除一行数据，而是写入 suppression 证据集，并让下游记录重新计算，避免已经固化的推断把被遗忘内容重新带回来。
@@ -129,10 +129,14 @@ Oracle 评估、反事实实验和因果链产物记录。
 | `responseStyle` | 用户偏好的语言、语气、格式和详细程度 | 影响表达方式，不等于一条需要宣读的事实 |
 | `continuity` | 新会话问候时可自然承接的低压力开放事项 | 仅在当前问候中自然时跟进一次 |
 | `topicActivated` | 用户在当前回合明确提到或话题暗示的内容 | 可以围绕当前话题自然使用 |
-| `deepRecall` | 高重要度的背景上下文 | 只能帮助组织回答，不能无提示地背诵出来 |
+| `deepRecall` | 通过相关性 × 重要度 × 置信度 × 新鲜度排序后的背景上下文 | 只能帮助组织回答，不能无提示地背诵出来 |
 | `doNotSurface` | 被闸门拒绝或被边界遮蔽的记录数量 | 只传递“不要浮现或推断”的约束，不传递被隐藏的原文 |
 
 每个通道都带有 `surface` 和 `reason`。`background_only` 只能影响语气和选择；`mention_if_user_cues` 必须等用户或当前话题给出线索；`freely_mentionable` 才允许无提示提及；`never_surface` 永远不会进入渲染结果。当前用户指令始终优先于历史记忆。
+
+`topicActivated` 和 `deepRecall` 都有固定的 prompt 预算（当前各 8 条），按 salience 排序后截断；预算外记录不会静默丢失，而是进入 `doNotSurface` 并标记为 `prompt_budget`。中文 episode 的单个共享字符只能帮助搜索候选定位，不能单独授权注入；授权需要直接引用或带主题信息的双字相邻片段。
+
+`warm.revision` 是 scope 级单调持久水位，不是当前行数：替代、遗忘、抑制和开放线程变化都会让它前进，即使活动记录数量不变。这样恢复会话或重新渲染时可以可靠判断旧 snapshot 已失效。
 
 最终 renderer 将计划转成带有 `<companion_memory>` 标记的持久化 `plugin/snapshot` 用户消息，追加到本轮 DSH 消息中。若 worker 故障、超时或协议损坏，本轮只是不注入记忆，正常对话不会被阻塞。
 
@@ -143,7 +147,8 @@ Oracle 评估、反事实实验和因果链产物记录。
 | DSH 时点 | 插件动作 | 是否阻塞用户回答 |
 |---|---|---|
 | `session/event: user/message` | 只收集 `source.kind === user` 的直接用户文本；忽略插件快照、工具结果和助手内容 | 否 |
-| `turn/end` | 把本回合收集到的文本送入单并发、有界、可取消的抽取队列 | 否，抽取在回答之后进行 |
+| `turn/end` | 把本回合收集到的文本送入单并发、可取消的抽取队列，并先写 durable inbox | 否，抽取在回答之后进行 |
+| `agent/session-start` | 记录 startup / clear 与 resume / compact，首轮 warm 不会把恢复会话误判成新会话 | 否 |
 | `agent/pre-step` 且 `step === 1` | 读取当前消息和活动记录，调用 `warm`，追加一份新的 durable snapshot | 正常情况下等待短暂 worker 请求；失败则跳过记忆继续回答 |
 | `session/disposed` | 调用 `session_closed`，让未完成的低风险跟进事项过期或关闭 | 否 |
 
@@ -204,8 +209,8 @@ Rust worker 会逐条验证：谓词是否在注册表中、枚举值是否精�
 
 | 操作 | 输入 | 行为 |
 |---|---|---|
-| `search` | 用户当前明确给出的查询词 | worker 在同一 scope 内查找匹配的 `Claim` / `Episode`；`Claim` 会再次经过提及闸门，`Episode` 当前按主题匹配返回，完整统一闸门仍是待加强项 |
-| `forget` | 用户要求删除的精确 `record_id` | worker 只处理该条 Claim 或 Episode，保留 suppression / 指纹并清理可恢复证据，避免误删整个人物画像 |
+| `search` | 工具查询词 + 当前直接用户消息 | 查询词只决定候选检索，不能替模型伪造授权；当前直接用户消息必须形成 cue，Claim/Episode 统一经过 mention gate，边界、suppression 和 `do_not_surface` 会在返回前生效 |
+| `forget` | 当前直接用户消息中的明确删除意图 + 精确 `record_id` | 插件和 worker 都要求同一条直接用户消息同时包含明确删除词和完整 ID；否则拒绝执行。通过后只处理该条 Claim 或 Episode，保留 suppression / 指纹并清理可恢复证据，避免误删整个人物画像；完成后对幸存 Claim/Episode 做 exact/疑似语义残留扫描，仅报告给审计，不自动删除疑似匹配 |
 
 因此，工具查询是“用户主动要求的受控查看”，不是一个把全部数据库暴露给模型的后门；遗忘也不是让模型自己决定删什么，而是一个可以审计的确定性操作。
 
@@ -271,7 +276,7 @@ scripts/              工具：worker 打包、宿主构建和 MSVC 构建包装
 | 推断生命周期（置信度上限、复核） | 已完成 |
 | 存储：模式、迁移、范围隔离查询 | 已完成 |
 | JSONL worker：health、warm、admit、query、forget、会话关闭 | 已完成 |
-| SQLite v3：已接受证据、片段、开放线程、遥测、待复核指针 | 已完成 |
+| SQLite v4：已接受证据、片段、开放线程、遥测、待复核指针、每 scope 单调 revision | 已完成 |
 | DSH 外部 Bundle：实际 `agent/pre-step` 快照注入 | 已完成 |
 | 异步用户消息抽取与确定性 worker 准入 | 已完成 |
 | Oracle 评估器：普通、Gold 检索、强制 Gold、反事实 | 已完成 |
@@ -332,7 +337,7 @@ dsh plugin --profile <profile> add <path-to-companion-memory/packages/dsh-plugin
 
 `packages/dsh-plugin/cordis.patch.yml` 从 `COMPANION_MEMORY_*` 环境变量读取部署范围内的服务、用户、默认 profile、数据库位置和 worker 命令。profile id 使用 DSH Agent Preset；如果没有设置，只使用 `COMPANION_MEMORY_DEFAULT_PROFILE`。它不会退回使用 Agent ID 或 Session ID。
 
-每一次首次 `agent/pre-step` 都会从 worker 读取一份新的 `MemoryUsagePlan`，并追加为持久化的 `plugin/snapshot` 用户消息。worker 故障、超时或协议损坏时，DSH 仍正常回复但不注入记忆，也不会复用上一份快照。用户直接消息只会在 `turn/end` 之后进入私有、有界且可取消的队列进行抽取。
+每一次首次 `agent/pre-step` 都会从 worker 读取一份新的 `MemoryUsagePlan`，并追加为持久化的 `plugin/snapshot` 用户消息。worker 故障、超时或协议损坏时，DSH 仍正常回复但不注入记忆，也不会复用上一份快照。用户直接消息只会在 `turn/end` 之后进入私有、单并发队列进行抽取；配置了文件数据库时，队列会先写入 `<databasePath>.extraction-inbox.jsonl`，只有 Rust 准入成功后才记为完成，完成项会安全压缩掉原文，进程崩溃或 worker 暂时不可用不会静默丢弃任务。`:memory:` 测试库仍使用有界的进程内回退队列。
 
 部署配置的职责边界：
 
@@ -344,7 +349,9 @@ dsh plugin --profile <profile> add <path-to-companion-memory/packages/dsh-plugin
 | `COMPANION_MEMORY_DATABASE_PATH` | SQLite 数据库路径 | 不改变逻辑，只决定存储位置 |
 | `COMPANION_MEMORY_WORKER_COMMAND` | worker 可执行文件或启动器 | 不改变逻辑，只决定运行方式 |
 | `COMPANION_MEMORY_WORKER_TIMEOUT_MS` | 单次 worker 请求超时 | 不改变逻辑，只影响故障降级速度 |
-| `COMPANION_MEMORY_MAX_QUEUE` | 回合后抽取队列上限 | 不改变逻辑，只限制待处理数量 |
+| `COMPANION_MEMORY_MAX_QUEUE` | 无 durable inbox 时的进程内待处理上限；文件队列允许落盘溢出 | 不改变逻辑，只影响内存占用 |
+| `COMPANION_MEMORY_MAX_QUEUE_BYTES` | durable inbox 的 JSONL 字节上限；达到后显式报告队列不可用 | 不改变逻辑，只影响故障降级 |
+| `COMPANION_MEMORY_QUEUE_PATH` | 可选的抽取 inbox JSONL 路径 | 不改变逻辑，只决定队列持久化位置 |
 
 `service_id + owner_user_id + companion_profile_id` 才构成一组关系记忆；Agent ID、model ID、Session ID 都不是记忆身份。这样切换模型或重开 session 时，仍能找到同一位用户的伴侣记忆，同时不同服务和 profile 保持隔离。
 
@@ -403,7 +410,7 @@ pnpm --filter @companion-memory/host run
 6. **运行环境有 DSH 耦合**：插件依赖 DSH 0.1.5-rc.2 的 Bundle、Agent Preset 和生命周期事件；换到其他宿主需要重新实现适配层，Rust kernel 才能复用。
 7. **部署有进程和原生依赖**：worker 是独立 Rust 子进程，存储使用 bundled SQLite；Windows 发布需要 MSVC 工具链，数据库路径、权限、备份和进程重启需要部署方负责。
 8. **范围刻意偏向单用户陪伴**：scope 是服务、用户和伴侣 profile 的关系，不是团队共享知识库；它适合一个用户与一个固定人格长期互动，不适合直接当作多租户协作记忆。
-9. **主动搜索的闸门还不完全统一**：当前 `query` 对 Claim 复用 mention gate，但 Episode 搜索主要按主题匹配；如果生产环境允许查询敏感 Episode，应在正式发布前补上统一的 `do_not_surface` / boundary 过滤。
+9. **主动搜索仍是轻量匹配**：`query` 已把当前直接用户消息作为授权证据，并对 Claim / Episode 统一执行 mention gate、suppression 和 boundary 过滤；它仍不是语义向量检索，复杂同义改写可能需要更明确的用户查询词。
 
 ### 适合与不适合的场景
 

@@ -15,9 +15,7 @@
 
 mod harness;
 
-use harness::{
-    admit_params, candidate, channels, scope, warm_params, Worker,
-};
+use harness::{admit_params, candidate, channels, scope, warm_params, Worker};
 use serde_json::json;
 
 /// A second relationship on the same service and owner.
@@ -71,7 +69,12 @@ fn one_id_belongs_to_one_scope() {
             "2026-09-12T00:00:00Z",
             "message-1",
             "My name is Xiaolin.",
-            vec![candidate("shared-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+            vec![candidate(
+                "shared-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
         ),
     );
     worker.send(
@@ -82,7 +85,12 @@ fn one_id_belongs_to_one_scope() {
             "2026-09-12T00:00:01Z",
             "message-2",
             "My name is Xiaolin.",
-            vec![candidate("shared-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+            vec![candidate(
+                "shared-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
         ),
     );
     let responses = worker.responses();
@@ -95,7 +103,7 @@ fn one_id_belongs_to_one_scope() {
     let reasons = rejections(&responses[1]);
     assert_eq!(reasons.len(), 1, "response was {}", responses[1]);
     assert!(
-        reasons[0].1.contains("persist"),
+        reasons[0].1.contains("scope"),
         "the second write must be refused, got {reasons:?}"
     );
 }
@@ -113,7 +121,12 @@ fn the_first_relationship_still_holds_its_record_afterwards() {
             "2026-09-12T00:00:00Z",
             "message-1",
             "My name is Xiaolin.",
-            vec![candidate("shared-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+            vec![candidate(
+                "shared-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
         ),
     );
     worker.send(
@@ -124,7 +137,12 @@ fn the_first_relationship_still_holds_its_record_afterwards() {
             "2026-09-12T00:00:01Z",
             "message-2",
             "My name is Xiaolin.",
-            vec![candidate("shared-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+            vec![candidate(
+                "shared-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
         ),
     );
     worker.send(
@@ -135,11 +153,18 @@ fn the_first_relationship_still_holds_its_record_afterwards() {
     let responses = worker.responses();
 
     let plan = channels(&responses[2]);
-    let placed: Vec<&str> = ["constraints", "identity", "responseStyle", "continuity", "topicActivated", "deepRecall"]
-        .iter()
-        .flat_map(|channel| plan[channel].as_array().expect(channel).iter())
-        .filter_map(|entry| entry["recordId"].as_str())
-        .collect();
+    let placed: Vec<&str> = [
+        "constraints",
+        "identity",
+        "responseStyle",
+        "continuity",
+        "topicActivated",
+        "deepRecall",
+    ]
+    .iter()
+    .flat_map(|channel| plan[channel].as_array().expect(channel).iter())
+    .filter_map(|entry| entry["recordId"].as_str())
+    .collect();
     assert!(
         placed.contains(&"claim-shared-1"),
         "the owning relationship must still see its record, plan was {plan}"
@@ -161,7 +186,12 @@ fn distinct_ids_in_distinct_scopes_both_persist() {
             "2026-09-12T00:00:00Z",
             "message-1",
             "My name is Xiaolin.",
-            vec![candidate("a-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+            vec![candidate(
+                "a-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
         ),
     );
     worker.send(
@@ -172,7 +202,12 @@ fn distinct_ids_in_distinct_scopes_both_persist() {
             "2026-09-12T00:00:01Z",
             "message-2",
             "My name is Xiaolin.",
-            vec![candidate("b-1", "identity.name", "Xiaolin", "My name is Xiaolin.")],
+            vec![candidate(
+                "b-1",
+                "identity.name",
+                "Xiaolin",
+                "My name is Xiaolin.",
+            )],
         ),
     );
     let responses = worker.responses();

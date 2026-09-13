@@ -21,7 +21,7 @@ function client(program: string, requestTimeoutMs = 1_000): WorkerClient {
   });
 }
 
-const healthy = responder("console.log(JSON.stringify({version:1,id:request.id,ok:true,result:{protocolVersion:1,schemaVersion:3,predicateKeys:['identity.name'],predicateSchemas:[{key:'identity.name',valueKind:'text',enumValues:[]}]}}));");
+const healthy = responder("console.log(JSON.stringify({version:1,id:request.id,ok:true,result:{protocolVersion:1,schemaVersion:4,predicateKeys:['identity.name'],predicateSchemas:[{key:'identity.name',valueKind:'text',enumValues:[],cardinality:'single',requiresEntityRef:false,qualifierSchema:null,description:'test'}]}}));");
 
 describe('WorkerClient fail-closed protocol boundary', () => {
   it('locates a packaged worker from a Windows-safe file URL', () => {

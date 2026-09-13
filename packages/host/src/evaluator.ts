@@ -371,7 +371,18 @@ function candidates(sourceId: string, text: string, gold: readonly GoldCandidate
   });
 }
 
-function episodeCandidates(sourceId: string, text: string, gold: readonly GoldEpisode[]): Array<{ id: string; narrative: string; sourceSpan: { startOffset: number; endOffset: number; quote: string }; confidence: number }> {
+type EpisodeCandidate = {
+  id: string;
+  narrative: string;
+  sourceSpan: { startOffset: number; endOffset: number; quote: string };
+  confidence: number;
+  participants?: GoldEpisode['participants'];
+  emotionalArc?: GoldEpisode['emotionalArc'];
+  userReaction?: string;
+  responseRef?: string;
+};
+
+function episodeCandidates(sourceId: string, text: string, gold: readonly GoldEpisode[]): EpisodeCandidate[] {
   return gold.flatMap((item, index) => {
     const span = sourceSpan(text, item.quote);
     return span === undefined ? [] : [{
@@ -379,6 +390,10 @@ function episodeCandidates(sourceId: string, text: string, gold: readonly GoldEp
       narrative: item.narrative,
       sourceSpan: span,
       confidence: item.confidence ?? 1,
+      ...(item.participants === undefined ? {} : { participants: item.participants }),
+      ...(item.emotionalArc === undefined ? {} : { emotionalArc: item.emotionalArc }),
+      ...(item.userReaction === undefined ? {} : { userReaction: item.userReaction }),
+      ...(item.responseRef === undefined ? {} : { responseRef: item.responseRef }),
     }];
   });
 }
@@ -391,17 +406,33 @@ function workerCandidates(items: readonly ExtractedCandidate[]): unknown[] {
   }));
 }
 
-function workerEpisodes(items: readonly { id: string; narrative: string; sourceSpan: { startOffset: number; endOffset: number; quote: string }; confidence: number }[]): unknown[] {
+function workerEpisodes(items: readonly EpisodeCandidate[]): unknown[] {
   return items.map((item) => ({
     id: item.id, narrative: item.narrative, start_offset: item.sourceSpan.startOffset,
     end_offset: item.sourceSpan.endOffset, quote: item.sourceSpan.quote, confidence: item.confidence,
+    ...(item.participants === undefined ? {} : {
+      participants: item.participants.map((participant) => ({
+        role: participant.role,
+        ...(participant.entityRef === undefined ? {} : { entity_ref: participant.entityRef }),
+      })),
+    }),
+    ...(item.emotionalArc === undefined ? {} : {
+      emotional_arc: item.emotionalArc.map((point) => ({
+        at_turn: point.atTurn,
+        labels: point.labels,
+        ...(point.intensity === undefined ? {} : { intensity: point.intensity }),
+        source: point.source,
+      })),
+    }),
+    ...(item.userReaction === undefined ? {} : { user_reaction: item.userReaction }),
+    ...(item.responseRef === undefined ? {} : { response_ref: item.responseRef }),
   }));
 }
 
 /** The normal arm's extractor is deliberately a model call; its results are still admitted only by Rust. */
 interface NormalExtraction {
   candidates: ExtractedCandidate[];
-  episodes: Array<{ id: string; narrative: string; sourceSpan: { startOffset: number; endOffset: number; quote: string }; confidence: number }>;
+  episodes: EpisodeCandidate[];
 }
 
 async function normalExtraction(

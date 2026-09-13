@@ -3,7 +3,20 @@
 export type EffectType = 'name' | 'language' | 'preference' | 'boundary_silence' | 'background_silence' | 'continuity';
 export type Opportunity = 'positive' | 'negative' | 'none';
 export interface GoldCandidate { predicate: string; value: unknown; rawValue: string; quote: string; confidence?: number; }
-export interface GoldEpisode { narrative: string; quote: string; confidence?: number; }
+export interface GoldEpisode {
+  narrative: string;
+  quote: string;
+  confidence?: number;
+  participants?: Array<{ entityRef?: string; role: 'user' | 'companion' }>;
+  emotionalArc?: Array<{
+    atTurn: number;
+    labels: string[];
+    intensity?: number;
+    source: 'user_expressed' | 'observed';
+  }>;
+  userReaction?: string;
+  responseRef?: string;
+}
 
 /**
  * A token whose unprompted appearance would surface a memory the user asked us
@@ -102,17 +115,17 @@ export const SESSIONS: SessionScript[] = [
     { intent: 'nothing durable — must extract nothing', text: '嗯，今天天气还不错。', memoryOpportunity: 'none', effectType: 'boundary_silence', protectionEvidence: { tokens: ['前任'], surfaces: ['background_only'] } },
   ] },
   { id: 's3', dayOffset: 9, turns: [
-    { intent: 'episode with emotion', text: '我家猫昨天吐了，半夜带它去了宠物医院，折腾到三点。今天上班完全是梦游状态。', memoryOpportunity: 'none', effectType: 'background_silence', goldEpisodes: [
-      { narrative: '猫生病，用户半夜带猫去宠物医院，折腾到三点。', quote: '我家猫昨天吐了，半夜带它去了宠物医院，折腾到三点', confidence: 1 },
+    { intent: 'episode with emotion', text: '我家猫咪昨天吐了，半夜带它去了宠物医院，折腾到三点。今天上班完全是梦游状态。', memoryOpportunity: 'none', effectType: 'background_silence', goldEpisodes: [
+      { narrative: '猫咪生病，用户半夜带猫咪去宠物医院，折腾到三点。', quote: '我家猫咪昨天吐了，半夜带它去了宠物医院，折腾到三点', confidence: 1 },
     ] },
     { intent: 'support preference', text: '我难受的时候你别急着给建议，先听我说完就好。', memoryOpportunity: 'none', effectType: 'background_silence', gold: [
       { predicate: 'support.when_distressed', value: 'listen', rawValue: '别急着给建议，先听我说完', quote: '别急着给建议，先听我说完' },
     ] },
   ] },
   { id: 's4', dayOffset: 21, turns: [
-    { intent: 'recall a detail from three weeks ago', text: '猫现在好多了，能吃东西了。', memoryOpportunity: 'positive', effectType: 'continuity', recallEvidence: {
+    { intent: 'recall a detail from three weeks ago', text: '猫咪现在好多了，能吃东西了。', memoryOpportunity: 'positive', effectType: 'continuity', recallEvidence: {
       // All three are read verbatim out of s3t0's human-verified episode
-      // narrative, 『猫生病，用户半夜带猫去宠物医院，折腾到三点。』, and none of
+      // narrative, 『猫咪生病，用户半夜带猫咪去宠物医院，折腾到三点。』, and none of
       // them occurs in this turn's own user text. Graded by how far a reply could
       // get without the record: a clock reading cannot be guessed, a pet being
       // taken to hospital at night is how this story goes, and 折腾 is what one

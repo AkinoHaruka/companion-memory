@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   WORKER_PROTOCOL_VERSION,
+  type ForgetResult,
   type MemoryScope,
   type QueryRecord,
   type WorkerHealth,
@@ -112,8 +113,8 @@ export class WorkerClient {
     return result.records ?? [];
   }
 
-  forget(params: unknown): Promise<{ forgotten: boolean; recordIds: string[] }> {
-    return this.request('forget', params) as Promise<{ forgotten: boolean; recordIds: string[] }>;
+  forget(params: unknown): Promise<ForgetResult> {
+    return this.request('forget', params) as Promise<ForgetResult>;
   }
 
   sessionClosed(params: unknown): Promise<{ expired: number }> {

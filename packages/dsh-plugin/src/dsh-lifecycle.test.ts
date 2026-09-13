@@ -1,17 +1,18 @@
 import { Context } from '@deepseek-ai/cordis';
-import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent';
+import AgentRegistry, { agentEvents, emitAgentEvent, type Agent } from '@deepseek-ai/dsh-agent';
 import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm';
 import SessionStore, { SessionId, type Session } from '@deepseek-ai/dsh-session';
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection';
 import { describe, expect, it } from 'vitest';
 
 import * as CompanionMemory from './index.js';
+import { forgetAuthorized } from './index.js';
 import { WorkerClient } from './worker-client.js';
 
 const workerProgram = [
   "const r=require('node:readline').createInterface({input:process.stdin});",
   "r.on('line',line=>{const q=JSON.parse(line);let result={};",
-  "if(q.op==='health')result={protocolVersion:1,schemaVersion:3,predicateKeys:[],predicateSchemas:[]};",
+  "if(q.op==='health')result={protocolVersion:1,schemaVersion:4,predicateKeys:[],predicateSchemas:[]};",
   "if(q.op==='warm')result={revision:0,plan:{constraints:[],identity:[],responseStyle:[],continuity:[],topicActivated:[],deepRecall:[],doNotSurface:[]}};",
   "if(q.op==='admit')result={accepted:[],rejected:[],pending:0};",
   "if(q.op==='query')result={records:[]}; if(q.op==='forget')result={forgotten:false,recordIds:[]};",
@@ -22,11 +23,21 @@ const extractionWorkerProgram = [
   'let admitted=0;',
   "const r=require('node:readline').createInterface({input:process.stdin});",
   "r.on('line',line=>{const q=JSON.parse(line);let result={};",
-  "if(q.op==='health')result={protocolVersion:1,schemaVersion:3,predicateKeys:[],predicateSchemas:[]};",
+  "if(q.op==='health')result={protocolVersion:1,schemaVersion:4,predicateKeys:[],predicateSchemas:[]};",
   "if(q.op==='warm')result={revision:admitted,plan:{constraints:[],identity:[],responseStyle:admitted?[{recordId:'admit-observed',text:'extraction_observed',surface:'freely_mentionable',reason:'test'}]:[],continuity:[],topicActivated:[],deepRecall:[],doNotSurface:[]}};",
   "if(q.op==='admit'){admitted+=1;result={accepted:[],rejected:[],pending:0};}",
   "if(q.op==='query')result={records:[]};if(q.op==='forget')result={forgotten:false,recordIds:[]};",
   "if(q.op==='session_closed')result={expired:0};console.log(JSON.stringify({version:1,id:q.id,ok:true,result}));});",
+].join('');
+
+const resumeWorkerProgram = [
+  "const r=require('node:readline').createInterface({input:process.stdin});",
+  "r.on('line',line=>{const q=JSON.parse(line);let result={};",
+  "if(q.op==='health')result={protocolVersion:1,schemaVersion:4,predicateKeys:[],predicateSchemas:[]};",
+  "if(q.op==='warm')result={revision:0,plan:{constraints:[],identity:[],responseStyle:[],continuity:q.params.new_session?[{recordId:'followup',text:'should-not-appear-on-resume',surface:'freely_mentionable',reason:'test'}]:[],topicActivated:[],deepRecall:[],doNotSurface:[]}};",
+  "if(q.op==='admit')result={accepted:[],rejected:[],pending:0};if(q.op==='query')result={records:[]};",
+  "if(q.op==='forget')result={forgotten:false,recordIds:[]};if(q.op==='session_closed')result={expired:0};",
+  "console.log(JSON.stringify({version:1,id:q.id,ok:true,result}));});",
 ].join('');
 
 function fakeAgent(session: Session): Agent {
@@ -34,6 +45,15 @@ function fakeAgent(session: Session): Agent {
 }
 
 describe('real DSH pre-step lifecycle', () => {
+  it('requires an explicit user deletion cue and exact record id', () => {
+    expect(forgetAuthorized('请忘掉 claim-name-1', 'claim-name-1')).toBe(true);
+    expect(forgetAuthorized('forget claim-name-1', 'claim-name-1')).toBe(true);
+    expect(forgetAuthorized('请忘记 claim-name-1', 'claim-name-1')).toBe(true);
+    expect(forgetAuthorized('请忘掉这个名字', 'claim-name-1')).toBe(false);
+    expect(forgetAuthorized('不要忘掉 claim-name-1', 'claim-name-1')).toBe(false);
+    expect(forgetAuthorized("don't forget claim-name-1", 'claim-name-1')).toBe(false);
+  });
+
   it('injects exactly one durable plugin snapshot on the first pre-step', async () => {
     const ctx = new Context();
     try {
@@ -100,6 +120,35 @@ describe('real DSH pre-step lifecycle', () => {
       if (second.kind !== 'enter') throw new Error('expected accepted pre-step');
       const snapshot = second.messages[1]?.content[0];
       expect(snapshot).toMatchObject({ type: 'text', text: expect.stringContaining('extraction_observed') });
+    } finally {
+      await ctx.fiber.dispose();
+    }
+  });
+
+  it('does not treat a resumed session as a fresh greeting follow-up', async () => {
+    const ctx = new Context();
+    try {
+      await ctx.plugin(SessionStore);
+      await ctx.plugin(SessionProjectionRegistry);
+      await ctx.plugin(AgentRegistry);
+      await ctx.plugin(LlmRuntime);
+      ctx.provide('tools', { register: () => () => {} } as never);
+      await ctx.plugin(CompanionMemory, {
+        serviceId: 'svc', ownerUserId: 'owner', defaultProfileId: 'fallback', databasePath: ':memory:',
+        workerCommand: process.execPath, workerArgs: ['-e', resumeWorkerProgram, '--'], workerRequestTimeoutMs: 1_000,
+      });
+      const session = ctx.sessions.create(SessionId('companion-memory-resume-test'));
+      const agent = fakeAgent(session);
+      emitAgentEvent(ctx, agent, 'agent/session-start', { source: 'resume' });
+      const direct = createUserMessage({ content: [{ type: 'text', text: '你好' }], source: { kind: 'user' } });
+      const result = await agentEvents(ctx, agent).waterfall('agent/pre-step', {
+        messages: [direct], turn: 1, step: 1, signal: new AbortController().signal,
+      }, () => Promise.resolve({ kind: 'enter' as const, messages: [direct] }));
+      expect(result.kind).toBe('enter');
+      if (result.kind !== 'enter') throw new Error('expected accepted pre-step');
+      expect(result.messages[1]?.content[0]).toMatchObject({
+        type: 'text', text: expect.not.stringContaining('should-not-appear-on-resume'),
+      });
     } finally {
       await ctx.fiber.dispose();
     }

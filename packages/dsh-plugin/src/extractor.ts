@@ -18,11 +18,25 @@ interface RawClaim {
   openThread?: { summary: string; entityRef?: string; expiresAt?: string };
 }
 
-interface RawEpisode { kind: 'episode'; narrative: string; quote: string; confidence?: number; }
+interface RawEpisode {
+  kind: 'episode';
+  narrative: string;
+  quote: string;
+  confidence?: number;
+  participants?: Array<{ entityRef?: string; role: 'user' | 'companion' }>;
+  emotionalArc?: Array<{
+    atTurn: number;
+    labels: string[];
+    intensity?: number;
+    source: 'user_expressed' | 'observed';
+  }>;
+  userReaction?: string;
+  responseRef?: string;
+}
 interface RawPending { kind: 'runtime_state' | 'no_memory'; reason?: string; }
 type RawExtraction = RawClaim | RawEpisode | RawPending;
 
-function routedTarget(agent: Agent): { provider: string; model: string } | undefined {
+export function routeForAgent(agent: Agent): { provider: string; model: string } | undefined {
   const current = agent.session.requestHeader()?.config;
   if (current !== undefined) return current;
   if (agent.options.provider !== undefined && agent.options.model !== undefined) {
@@ -55,6 +69,29 @@ function isRawExtraction(value: unknown): value is RawExtraction {
   return record.kind === 'claim' || record.kind === 'episode' || record.kind === 'runtime_state' || record.kind === 'no_memory';
 }
 
+function validEpisodeStructure(item: RawEpisode): boolean {
+  if (item.participants !== undefined && (!Array.isArray(item.participants) || item.participants.some((participant) => (
+    participant === null
+      || typeof participant !== 'object'
+      || (participant.role !== 'user' && participant.role !== 'companion')
+      || (participant.entityRef !== undefined && typeof participant.entityRef !== 'string')
+  )))) return false;
+  if (item.emotionalArc !== undefined && (!Array.isArray(item.emotionalArc) || item.emotionalArc.some((point) => (
+    point === null
+      || typeof point !== 'object'
+      || !Number.isInteger(point.atTurn)
+      || point.atTurn < 0
+      || !Array.isArray(point.labels)
+      || point.labels.length === 0
+      || point.labels.some((label) => typeof label !== 'string' || label.trim().length === 0)
+      || (point.intensity !== undefined
+        && (typeof point.intensity !== 'number' || !Number.isFinite(point.intensity) || point.intensity < 0 || point.intensity > 1))
+      || (point.source !== 'user_expressed' && point.source !== 'observed')
+  )))) return false;
+  return (item.userReaction === undefined || typeof item.userReaction === 'string')
+    && (item.responseRef === undefined || typeof item.responseRef === 'string');
+}
+
 /** Shared extraction contract for the DSH turn path and the Oracle normal arm. */
 export function extractionPrompt(
   predicateSchemas: readonly PredicateSchema[],
@@ -62,7 +99,11 @@ export function extractionPrompt(
 ): string {
   const registered = predicateSchemas.map((schema) => {
     const enums = schema.enumValues.length === 0 ? '' : `; enum values: ${schema.enumValues.join(', ')}`;
-    return `${schema.key} [${schema.valueKind}${enums}]`;
+    const entity = schema.requiresEntityRef ? '; entityRef required' : '';
+    const qualifiers = schema.qualifierSchema === null
+      ? ''
+      : `; qualifiers: ${JSON.stringify(schema.qualifierSchema)}`;
+    return `${schema.key} [${schema.valueKind}; ${schema.cardinality}${entity}${qualifiers}${enums}] — ${schema.description}`;
   }).join('\n');
   return [
     'You are a conservative companion-memory extractor. Read only the direct user message below.',
@@ -70,8 +111,8 @@ export function extractionPrompt(
       ? 'Return a JSON array only. Each item must be one of:'
       : 'Return exactly one JSON object, {"items":[...]}; each item must be one of:',
     '{"kind":"claim","predicate":"registered.key","value":...,"rawValue":"optional source wording","entityRef":"optional","quote":"exact unique substring from the user message","confidence":0..1,"openThread":{"summary":"optional explicit unresolved event","entityRef":"optional","expiresAt":"optional ISO instant"}}',
-    '{"kind":"episode","narrative":"brief factual event summary","quote":"exact unique source substring","confidence":0..1}, {"kind":"runtime_state","reason":"transient only"}, or {"kind":"no_memory"}.',
-    'Only extract explicit, durable claims. Do not infer personality, intent, diagnosis, recurrence, or facts not stated. Use no_memory for greetings, weather, ordinary acknowledgements, and ambiguity.',
+    '{"kind":"episode","narrative":"brief factual event summary","participants":[{"role":"user|companion","entityRef":"optional"}],"emotionalArc":[{"atTurn":0,"labels":["user_stated_feeling"],"intensity":0..1,"source":"user_expressed|observed"}],"userReaction":"optional direct reaction","responseRef":"optional companion turn id","quote":"exact unique source substring","confidence":0..1}, {"kind":"runtime_state","reason":"transient only"}, or {"kind":"no_memory"}.',
+    'Only extract explicit, durable claims and directly described episodes. Do not infer personality, intent, diagnosis, recurrence, emotional intensity, or facts not stated. Keep episode participants, emotionalArc, and userReaction grounded in the user message; use source="user_expressed" only when the user names the feeling, and source="observed" only for an observable turn detail. Use no_memory for greetings, weather, ordinary acknowledgements, and ambiguity.',
     'An openThread is permitted only for an explicit unresolved low-pressure event; omit it for preferences, boundaries, sensitive matters, or inferred concerns.',
     `Registered predicates (choose exactly one for claims; enum values must be copied exactly):\n${registered}`,
   ].join('\n');
@@ -97,6 +138,7 @@ export function parseExtractionItems(
     }
     if (item.kind === 'episode') {
       if (typeof item.narrative !== 'string' || typeof item.quote !== 'string') continue;
+      if (!validEpisodeStructure(item)) continue;
       const span = sourceSpanForUniqueQuote(text, item.quote);
       if (span === undefined) continue;
       extracted.push({
@@ -106,6 +148,10 @@ export function parseExtractionItems(
           narrative: item.narrative,
           sourceSpan: span,
           confidence: typeof item.confidence === 'number' ? item.confidence : 0.5,
+          ...(Array.isArray(item.participants) ? { participants: item.participants } : {}),
+          ...(Array.isArray(item.emotionalArc) ? { emotionalArc: item.emotionalArc } : {}),
+          ...(typeof item.userReaction === 'string' ? { userReaction: item.userReaction } : {}),
+          ...(typeof item.responseRef === 'string' ? { responseRef: item.responseRef } : {}),
         },
       });
       position += 1;
@@ -152,7 +198,7 @@ export async function extractFromUserMessage(
   predicateSchemas: readonly PredicateSchema[],
   signal: AbortSignal,
 ): Promise<Extraction[]> {
-  const target = routedTarget(agent);
+  const target = routeForAgent(agent);
   if (target === undefined || text.trim().length === 0) return [{ kind: 'no_memory' }];
   const assembled = new BlockAssembler();
   for await (const chunk of ctx.llm.stream({

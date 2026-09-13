@@ -29,10 +29,20 @@ export interface WorkerFailure {
 }
 
 /** Read-only registry metadata supplied by Rust for conservative extraction. */
+export interface QualifierSchema {
+  type: 'object';
+  properties: Record<string, { type: 'string'; enum?: string[] }>;
+  additionalProperties: boolean;
+}
+
 export interface PredicateSchema {
   key: string;
   valueKind: 'text' | 'enum' | 'date' | 'duration' | 'number' | 'entity_ref';
   enumValues: string[];
+  cardinality: 'single' | 'set' | 'temporal_single';
+  requiresEntityRef: boolean;
+  qualifierSchema: QualifierSchema | null;
+  description: string;
 }
 
 export interface WorkerHealth {
@@ -68,6 +78,7 @@ export interface MemoryUsagePlan {
 }
 
 export interface WarmResult {
+  /** Monotonic durable watermark for the relationship scope, not a row count. */
   revision: number;
   plan: MemoryUsagePlan;
 }
@@ -104,6 +115,15 @@ export interface ExtractedEpisode {
     narrative: string;
     sourceSpan: CandidateSpan;
     confidence: number;
+    participants?: Array<{ entityRef?: string; role: 'user' | 'companion' }>;
+    emotionalArc?: Array<{
+      atTurn: number;
+      labels: string[];
+      intensity?: number;
+      source: 'user_expressed' | 'observed';
+    }>;
+    userReaction?: string;
+    responseRef?: string;
   };
 }
 /** Runtime state is intentionally pending until extraction metrics qualify promotion. */
@@ -111,3 +131,18 @@ export interface ExtractedPending { kind: 'runtime_state'; reason: string; }
 export type Extraction = ExtractedNoMemory | ExtractedClaim | ExtractedEpisode | ExtractedPending;
 
 export interface QueryRecord { id: string; text: string; }
+
+export interface ResidueReport {
+  kind: 'exact' | 'suspected';
+  sourceType: 'claim' | 'episode';
+  sourceId: string;
+  matchedId?: string;
+  similarity?: number;
+}
+
+export interface ForgetResult {
+  forgotten: boolean;
+  recordIds: string[];
+  residueScanFailed?: boolean;
+  residue?: ResidueReport[];
+}

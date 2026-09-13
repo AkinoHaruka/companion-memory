@@ -131,7 +131,7 @@ fn the_slot_query_returns_exactly_what_the_rule_expects() {
         .expect("write");
 
     let slot = store
-        .active_claims_in_slot(&scope(), "identity.name", None)
+        .active_claims_in_slot(&scope(), "identity.name", None, None)
         .expect("slot");
 
     assert_eq!(slot.len(), 1, "only the active name belongs in the slot");
@@ -154,6 +154,33 @@ fn the_slot_query_returns_exactly_what_the_rule_expects() {
 }
 
 #[test]
+fn the_slot_query_keeps_qualifiers_in_the_slot_identity() {
+    let store = store();
+    let mut work = claim("work", "communication.verbosity", json!("long"));
+    work.qualifiers = Some(json!({"context": "work"}));
+    let mut casual = claim("casual", "communication.verbosity", json!("short"));
+    casual.qualifiers = Some(json!({"context": "casual"}));
+    store.put_claim(&work).expect("work claim");
+    store.put_claim(&casual).expect("casual claim");
+
+    let slot = store
+        .active_claims_in_slot(
+            &scope(),
+            "communication.verbosity",
+            None,
+            Some(&json!({"context": "work"})),
+        )
+        .expect("qualified slot");
+
+    assert_eq!(
+        slot.iter()
+            .map(|claim| claim.id.as_str())
+            .collect::<Vec<_>>(),
+        ["work"]
+    );
+}
+
+#[test]
 fn a_correction_leaves_the_old_claim_readable_but_not_competing() {
     // "I changed my mind" must produce a new version without erasing the old
     // one: the history is what lets the companion explain itself, and the
@@ -164,7 +191,7 @@ fn a_correction_leaves_the_old_claim_readable_but_not_competing() {
         .expect("write");
 
     let slot = store
-        .active_claims_in_slot(&scope(), "identity.name", None)
+        .active_claims_in_slot(&scope(), "identity.name", None, None)
         .expect("slot");
     let value = json!("Lin");
     let decision = decide_supersede(
@@ -210,7 +237,7 @@ fn a_set_predicate_accumulates_rather_than_replacing() {
         .expect("write");
 
     let slot = store
-        .active_claims_in_slot(&scope(), "identity.occupation", None)
+        .active_claims_in_slot(&scope(), "identity.occupation", None, None)
         .expect("slot");
     let value = json!("art teacher");
     let decision = decide_supersede(
@@ -244,7 +271,7 @@ fn a_type_incompatible_write_is_refused_and_changes_nothing() {
         .expect("write");
 
     let slot = store
-        .active_claims_in_slot(&scope(), "open_loop.deadline", None)
+        .active_claims_in_slot(&scope(), "open_loop.deadline", None, None)
         .expect("slot");
     let value = json!("next Wednesday, sometime");
     let decision = decide_supersede(
@@ -433,17 +460,11 @@ fn a_suppressed_record_is_withheld_from_the_reader() {
 
     let suppression = store.load_suppression_set(&scope()).expect("load set");
     let claims = store.active_claims(&scope()).expect("read");
-    assert_eq!(claims.len(), 1, "the store still holds the row");
-
-    // Withholding is the reader's decision, driven by the set the kernel owns.
-    let visible: Vec<&Claim> = claims
-        .iter()
-        .filter(|candidate| !suppression.suppresses_claim(candidate))
-        .collect();
     assert!(
-        visible.is_empty(),
-        "a suppressed record must not be offered"
+        claims.is_empty(),
+        "suppressed records must be fail-closed on reads"
     );
+    assert!(suppression.suppressed.contains("c1"));
 }
 
 #[test]

@@ -15,7 +15,7 @@
 use rusqlite::Connection;
 
 /// The schema a freshly created database gets.
-pub const CURRENT_SCHEMA_VERSION: i32 = 3;
+pub const CURRENT_SCHEMA_VERSION: i32 = 4;
 
 /// The version a database reports before any migration has run.
 pub const EMPTY_SCHEMA_VERSION: i32 = 0;
@@ -66,6 +66,11 @@ static MIGRATIONS: &[Migration] = &[
         to: 3,
         about: "pending extraction review pointers",
         sql: include_str!("schema_v3.sql"),
+    },
+    Migration {
+        to: 4,
+        about: "monotonic per-scope memory revisions",
+        sql: include_str!("schema_v4.sql"),
     },
 ];
 

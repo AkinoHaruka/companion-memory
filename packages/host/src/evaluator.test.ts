@@ -22,7 +22,7 @@ function workerProgram(deepChannel: 'identity' | 'deepRecall' | 'responseStyle')
     "const input=readline.createInterface({input:process.stdin});",
     `const DEEP_CHANNEL=${JSON.stringify(deepChannel)};`,
     "input.on('line',(line)=>{const q=JSON.parse(line);const p=q.params||{};const profile=p.scope&&p.scope.companion_profile_id||'';let result={};",
-    "if(q.op==='health')result={protocolVersion:1,schemaVersion:3,predicateKeys:['identity.name'],predicateSchemas:[{key:'identity.name',valueKind:'text',enumValues:[]}]};",
+    "if(q.op==='health')result={protocolVersion:1,schemaVersion:4,predicateKeys:['identity.name'],predicateSchemas:[{key:'identity.name',valueKind:'text',enumValues:[],cardinality:'single',requiresEntityRef:false,qualifierSchema:null,description:'test'}]};",
     "if(q.op==='admit'){const rows=memories.get(profile)||[];for(const c of p.candidates||[])rows.push({id:'claim-'+c.id,text:c.predicate+': '+(c.raw_value||c.value)});memories.set(profile,rows);result={accepted:(p.candidates||[]).map(c=>'claim-'+c.id),rejected:[],pending:(p.pending||[]).length};}",
     "if(q.op==='warm'){let rows=memories.get(profile)||[];if(Array.isArray(p.force_record_ids))rows=rows.filter(r=>p.force_record_ids.includes(r.id));const plan={constraints:[],identity:[],responseStyle:[],continuity:[],topicActivated:[],deepRecall:[],doNotSurface:[]};plan[DEEP_CHANNEL]=rows.map(r=>({recordId:r.id,text:r.text,surface:'freely_mentionable',reason:'test'}));result={revision:rows.length,plan};}",
     "if(q.op==='query')result={records:[]};if(q.op==='forget')result={forgotten:false,recordIds:[]};if(q.op==='session_closed')result={expired:0};",

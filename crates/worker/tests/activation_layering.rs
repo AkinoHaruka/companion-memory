@@ -17,16 +17,16 @@ use serde_json::json;
 
 /// A stand-in for what the extractor would have recorded.
 fn record(worker: &mut Worker, id: &str, predicate: &str, value: &str, at: &str) {
-    worker.send(
-        id,
-        "admit",
-        admit_params(
-            at,
-            "message-1",
-            value,
-            vec![candidate(id, predicate, value, value)],
-        ),
+    let mut params = admit_params(
+        at,
+        "message-1",
+        value,
+        vec![candidate(id, predicate, value, value)],
     );
+    // Source message ids are immutable evidence keys. Each fixture record is
+    // a distinct extraction message, even when the helper is called in a loop.
+    params["source"]["id"] = serde_json::json!(format!("message-{id}"));
+    worker.send(id, "admit", params);
 }
 
 #[test]
@@ -289,7 +289,10 @@ fn a_durable_objective_reaches_the_model_without_being_cued() {
         "an uncued objective must reach the model as background, plan was {plan}"
     );
     assert!(
-        plan["doNotSurface"].as_array().expect("withheld").is_empty(),
+        plan["doNotSurface"]
+            .as_array()
+            .expect("withheld")
+            .is_empty(),
         "it must not be withheld as well as surfaced, plan was {plan}"
     );
 }
@@ -426,8 +429,103 @@ fn a_shared_subject_pair_still_cues() {
 
     let plan = channels(&responses[1]);
     let topic = plan["topicActivated"].as_array().expect("topic");
-    assert_eq!(topic.len(), 1, "a shared subject must still cue, plan was {plan}");
+    assert_eq!(
+        topic.len(),
+        1,
+        "a shared subject must still cue, plan was {plan}"
+    );
     assert_eq!(topic[0]["recordId"], "claim-cat-1");
+    assert_eq!(
+        topic[0]["reason"], "topic_implied",
+        "pair overlap is topic evidence, not a direct quotation, plan was {plan}"
+    );
+}
+
+#[test]
+fn a_single_character_episode_overlap_is_not_authorization() {
+    let mut worker = Worker::start();
+    let source_text = "昨天我照顾猫。";
+    let quote = "猫";
+    let start = source_text.find(quote).expect("episode quote") as i64;
+    let mut params = admit_params("2026-09-12T00:00:00Z", "message-1", source_text, Vec::new());
+    params["episodes"] = json!([{
+        "id": "cat-1",
+        "narrative": "用户半夜带猫去宠物医院，折腾到三点。",
+        "start_offset": start,
+        "end_offset": start + quote.len() as i64,
+        "quote": quote,
+        "confidence": 0.9,
+    }]);
+    worker.send("admit", "admit", params);
+    worker.send(
+        "warm",
+        "warm",
+        warm_params("我想聊聊猫", "session-2", false),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[1]);
+    assert!(
+        plan["topicActivated"].as_array().expect("topic").is_empty(),
+        "a single shared CJK character may retrieve a candidate but cannot authorize an episode, plan was {plan}"
+    );
+}
+
+#[test]
+fn forced_topic_activation_is_bounded_by_the_prompt_budget() {
+    let mut worker = Worker::start();
+    let records = [
+        ("objective", "goal.long_term_objective"),
+        ("focus", "goal.current_focus"),
+        ("task", "open_loop.pending_action"),
+        ("checkin", "open_loop.low_risk_check_in"),
+        ("ritual", "ritual.recurring_activity"),
+        ("frequency", "ritual.frequency"),
+        ("person", "person.name"),
+        ("occupation", "person.occupation"),
+        ("relationship", "relationship.contact_frequency"),
+    ];
+    for (id, predicate) in records {
+        record(
+            &mut worker,
+            id,
+            predicate,
+            &format!("记忆-{id}"),
+            "2026-09-12T00:00:00Z",
+        );
+    }
+    worker.send(
+        "warm",
+        "warm",
+        serde_json::json!({
+            "scope": scope(),
+            "current_message": "今天天气怎么样",
+            "now": "2026-09-12T00:00:02Z",
+            "session_id": "session-2",
+            "new_session": false,
+            "turn_key": "turn-budget",
+            "force_record_ids": records.iter().map(|(id, _)| format!("claim-{id}")).collect::<Vec<_>>(),
+        }),
+    );
+    let responses = worker.responses();
+
+    let plan = channels(&responses[records.len()]);
+    let topic = plan["topicActivated"].as_array().expect("topic");
+    assert_eq!(
+        topic.len(),
+        8,
+        "forced activation must respect the bounded prompt budget, plan was {plan}"
+    );
+    assert_eq!(
+        plan["doNotSurface"]
+            .as_array()
+            .expect("withheld")
+            .iter()
+            .filter(|entry| entry["reason"] == "prompt_budget")
+            .count(),
+        1,
+        "records outside the budget must be accounted for rather than silently dropped, plan was {plan}"
+    );
 }
 
 #[test]

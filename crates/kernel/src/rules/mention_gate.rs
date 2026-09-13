@@ -16,7 +16,7 @@
 //! background context rather than surfaced as a citation.
 
 use crate::domain::predicates::{mention_policy_for, MentionMode};
-use crate::domain::types::{Claim, Inference, InferenceAxis, InferenceState};
+use crate::domain::types::{Claim, Episode, Inference, InferenceAxis, InferenceState};
 
 /// Surface ladder, ordered from quietest to loudest.
 ///
@@ -232,6 +232,22 @@ pub fn claim_mention(claim: &Claim, cues: MentionCues) -> MentionDecision {
         predicate: Some(&claim.predicate),
         record_mode: None,
         do_not_surface: claim.salience.do_not_surface,
+        shared_world_term: false,
+        cues,
+    })
+}
+
+/// Apply the mention gate to a directly described episode.
+///
+/// Episodes do not have a predicate registry row, so their own policy is the
+/// cue-gated ceiling. Keeping this wrapper beside `claim_mention` prevents
+/// callers from reimplementing episode authorization with ad-hoc substring
+/// checks and, importantly, makes `do_not_surface` effective for episodes too.
+pub fn episode_mention(episode: &Episode, cues: MentionCues) -> MentionDecision {
+    mention_gate(&MentionInput {
+        predicate: None,
+        record_mode: Some(MentionMode::MentionIfUserCues),
+        do_not_surface: episode.salience.do_not_surface,
         shared_world_term: false,
         cues,
     })

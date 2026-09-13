@@ -30,7 +30,7 @@ const workerProgram = [
   "const memories=new Map();",
   "r.on('line',line=>{const q=JSON.parse(line);const p=q.params||{};",
   "const profile=p.scope&&p.scope.companion_profile_id||'';let result={};",
-  "if(q.op==='health')result={protocolVersion:1,schemaVersion:3,predicateKeys:['identity.name'],predicateSchemas:[{key:'identity.name',valueKind:'text',enumValues:[]}]};",
+  "if(q.op==='health')result={protocolVersion:1,schemaVersion:4,predicateKeys:['identity.name'],predicateSchemas:[{key:'identity.name',valueKind:'text',enumValues:[],cardinality:'single',requiresEntityRef:false,qualifierSchema:null,description:'test'}]};",
   "if(q.op==='admit'){const rows=memories.get(profile)||[];for(const c of p.candidates||[])rows.push({id:'claim-'+c.id,text:c.predicate+': '+(c.raw_value||c.value)});memories.set(profile,rows);result={accepted:(p.candidates||[]).map(c=>'claim-'+c.id),rejected:[],pending:0};}",
   "if(q.op==='warm'){const rows=memories.get(profile)||[];result={revision:rows.length,plan:{constraints:[],identity:[],responseStyle:rows.map(r=>({recordId:r.id,text:r.text,surface:'freely_mentionable',reason:'test'})),continuity:[],topicActivated:[],deepRecall:[],doNotSurface:[]}};}",
   "if(q.op==='query')result={records:[]};if(q.op==='forget')result={forgotten:false,recordIds:[]};if(q.op==='session_closed')result={expired:0};",
