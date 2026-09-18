@@ -1,21 +1,72 @@
 {
-  "name": "companion-memory-workspace",
-  "private": true,
-  "version": "0.0.0",
-  "description": "面向 DeepSeek Harness 的伴侣记忆：纯决策内核与 DSH 插件适配器。",
-  "type": "module",
-  "packageManager": "pnpm@10.33.0",
-  "engines": {
-    "node": ">=22.16"
+  "name": "@deepseek-ai/dsh-riko-memory",
+  "description": "Server-side Wiki and resident-memory plugin for DeepSeek Harness",
+  "version": "0.1.6-alpha.2",
+  "publishConfig": {
+    "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/bundle/riko-memory"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "lib/types/**/*.d.ts",
+    "README.md",
+    "README.zh.md"
+  ],
   "scripts": {
-    "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck",
-    "build": "pnpm -r build",
-    "build:worker:windows": "cargo build --release --target x86_64-pc-windows-msvc -p companion-memory-worker && node scripts/package-worker.mjs --target x86_64-pc-windows-msvc",
-    "build:worker:linux": "cargo build --release --target x86_64-unknown-linux-gnu -p companion-memory-worker && node scripts/package-worker.mjs --target x86_64-unknown-linux-gnu"
+    "acceptance:openrouter": "node scripts/openrouter-acceptance.mjs"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis-plugin-timer": "workspace:^",
+    "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-agent-presets": "workspace:^",
+    "@deepseek-ai/dsh-credentials": "workspace:^",
+    "@deepseek-ai/dsh-host-webserver": "workspace:^",
+    "@deepseek-ai/dsh-llm": "workspace:^",
+    "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-session-projection": "workspace:^",
+    "@deepseek-ai/dsh-storage-domain": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^",
+    "@deepseek-ai/schemastery": "workspace:^",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-agent-presets": "workspace:^",
+    "@deepseek-ai/dsh-credentials": "workspace:^",
+    "@deepseek-ai/dsh-host-webserver": "workspace:^",
+    "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-session-projection": "workspace:^",
+    "@deepseek-ai/dsh-storage-domain": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/cordis-plugin-timer": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^"
   }
 }

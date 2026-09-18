@@ -1,0 +1,20 @@
+# Native Riko memory: session evidence -> Candidate -> Wiki -> resident context.
+# Install this bundle only in a base-backed profile that mounts storage-domain,
+# credentials, session-projection and dsh-host-webserver.
+- insert:
+    - id: riko-memory
+      name: '@deepseek-ai/dsh-riko-memory'
+      config:
+        ownerNamespace: !!js process.env.DSH_MEMORY_OWNER_NAMESPACE ?? 'local'
+        apiPath: !!js process.env.DSH_MEMORY_API_PATH ?? '/memory/v1'
+        apiToken: !!js process.env.DSH_MEMORY_API_TOKEN ?? ''
+        apiTokens: !!js JSON.parse(process.env.DSH_MEMORY_API_TOKENS_JSON ?? '{}')
+        dreamApiUrl: !!js process.env.DSH_MEMORY_DREAM_API_URL ?? 'https://api.deepseek.com/chat/completions'
+        dreamCredentialRef: !!js process.env.DSH_MEMORY_DREAM_CREDENTIAL_REF ?? 'DSH_MEMORY_DREAM_API_KEY'
+        dreamModel: !!js process.env.DSH_MEMORY_DREAM_MODEL ?? 'deepseek-chat'
+        dreamMaxTokens: !!js Number(process.env.DSH_MEMORY_DREAM_MAX_TOKENS ?? 1200)
+        dreamIntervalMs: !!js Number(process.env.DSH_MEMORY_DREAM_INTERVAL_MS ?? 3600000)
+        debounceMs: !!js Number(process.env.DSH_MEMORY_DEBOUNCE_MS ?? 5000)
+        maxResidentChars: !!js Number(process.env.DSH_MEMORY_MAX_RESIDENT_CHARS ?? 12000)
+        maxSessionChars: !!js Number(process.env.DSH_MEMORY_MAX_SESSION_CHARS ?? 40000)
+        demoEnabled: !!js process.env.DSH_MEMORY_DEMO_ENABLED === 'true'
