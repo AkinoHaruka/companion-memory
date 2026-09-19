@@ -1,3 +1,5 @@
+import type { MemorySensitivity, SensitivityChange } from './types.ts'
+
 /** Versioned, scope-aware contracts shared by the native memory state machine. */
 
 export const MEMORY_SCHEMA_VERSION = 1 as const
@@ -27,6 +29,7 @@ export interface MemoryCandidate {
   readonly content: string
   readonly status: CandidateStatus
   readonly consent: ConsentState
+  readonly sensitivity?: MemorySensitivity
   readonly evidence: readonly EvidenceRef[]
   readonly source: 'dream' | 'manual'
   readonly createdAt: string
@@ -43,10 +46,15 @@ export interface WikiPage {
   readonly body: string
   readonly status: Exclude<CandidateStatus, 'forgotten'>
   readonly consent: ConsentState
+  readonly sensitivity?: MemorySensitivity
+  readonly sensitivityHistory?: readonly SensitivityChange[]
   readonly sourceCandidates: readonly string[]
   readonly evidence: readonly EvidenceRef[]
   readonly updatedAt: string
   readonly validUntil?: string
+  readonly usagePolicy?: 'normal' | 'suppressed'
+  readonly suppressedAt?: string
+  readonly suppressionReason?: string
 }
 
 export interface ResidentSnapshot {
@@ -56,6 +64,16 @@ export interface ResidentSnapshot {
   readonly content: string
   readonly sourcePageIds: readonly string[]
   readonly generatedAt: string
+  readonly maxChars?: number
+  readonly omittedPageIds?: readonly string[]
+  readonly diagnostics?: {
+    readonly eligibleCount: number
+    readonly includedCount: number
+    readonly omittedCount: number
+    readonly charBudget: number
+    readonly actualChars: number
+    readonly compilerVersion: number
+  } | undefined
 }
 
 export type DreamJobStatus = 'queued' | 'running' | 'succeeded' | 'failed'

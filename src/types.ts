@@ -2,6 +2,52 @@ import type { WikiCandidate, WikiRelationType } from './wiki.ts'
 
 /** Durable records owned by one Riko memory profile. */
 
+/** Permission state controlling whether a memory may be used. */
+export type MemorySensitivity = 'normal' | 'provisional_sensitive' | 'sensitive'
+
+/** Authority allowed to record a sensitivity change. */
+export type SensitivityAuthority = 'deterministic_rule' | 'model_proposal' | 'user' | 'management'
+
+/** Auditable transition between sensitivity permission states. */
+export interface SensitivityChange {
+  readonly at: string
+  readonly from: MemorySensitivity
+  readonly to: MemorySensitivity
+  readonly authority: SensitivityAuthority
+  readonly reason?: string
+}
+
+/** Effect a safe-use projection may communicate to the main model. */
+export type SafeUsageEffect = 'tone' | 'avoid_topic' | 'avoid_repetition' | 'preference_alignment'
+
+/** Rebuildable, disclosure-limited projection for silent-use memory. */
+export interface SafeUsageProjection {
+  readonly id: string
+  readonly memoryId: string
+  readonly allowedEffects: readonly SafeUsageEffect[]
+  readonly topicTags: readonly string[]
+  readonly summary?: string
+  readonly disclosure: 'never_explicit' | 'user_initiated_only'
+  readonly generatedFromVersion: string
+  readonly generatedAt: string
+}
+
+/** Read-time state of an ambiguous conflict overlay. */
+export type ConflictState = 'contested' | 'resolved'
+
+/** Read-time overlay that marks an ambiguous predicate without rewriting canon. */
+export interface ConflictOverlay {
+  readonly id: string
+  readonly subject: string
+  readonly predicate: string
+  readonly oldCanonicalId: string
+  readonly newCandidateId: string
+  readonly state: ConflictState
+  readonly createdAt: string
+  readonly resolvedAt?: string
+  readonly resolution?: 'correction' | 'temporal_transition' | 'management'
+}
+
 export type MemoryCategory =
   | 'traits_roles'
   | 'interaction_rules'
@@ -23,7 +69,7 @@ export interface DreamSettings {
   readonly maxTokens: number
 }
 
-/** One durable Wiki record and its provenance/retention metadata. */
+/** One durable Wiki record and its source lineage/retention metadata. */
 export interface MemoryItem {
   readonly id: string
   readonly kind: MemoryKind
@@ -33,8 +79,14 @@ export interface MemoryItem {
   readonly status: MemoryStatus
   readonly sourceConversations: readonly string[]
   readonly observedAt: string
+  /** When the source record was written; optional for legacy records. */
+  readonly recordedAt?: string
+  /** Explicit temporal validity; null/absent means unknown, never guessed. */
+  readonly validFrom?: string | null
+  readonly validTo?: string | null
   readonly validUntil?: string
-  readonly sensitivity: 'normal' | 'sensitive'
+  readonly sensitivity: MemorySensitivity
+  readonly sensitivityHistory?: readonly SensitivityChange[]
   readonly consent: boolean
 }
 
@@ -47,11 +99,59 @@ export interface WikiPageSummary {
   readonly description: string
   readonly status: 'candidate' | 'confirmed' | 'superseded'
   readonly consent: boolean
+  readonly observedAt?: string
+  readonly recordedAt?: string
+  readonly validFrom?: string | null
+  readonly validTo?: string | null
   readonly validUntil?: string
   readonly locked: boolean
   readonly confidence: number
   readonly version: number
   readonly updatedAt: string
+}
+
+export type ResidentBlockKind = 'identity' | 'preferences' | 'relationships' | 'currentState' | 'communicationStyle' | 'activePeople' | 'openThreads'
+
+/** Deterministic internal Resident unit. The public compatibility surface remains `ResidentSnapshot.content`. */
+export interface ResidentBlock {
+  readonly kind: ResidentBlockKind
+  readonly entries: readonly string[]
+  readonly sourcePageIds: readonly string[]
+  readonly charBudget: number
+}
+
+export type ObservationStatus = 'candidate' | 'active' | 'invalidated' | 'suppressed' | 'weakened'
+
+/** Derived pattern; it is never interchangeable with a user-confirmed fact. */
+export interface MemoryObservation {
+  readonly id: string
+  readonly text: string
+  readonly sourceRefs: readonly string[]
+  readonly supportingRefs?: readonly string[]
+  readonly contradictingRefs?: readonly string[]
+  readonly lastEvidenceAt?: string
+  readonly minEvidence?: number
+  readonly evidenceCount: number
+  readonly confidence: number
+  readonly status: ObservationStatus
+  readonly epistemicStatus: 'inferred_observation'
+  readonly sensitivity: MemorySensitivity
+  readonly sensitivityHistory?: readonly SensitivityChange[]
+  readonly observedAt: string
+  readonly recordedAt: string
+  readonly validFrom?: string | null
+  readonly validTo?: string | null
+  readonly derivedFromObservationIds?: readonly string[]
+  readonly invalidatedAt?: string
+}
+
+export interface MemoryPurgeRecord {
+  readonly operationId: string
+  readonly sessionId: string
+  readonly status: 'started' | 'completed' | 'failed'
+  readonly startedAt: string
+  readonly completedAt?: string
+  readonly error?: string
 }
 
 /** Resident prompt projection metadata. */
@@ -60,6 +160,18 @@ export interface ResidentSnapshot {
   readonly generatedAt?: string
   readonly sourcePageIds: readonly string[]
   readonly version: string
+  readonly blocks?: readonly ResidentBlock[]
+  readonly compilerVersion?: number
+  readonly maxChars?: number
+  readonly omittedPageIds?: readonly string[]
+  readonly diagnostics?: {
+    readonly eligibleCount: number
+    readonly includedCount: number
+    readonly omittedCount: number
+    readonly charBudget: number
+    readonly actualChars: number
+    readonly compilerVersion: number
+  } | undefined
 }
 
 /** Client-facing projection of one profile's durable memory state. */
@@ -69,6 +181,7 @@ export interface MemorySnapshot {
   readonly records: readonly MemoryItem[]
   /** Unconfirmed Wiki page proposals waiting for client confirmation or rejection. */
   readonly candidates: readonly WikiCandidate[]
+  readonly observations?: readonly MemoryObservation[]
   /** Canonical Wiki page summaries used by the graph UI. */
   readonly pages?: readonly WikiPageSummary[]
   /** Current graph nodes and wikilink edges. */

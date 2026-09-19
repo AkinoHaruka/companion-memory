@@ -1,3 +1,5 @@
+import { fetchLive } from './support/live-http.ts'
+import { drainInFlight } from './support/live-harness.ts'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -51,13 +53,19 @@ describe('Dream restart recovery', () => {
     const firstBase = baseUrl(first)
     const session = first.sessions.create(SessionId('restart-session'), { meta: { agentPreset: 'standard' } })
     session.append('user/message', createUserMessage({ content: [{ type: 'text', text: '请记住：我喜欢简洁回答。' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-    expect((await nativeFetch(`${firstBase}/memories`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-memory-profile': 'standard' }, body: JSON.stringify({ content: '已经确认的长期偏好。' }) })).status).toBe(201)
-    expect((await nativeFetch(`${firstBase}/dream`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-memory-profile': 'standard' }, body: JSON.stringify({ sessionId: 'restart-session' }) })).status).toBe(202)
+    expect((await fetchLive(`${firstBase}/memories`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-memory-profile': 'standard' }, body: JSON.stringify({ content: '已经确认的长期偏好。' }) })).status).toBe(201)
+    expect((await fetchLive(`${firstBase}/dream`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-memory-profile': 'standard' }, body: JSON.stringify({ sessionId: 'restart-session' }) })).status).toBe(202)
+    // The manual Dream joins the service's in-flight set as its route accepts it, and `/sessions` is
+    // that set's own drain, so this is the Dream's readiness signal rather than a retry. The residual
+    // wait covers the write-behind window plus one round trip, and carries the same 15 s the sibling
+    // live suites give an eventual read: its 1000 ms default expires while the first poll is still in
+    // flight once forks contend, which is what made a loaded round fail here.
+    await drainInFlight(firstBase)
     await vi.waitFor(async () => {
-      const wiki = await nativeFetch(`${firstBase}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const wiki = await fetchLive(`${firstBase}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
       expect((await wiki.json() as { lastError?: string }).lastError).toContain('http-429')
-    })
-    expect(await (await nativeFetch(`${firstBase}/resident`, { headers: { 'x-dsh-memory-profile': 'standard' } })).text()).toContain('已经确认的长期偏好。')
+    }, { timeout: 15_000, interval: 50 })
+    expect(await (await fetchLive(`${firstBase}/resident`, { headers: { 'x-dsh-memory-profile': 'standard' } })).text()).toContain('已经确认的长期偏好。')
 
     await first.fiber.dispose()
     contexts = contexts.filter(context => context !== first)
@@ -65,12 +73,15 @@ describe('Dream restart recovery', () => {
     const restarted = await boot(root)
     const restartedBase = baseUrl(restarted)
     expect(restarted.sessions.list()).toEqual([])
-    await vi.waitFor(() => expect(providerFetch).toHaveBeenCalledTimes(3))
+    // Startup recovery replays the persisted Dream through the same in-flight set before the fixture
+    // answers HTTP, so the drain covers the replay this call count is asserting on.
+    await drainInFlight(restartedBase)
+    await vi.waitFor(() => expect(providerFetch).toHaveBeenCalledTimes(3), { timeout: 15_000, interval: 50 })
     await vi.waitFor(async () => {
-      const candidates = await nativeFetch(`${restartedBase}/candidates`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const candidates = await fetchLive(`${restartedBase}/candidates`, { headers: { 'x-dsh-memory-profile': 'standard' } })
       expect((await candidates.json() as { candidates: Array<{ page: { sources: string[]; status: string; consent: boolean } }> }).candidates).toEqual([expect.objectContaining({ page: expect.objectContaining({ sources: ['restart-session'], status: 'candidate', consent: false }) })])
-    })
-    expect(await (await nativeFetch(`${restartedBase}/resident`, { headers: { 'x-dsh-memory-profile': 'standard' } })).text()).toContain('已经确认的长期偏好。')
+    }, { timeout: 15_000, interval: 50 })
+    expect(await (await fetchLive(`${restartedBase}/resident`, { headers: { 'x-dsh-memory-profile': 'standard' } })).text()).toContain('已经确认的长期偏好。')
   })
 })
 

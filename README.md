@@ -9,8 +9,19 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Native DSH memory with stable-preset scope isolation, durable storage-domain records, explicit confirmation, canonical Wiki pages, bounded Resident Snapshots and a recoverable Dream pipeline. Secrets stay in credentials or process environment; the UI, control API and acceptance script are bounded and sanitized.
+Native DSH memory with stable-preset scope isolation, durable storage-domain records, explicit confirmation, canonical Wiki pages, bounded Resident Snapshots and a recoverable Dream pipeline. Secrets stay in credentials or process environment; the UI, control API and acceptance-only paths are explicitly scoped.
 
+## Table of Contents
+
+- [What this package is](#what-this-package-is)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Installation and configuration](#installation-and-configuration)
+- [Acceptance and verification](#acceptance-and-verification)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
+
+<a id="what-this-package-is"></a>
 ## What this package is
 
 `@deepseek-ai/dsh-riko-memory` is the native DeepSeek Harness implementation of Riko-style scoped long-term memory. It connects directly to DSH lifecycle and storage seams: Cordis plugin loading, session events, stable Agent presets, `storageDomain`, system-prompt injection, explicit tools, credentials and background jobs. It is not an MCP memory server, not a second SQLite service and not a generic file-store adapter.
@@ -19,6 +30,9 @@ The governing promise is simple: a memory may influence a later reply only after
 
 The canonical source is `packages/bundle/riko-memory` in the DSH Harness worktree. The GitHub repository [AkinoHaruka/companion-memory](https://github.com/AkinoHaruka/companion-memory) is the user-facing source mirror of this bundle. Older standalone implementations and historical root-level copies are migration references, not parallel runtimes.
 
+The normative V3.1 decision addendum is [docs/v3.1-decision-semantics.md](docs/v3.1-decision-semantics.md); its implementation status is tracked in [docs/memory-v3-progress.md](docs/memory-v3-progress.md).
+
+<a id="architecture-at-a-glance"></a>
 ## Architecture at a glance
 
 ```text
@@ -26,7 +40,7 @@ User conversation
   -> DSH session/event listener
   -> L0 evidence: sessionId + event sequence + source span
   -> explicit tool or background Dream
-  -> L1 Candidate: proposal with provenance and consent state
+   -> L1 Candidate: proposal with source record and consent state
   -> original user evidence or explicit management action
   -> L2 canonical Wiki page: durable, versioned authority
   -> Resident compiler
@@ -36,7 +50,7 @@ User conversation
 
 | Layer | Name | Purpose | Direct prompt input |
 |---|---|---|---|
-| L0 | Session evidence | What was actually said, with event provenance | No |
+| L0 | Session evidence | What was actually said, with event source record | No |
 | L1 | Candidate | What the extractor proposed, awaiting review | No |
 | L2 | Wiki | Canonical pages, versions, links, sources, expiry and audit lineage | Indirectly |
 | L3 | Resident Snapshot | Rebuildable bounded projection for the next request | Yes |
@@ -49,7 +63,7 @@ The layers answer different questions: L0 is “what happened”, L1 is “what 
 
 - Share durable memory across sessions belonging to one stable Agent preset.
 - Isolate owners and presets in both runtime tools and the HTTP control plane.
-- Preserve session, event and source provenance so a page can be audited.
+- Preserve session, event and source records so a page can be audited.
 - Require explicit evidence or explicit management action before Dream output becomes canonical.
 - Keep the chat hot path bounded: reading Resident does not call Dream, scan the full Wiki or wait for a background lock.
 - Make provider, parser, storage, Resident compilation and host restart failures recoverable.
@@ -58,9 +72,9 @@ The layers answer different questions: L0 is “what happened”, L1 is “what 
 
 ### Deliberate v1 non-goals
 
-- Embeddings, vector search, semantic nearest-neighbor retrieval or a second retrieval database.
+- A durable vector-index lifecycle beyond the optional bounded dense-recall provider and index seams.
 - Multi-node coordination, public multi-tenant hosting or distributed job ownership.
-- Full raw Session deletion or cryptographic erasure of every evidence record.
+- Complete cryptographic erasure of every evidence, audit and external backup copy.
 - Treating every conversational sentence as a memory.
 - Letting a model-generated “please remember this” sentence authorize itself.
 - Replacing DSH storage/lifecycle with Fastify, a fixed filesystem path, `node:sqlite`, MCP or a Rust sidecar.
@@ -73,7 +87,7 @@ Long-lived memory is keyed by:
 MemoryScope = ownerNamespace + stableAgentPresetId
 ```
 
-`ownerNamespace` identifies the owning installation or tenant boundary. `stableAgentPresetId` identifies the DSH Agent preset whose behavior and memory are meant to be shared. Session ID is evidence provenance, not the long-term sharing key.
+`ownerNamespace` identifies the owning installation or tenant boundary. `stableAgentPresetId` identifies the DSH Agent preset whose behavior and memory are meant to be shared. Session ID is an evidence record, not the long-term sharing key.
 
 The rules are:
 
@@ -128,11 +142,11 @@ The Dream model's own `status: confirmed`, `consent: true`, `locked: true`, or a
 
 ### 5. Commit to the canonical Wiki
 
-Confirmation creates or updates a versioned Wiki page, records source lineage and removes its pending Candidate. Corrections retain prior version information in the audit lineage. Superseding a page removes it from future Residents while retaining the page and provenance for review.
+Confirmation creates or updates a versioned Wiki page, records source lineage and removes its pending Candidate. Corrections retain prior version information in the audit lineage. Superseding a page removes it from future Residents while retaining the page and evidence trail for review.
 
 ### 6. Compile and inject Resident
 
-Only confirmed, consented, non-superseded and non-expired pages are compiled. Source pages, pending candidates and raw transcripts stay outside the hot prompt. The result is ordered, bounded by `maxResidentChars`, assigned a content-derived version and persisted with source page IDs. DSH injects only the current stable preset's Resident as labeled memory data, not as instructions.
+Only confirmed, consented, non-superseded, non-expired and Resident-eligible pages are compiled. The current runtime excludes `sensitive` pages by default; V3.1 additionally requires `provisional_sensitive` to be denied Resident use until an explicit policy permits it. Sensitive canonical pages remain auditable and available to explicitly gated recall, but do not enter ordinary Resident injection. Source pages, pending candidates and raw transcripts stay outside the hot prompt. The result is ordered, bounded by `maxResidentChars`, assigned a content-derived version and persisted with exactly the source page IDs represented by the selected blocks. DSH injects only the current stable preset's Resident as labeled memory data, not as instructions.
 
 ## Explicit tools
 
@@ -151,6 +165,20 @@ Replaces the selected Wiki page's user-visible content after checking that the r
 ### `memory_forget`
 
 Requires an explicit deletion cue such as “forget”, “remove” or `忘记`, plus the exact memory ID in the latest user message. It removes derived memory from future Residents and records the operation. v1 does not purge the original raw Session evidence.
+
+## Query-time Recall v1
+
+The optional `recallEnabled` flag retrieves long-tail details that do not fit in Resident. It is disabled by default and uses scoped canonical lexical search plus secondary raw-user-evidence lexical search, bounded by `recallMaxCandidates` and `recallMaxContextChars`. `embeddingProvider` can add deterministic-local or OpenAI-compatible dense recall; provider failures degrade to lexical/RRF and never block chat. The live hook also never supplies a `MemoryReranker`; reranking is reachable only through direct helper/store callers and tests. Recall accepts an explicit `atTime` or `history` mode for retained temporal lineage. See [docs/recall-v1.md](docs/recall-v1.md) and [docs/migration-phase-2-temporal-resident.md](docs/migration-phase-2-temporal-resident.md).
+
+Observation management, graph expansion and raw-session purge are separately flagged with `recallObservationEnabled`, `recallGraphEnabled` and `purgeEnabled`, all defaulting to `false`. Opt-in Dream reflection can create anchored observation candidates; activation, invalidation and suppression remain authenticated management operations. Observation records require raw/confirmed anchors and remain epistemically distinct from Wiki facts, and activation does not confirm a fact or grant explicit mention permission. Ordinary `memory_forget` retains raw Session evidence.
+
+The current `silent_use` renderer can consume a supplied `SafeUsageProjection` without disclosing the raw body or source, but background generation, durable caching and a query-time read path for projections are not wired; V3.1 forbids per-turn sanitizing model calls.
+
+## Temporal validity and structured Resident
+
+Canonical pages support `observedAt`, `recordedAt`, `validFrom`, `validTo`, supersession lineage and historical `atTime`/`history` recall. A temporal update closes the previous page interval and publishes a new page identity; a correction edits the existing page identity and retains audit lineage. Current Resident compilation excludes superseded, expired, source-only, unconsented and sensitive pages.
+
+Resident content is compiled into bounded blocks (`identity`, `preferences`, `relationships`, `currentState`, `communicationStyle`, `activePeople` and `openThreads`). The persisted snapshot is the bounded value that is injected, with a deterministic version and selected source page IDs. Legacy unstructured Resident records remain readable during migration.
 
 ## Dream pipeline and provider behavior
 
@@ -181,41 +209,58 @@ The plugin uses DSH `storageDomain` as its persistence boundary. It does not exp
 
 ### Credentials
 
-Dream secrets are resolved from DSH credentials or process environment at execution time. UI and HTTP configuration accept endpoint, model, token limit and credential reference, but reject raw `apiKey` writes. Endpoints must use HTTPS and cannot contain embedded credentials.
+Dream and embedding secrets are resolved from DSH credentials or process environment at execution time. UI and HTTP configuration accept endpoint, model, token limit and credential reference, but reject raw `apiKey` or secret-like credential writes. Provider endpoints must use HTTPS and cannot contain embedded credentials.
 
 ### Control plane
 
-Loopback development can use the host boundary. Remote control requires a bearer token and matching `x-dsh-memory-profile`. A token for profile A cannot read or mutate profile B; cross-scope sessions are rejected.
+Loopback development can use the host boundary. Remote control requires a bearer token and matching `x-dsh-memory-profile`. `apiTokens` bind each token to one profile. In single-token mode, `apiTokenProfile` binds the token to one profile when set; when empty, the token is owner-wide admin and the control response reports `scopeBinding: owner-admin`. Cross-scope sessions are rejected.
 
 ### Sensitive material
 
-Dream does not automatically promote sensitive content. Sensitive candidates remain pending until explicit review. The extraction prompt forbids inferring secrets, diagnoses and instructions, but this is a guardrail rather than a substitute for deployment policy.
+Dream-derived sensitive candidates remain pending until explicit review. Explicit user or trusted management actions have separate authority, but V3.1 treats sensitivity as a usage permission rather than a truth claim and requires the three-state policy to tighten conservatively. The extraction prompt forbids inferring secrets, diagnoses and instructions, but this is a guardrail rather than a substitute for deployment policy.
 
 ### Deletion semantics
 
-In v1, “forget” means removing derived memory from the canonical Wiki projection and newly compiled Residents. It does not mean purging every raw Session event. The API discloses this boundary. Full raw-session purge is a separate future capability.
+Ordinary “forget” means removing derived memory from the canonical Wiki projection and newly compiled Residents; it intentionally retains raw Session evidence. When `purgeEnabled` is explicitly enabled, `POST /memory/v1/purge` starts a journaled raw-session purge and reconciles session, source, page, candidate, observation, derived-index and Resident state. It requires a dry-run or the exact plan confirmation and reports verified completion. Interrupted journals can be retried on store reopen. Complete cryptographic erasure outside the configured storage domain remains a separate deployment responsibility.
 
 ## Control API and UI
 
-The UI is a management/audit surface, not a bypass around the state machine. It shows Resident content, Wiki pages, candidates, source sessions, graph edges, versions, confidence, consent, expiry and status.
+The UI is a management/audit surface, not a bypass around the state machine. It shows Resident content, Wiki pages, candidates, source sessions, graph edges, versions, confidence, consent, expiry and status. Replace `/memory/v1` below with the configured `apiPath` when it differs from the default.
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/memory/v1/ui` | Human-facing control and audit UI |
-| GET | `/memory/v1/wiki` | Wiki, candidates, sources, graph and state |
-| GET | `/memory/v1/wiki/graph?hop=1&evidence=1` | Typed L2 graph plus evidence edges; `includeEvidence=1` is an alias |
-| GET | `/memory/v1/resident` | Current bounded Resident and retention disclosure |
-| GET | `/memory/v1/sessions/:id` | Auditable L0 evidence |
-| GET | `/memory/v1/candidates` | Pending Dream Candidates |
-| GET | `/memory/v1/config` | Safe endpoint/model/credential status |
-| POST | `/memory/v1/dream` | Queue a session/profile Dream and return `202` |
-| POST | `/memory/v1/wiki/candidates/:id/confirm` | Explicitly confirm a Candidate |
-| POST | `/memory/v1/wiki/candidates/:id/reject` | Reject a Candidate |
-| POST/PUT | `/memory/v1/wiki/pages` | Explicitly create or edit canonical pages |
-| POST | `/memory/v1/wiki/pages/:id/supersede` | Supersede while retaining lineage |
-| GET | `/memory/v1/audits` | Scope-local corrections, supersedes, forgets and Dream audits |
-| DELETE | `/memory/v1/wiki/pages/:id` | Remove derived memory from future Residents |
+| Method | Path | Purpose | Access / flags | Surface |
+|---|---|---|---|---|
+| OPTIONS | `/memory/v1/*` | CORS preflight | No auth; no flag | Protocol |
+| GET | `/memory/v1`, `/memory/v1/` or `/memory/v1/ui` | Human-facing control and audit UI | No auth for HTML; data API is auth-gated | Admin-only |
+| GET | `/memory/v1/config` | Safe endpoint/model/credential status | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/config` | Update non-secret Dream settings | Profile auth; no flag | Admin-only |
+| GET | `/memory/v1/wiki` | Wiki snapshot, candidates, sources, graph and state | Profile auth; no flag | Admin-only |
+| GET | `/memory/v1/wiki/pages/:id` | Read one Wiki page; sensitive/unknown bodies are redacted unless `reveal=sensitive` | Profile auth; no flag | Admin-only |
+| GET | `/memory/v1/wiki/graph` | Read bounded Wiki graph; `hop`, `evidence` and `includeEvidence` are query options | Profile auth; no flag | Admin inspection; graph recall is separately flag-gated |
+| GET | `/memory/v1/wiki/search` | Lexical Wiki inspection; this is not live Agent recall | Profile auth; no flag | Admin-only |
+| GET | `/memory/v1/wiki/sources` | List scope-local source metadata | Profile auth; no flag | Admin-only |
+| GET | `/memory/v1/resident` | Read current bounded Resident and raw-retention disclosure | Profile auth; no flag | Admin inspection |
+| GET | `/memory/v1/sessions` or `/memory/v1/sessions/:id` | List sessions or read redacted L0 metadata; `reveal=sensitive` is audited | Profile auth; no flag | Admin-only |
+| GET | `/memory/v1/candidates` | List pending Dream Candidates | Profile auth; no flag | Admin-only |
+| GET | `/memory/v1/observations` | List inferred observations and statuses | Profile auth; no flag | Admin/acceptance-only |
+| GET | `/memory/v1/purges` | Read scope-local purge journal metadata | Profile auth; no flag | Admin/acceptance-only |
+| GET | `/memory/v1/audits` | Read scope-local lifecycle audits | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/recall` | Run bounded query-time recall | Profile auth; `recallEnabled` | Admin inspection; live Agent recall uses the separate pre-step hook |
+| POST | `/memory/v1/recall/debug` | Read recall plan, channels, gates and degraded modes | Profile auth; `recallEnabled` | Admin/diagnostic-only |
+| POST | `/memory/v1/observations` | Create an anchored observation candidate | Profile auth; no flag | Admin/acceptance-only; not Dream/Agent creation |
+| POST | `/memory/v1/observations/:id/activate`, `/invalidate` or `/suppress` | Change one observation status | Profile auth; no flag | Admin/acceptance-only |
+| POST | `/memory/v1/purge` | Purge one raw session when the flag is enabled | Profile auth; `purgeEnabled` | Admin/acceptance-only |
+| POST | `/memory/v1/wiki/candidates/:id/confirm` or `/reject` | Confirm or reject a Candidate | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/candidates/:id/confirm` or `/reject` | Compatibility alias for Candidate actions | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/wiki/pages` | Create a locked canonical page | Profile auth; no flag | Admin-only |
+| PUT | `/memory/v1/wiki/pages/:id` | Edit one canonical page; an explicit `sensitivity` field applies a management-authority sensitivity change and is audited | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/wiki/pages/:id/supersede` | Supersede while retaining lineage | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/wiki/pages/:id/temporal` | Publish a temporal replacement | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/memories` | Create a confirmed manual memory convenience record | Profile auth; no flag | Admin-only |
+| DELETE | `/memory/v1/memories/:id` | Remove one derived memory while retaining raw evidence | Profile auth; no flag | Admin-only |
+| DELETE | `/memory/v1/wiki/pages/:id` | Remove one derived Wiki memory while retaining raw evidence | Profile auth; no flag | Admin-only |
+| POST | `/memory/v1/dream` | Queue a session/profile Dream and return `202` | Profile auth; no flag | Admin/acceptance-only |
 
+<a id="installation-and-configuration"></a>
 ## Installation and configuration
 
 Install into a DSH profile that includes the Web host:
@@ -226,7 +271,52 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 
 The bundle uses DSH workspace dependencies and the `0.1.6-alpha.2` baseline. The GitHub mirror is a source/package mirror; the runtime must be installed into a compatible DSH Harness worktree.
 
-Configure an owner namespace and stable Agent preset. Without both, durable reads and writes fail closed. For a temporary OpenRouter acceptance run, inject secrets only into the process:
+Configure an owner namespace and stable Agent preset. Without both, durable reads and writes fail closed. The table declares all 37 live `Config` fields. `configResponse()` reports safe operational fields; `ownerNamespace`, `apiToken`, and `apiTokens` are deliberately omitted because they reveal scope or credentials, while `maxSessionChars` is an internal bound and is also not returned. OpenAI-compatible embeddings require a non-empty model, HTTPS endpoint and credential reference; deterministic embeddings use the configured dimension. For a temporary OpenRouter acceptance run, inject secrets only into the process:
+
+| Configuration field | Default | Description | `configResponse()` |
+|---|---:|---|---|
+| `ownerNamespace` | `local` | Owner namespace used to derive the isolated memory scope. | Omitted: scope-private. |
+| `apiPath` | `/memory/v1` | HTTP prefix for the management API and UI. | Included. |
+| `apiToken` | `''` | Single bearer token for the default profile. | Omitted: secret. |
+| `apiTokens` | `{}` | Bearer-token map that binds profiles to separate scopes. | Omitted: secret and scope-private. |
+| `apiTokenProfile` | `''` | Profile selected by the single-token authentication mode. | Included only when non-empty. |
+| `dreamApiUrl` | `https://api.deepseek.com/api/v1/chat/completions` | Dream provider endpoint used for Wiki extraction. | Included through the persisted Dream settings. |
+| `dreamCredentialRef` | `DSH_MEMORY_DREAM_API_KEY` | Credential reference resolved when Dream calls the provider. | Included; secret value is never returned. |
+| `dreamModel` | `deepseek-chat` | Model name sent to the Dream provider. | Included through the persisted Dream settings. |
+| `dreamMaxTokens` | `1200` | Maximum Dream completion tokens. | Included through the persisted Dream settings. |
+| `dreamIntervalMs` | `3600000` | Interval for scheduled Dream recovery and sweep work. | Included. |
+| `debounceMs` | `5000` | Delay before session activity schedules Dream. | Included. |
+| `maxResidentChars` | `12000` | Maximum serialized Resident prompt length. | Included. |
+| `maxSessionChars` | `40000` | Maximum transcript length used for Dream input and recovery. | Omitted: internal bound. |
+| `recallEnabled` | `false` | Enables query-time recall in the Agent hook and HTTP route. | Included. |
+| `recallVectorEnabled` | `false` | Enables planner-gated dense vector recall. | Included. |
+| `recallRawEvidenceEnabled` | `true` | Allows bounded raw L0 evidence as a recall channel. | Included. |
+| `recallObservationEnabled` | `false` | Allows active observations as a recall channel. | Included. |
+| `recallGraphEnabled` | `false` | Enables bounded Wiki graph expansion during recall. | Included. |
+| `purgeEnabled` | `false` | Enables authenticated raw-session purge transactions. | Included. |
+| `recallMaxCandidates` | `8` | Maximum recall results before rendering. | Included. |
+| `recallMaxContextChars` | `3000` | Maximum rendered recall context length. | Included. |
+| `residentV2Enabled` | `true` | Enables the structured Resident projection path. | Included. |
+| `residentBlocksEnabled` | `true` | Enables bounded structured Resident blocks. | Included. |
+| `sensitiveResidentEnabled` | `false` | Allows eligible sensitive pages in Resident output. | Included. |
+| `temporalEnabled` | `true` | Enables temporal validity and historical recall semantics. | Included. |
+| `evidenceClassificationEnabled` | `false` | Classifies user-origin L0 evidence at capture; off leaves every unmarked event fail-closed sensitive. | Included. |
+| `minObservationEvidence` | `2` | Minimum distinct valid anchors for an observation candidate. | Included. |
+| `observationActivationMinEvidence` | `3` | Minimum distinct evidence anchors for automatic observation activation. | Included. |
+| `observationActivationMinSessions` | `2` | Minimum distinct sessions for automatic observation activation. | Included. |
+| `observationActivationMinConfidence` | `0.8` | Minimum confidence for automatic observation activation. | Included. |
+| `reflectionEnabled` | `false` | Enables Dream reflection that proposes anchored observations. | Included. |
+| `reflectionMaxObservations` | `3` | Maximum observation proposals accepted from one reflection. | Included. |
+| `temporalReconcileEnabled` | `false` | Enables temporal reconciliation during Dream processing. | Included. |
+| `embeddingProvider` | `off` | Selects no, deterministic, or OpenAI-compatible embeddings. | Included. |
+| `embeddingEndpoint` | `''` | HTTPS endpoint for the OpenAI-compatible embedding provider. | Included. |
+| `embeddingCredentialRef` | `DSH_MEMORY_EMBEDDING_API_KEY` | Credential reference for the embedding provider. | Included; secret value is never returned. |
+| `embeddingModel` | `''` | Model name sent to the OpenAI-compatible embedding provider. | Included. |
+| `embeddingDimension` | `256` | Vector dimension used by deterministic and compatible providers. | Included. |
+
+Provider proposals can tighten sensitivity but cannot downgrade an existing page. `memory_remember` uses deterministic conservative promotion. A management `PUT /memory/v1/wiki/pages/:id` may explicitly set `sensitivity` to `normal`, `provisional_sensitive` or `sensitive`; the transition is audited.
+
+L0 evidence carries a usage permission of its own, and with `evidenceClassificationEnabled` it is decided at capture instead of at read time. A turn the rule set keeps `normal` is recallable but not published: its raw text reaches the model only on an explicit recall whose query also matches its topic, so an unasked-for turn is still not injected, and an unclassified turn reads as `sensitive` because nothing decided otherwise. A value a capture rule wrote is suspended rather than deleted while the capability is off, so a restart with it back on restores it from the same record. The states, the authority matrix and the rollback semantics are normative in [docs/v3.1-decision-semantics.md](docs/v3.1-decision-semantics.md).
 
 ```text
 DSH_MEMORY_DREAM_API_URL=https://openrouter.ai/api
@@ -236,12 +326,13 @@ DSH_MEMORY_DREAM_API_KEY=<runtime secret>
 
 Do not save the key through the UI, write it to `dream-settings.json`, commit it, put it in a URL or paste it into logs. MiMo-compatible validation uses an Anthropic-compatible endpoint such as `https://api.xiaomimimo.com/anthropic` with `mimo-v2.5`.
 
+<a id="acceptance-and-verification"></a>
 ## Acceptance and verification
 
 Run the focused gates from the DSH Harness worktree:
 
 ```sh
-pnpm exec tsc -b packages/bundle/riko-memory/tsconfig.json --pretty false
+pnpm exec tsc -p packages/bundle/riko-memory/tsconfig.json --noEmit --pretty false
 pnpm exec vitest run packages/bundle/riko-memory/tests --reporter=dot
 ```
 
@@ -255,12 +346,12 @@ acceptance-events.jsonl
 sanitized-provider-errors.log
 ```
 
-No API key, Authorization header or complete provider response is retained. Provider reachability is not proof of memory effectiveness: acceptance must distinguish correct injection, missed injection, correct silence, wrong injection and natural model variance. `/demo/run` is disabled by default and the old 200-turn dual-Agent demo is not a production path.
+No API key, Authorization header or complete provider response is retained. Provider reachability is not proof of memory effectiveness: acceptance must distinguish correct injection, missed injection, correct silence, wrong injection and natural model variance. The standalone acceptance script remains separate from the production plugin path.
 
 ## Advantages
 
 - Native DSH integration: real profile, Loader, storage and lifecycle behavior are exercised.
-- Strong provenance: a reviewer can follow Session evidence to Candidate, Wiki page, Resident version and prompt injection.
+- Strong traceability: a reviewer can follow Session evidence to Candidate, Wiki page, Resident version and prompt injection.
 - Strong isolation: owner/preset/token checks apply before reads and writes.
 - Predictable failure behavior: normal chat continues and the last valid Resident survives Dream/provider failures.
 - Human control: candidates can be reviewed, rejected, confirmed, corrected, superseded or forgotten.
@@ -271,16 +362,20 @@ No API key, Authorization header or complete provider response is retained. Prov
 - DSH coupling means this is not a drop-in library for arbitrary Node, Rust or MCP hosts.
 - Stable preset identity is mandatory; that prevents accidental global sharing but produces fail-closed behavior when configuration is incomplete.
 - Candidate review delays automatic memories; explicit tools provide the fast path for clear user requests.
-- There is no embedding/vector recall yet, so very large Wikis will eventually need a separately governed retrieval design.
+- Embedding providers are optional and bounded; deterministic or OpenAI-compatible provider failures degrade to lexical/RRF. Durable vector-index lifecycle remains a separate capability.
+- No live reranker is wired: `MemoryReranker` is reachable only through direct helper/store callers.
 - Forget removes derived memory but not raw evidence in v1.
+- Observation candidates may be produced by opt-in Dream reflection; activation remains an admin/acceptance-only HTTP operation and does not confirm a fact or permit explicit mention.
 - `storageDomain` is a host boundary, not distributed consensus; public multi-node deployment needs additional design.
 - Provider quality still varies. Strict parsing protects the state machine but cannot guarantee relevance or recall quality.
 
 ## Status and release boundary
 
-Implemented: scoped L0 evidence, L1 Candidates, L2 Wiki and L3 Resident contracts; DSH persistence and restart recovery; explicit tools; profile/token checks; safe credential handling; OpenAI-compatible and Anthropic-compatible Dream protocols; controlled FILE parsing; metadata bounds; wikilink normalization; Candidate fingerprint merging; source preservation; last-valid Resident fallback; persisted jobs/cursors; UI; evidence graph; review and audit routes.
+Implemented: scoped L0 evidence, L1 Candidates, L2 Wiki and L3 Resident contracts; DSH persistence and restart recovery; explicit tools; profile/token checks; safe Dream and embedding credential handling; OpenAI-compatible and Anthropic-compatible Dream protocols; deterministic/OpenAI-compatible embedding wiring with lexical fallback; controlled FILE parsing; metadata bounds; wikilink normalization; Candidate fingerprint merging; source preservation; last-valid Resident fallback; persisted jobs/cursors; bounded structured Resident blocks; live Agent query-time lexical/RRF recall with optional dense, raw-evidence and graph channels; temporal validity and historical recall; a conservative current Mention Gate; anchored observation candidates with optional Dream reflection and HTTP management; authority-checked three-state sensitivity transitions; explicit same-context alias coreference; journaled raw-session/page/candidate/source/observation purge with dry-run, confirmation and verification; UI, review and audit routes; the Appendix F companion corpus with its live Loader runner; and the Appendix G aggregate metrics computed from raw observations as described in [docs/companion-eval.md](docs/companion-eval.md).
 
-Deferred: raw Session purge, complete data erasure, embeddings, vector recall, multi-node storage, public multi-tenant operations, a production-grade autonomous confirmation policy for sensitive content, and a standalone runtime independent of a compatible DSH workspace.
+Deferred: durable vector-index lifecycle beyond the provider seam; live reranker wiring; sensitivity false-negative and false-positive rates; cached SafeUsageProjection generation and consumption; contested conflict overlays; validated hedged silent use; full Reflection/consolidation beyond anchored Observation candidates; revocable alias authority and rebuild semantics; entity resolution beyond bounded wikilink graph expansion; complete data erasure outside the storage domain; multi-node storage; public multi-tenant operations; production-grade autonomous confirmation policy for sensitive content; the 200–500-scenario production benchmark beyond the thirty-scenario companion corpus; load/chaos coverage; and a standalone runtime independent of a compatible DSH workspace.
+
+The current implementation is a governed Phase 1–5 substrate, not a claim that every production evaluation gate is complete. The package suite covers the implemented state transitions and runs the Appendix F corpus and the Appendix G aggregation; five corpus scenarios and four metric fields remain explicitly unsupported, and benchmark, coverage, load and chaos results must still be collected before enabling the opt-in flags in production.
 
 ## FAQ
 
@@ -308,10 +403,12 @@ It removes derived Wiki memory from future Resident projections and records the 
 
 No. It is the source mirror of the native memory bundle. Install it from the compatible DSH Harness workspace or use the bundle path shown above.
 
-## Development note
+<a id="dev-note"></a>
+## Dev Note
 
 Keep long-lived memory changes inside the storage-domain, Candidate, Wiki and Resident state machine. Do not add a parallel file store, broaden scope silently, persist raw secrets or promote model output without authoritative confirmation. After behavior changes, run static checks, focused tests, Loader tests, the relevant provider probe only when protocol code changed, raw attribution checks and documentation gates before publishing.
 
+<a id="model-experience"></a>
 ## Model Experience
 
 ### Resident memory injection
@@ -330,11 +427,14 @@ Changing Resident modifies the dynamic system context for later requests and may
 
 ## Known Limitations and Deferred Work
 
+<a id="known-limitations-and-deferred-work"></a>
+
 - The package is tightly coupled to DSH workspace APIs and is not a drop-in library for arbitrary Node, Rust or MCP hosts.
 - Stable preset identity is mandatory. Missing configuration deliberately produces fail-closed behavior instead of accidental global sharing.
 - Candidate review can delay automatic memory; explicit tools provide the fast path for clear user requests.
-- Embeddings, vector recall, multi-node storage and public multi-tenant operations are not implemented.
-- Forget removes derived memory from future Residents but does not purge raw Session evidence in v1.
+- Deterministic and OpenAI-compatible embedding providers are live-wired with lexical fallback; durable vector-index lifecycle and reranking remain separate capabilities.
+- Ordinary forget removes derived memory from future Residents but does not purge raw Session evidence; explicit purge is separately gated, journaled, dry-run capable, confirmation-protected and verified.
+- Observation candidates may come from opt-in Dream reflection; activation remains limited to authenticated management routes and is not canonical confirmation or explicit mention permission.
 - `storageDomain` is a host persistence boundary, not distributed consensus; public multi-node deployment needs additional design.
 - Provider quality still varies. Strict parsing protects the state machine but cannot guarantee relevance or recall completeness.
-- Full raw Session purge, complete data erasure, autonomous sensitive-content confirmation and a standalone runtime independent of DSH remain deferred.
+- The Appendix F corpus covers thirty representative scenarios with five explicit unsupported gaps, and Appendix G reports nineteen fields with four explicit unsupported gaps; complete data erasure outside the configured storage domain, full Reflection/consolidation, autonomous sensitive-content confirmation, the 200–500-scenario production benchmark, load/chaos evaluation and a standalone runtime independent of DSH remain deferred.
