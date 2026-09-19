@@ -139,7 +139,7 @@ The plugin is one Cordis service. The following table lists what it contributes 
 
 | State | Location | Lifetime |
 |---|---|---|
-| L0 evidence, Candidates, Wiki pages, sources, jobs, observations, purges, audits, suppressions, activation, index metadata, vectors, aliases, projections, conflicts | One DSH storage domain named `riko_memory`, layout `per-record`, version `4`, compatible with versions `1, 2, 3` | Durable, owned by the storage-domain plugin |
+| L0 evidence, Candidates, Wiki pages, sources, jobs, observations, purges, audits, suppressions, activation, index metadata, vectors, aliases, projections, conflicts | One DSH storage domain named `riko_memory`, layout `per-record`, version `5`, compatible with versions `1, 2, 3, 4` | Durable, owned by the storage-domain plugin |
 | Resident string and structured blocks | The `profiles` record inside that domain, keyed by the scope key | Durable, rewritten whenever Resident is recompiled |
 | Wiki search index and graph | `WikiIndex` instance inside `MemoryProfileStore` | Process-local, rebuilt from durable pages after every load or write |
 | Dense index generations | `DenseVectorIndex` instance plus `index_meta`, `vectors` and `jobs` records | Process-local active generation, durable generations and metadata |
@@ -154,9 +154,9 @@ Scope filtering is applied on load and on every write: a record is adopted only 
 
 | Version | Constant or field | Value | Meaning |
 |---|---|---|---|
-| Storage domain | `MEMORY_DOMAIN` | name `riko_memory`, version `4`, compatible versions `[1, 2, 3]`, layout `per-record` | The one durable domain the plugin owns. |
+| Storage domain | `MEMORY_DOMAIN` | name `riko_memory`, version `5`, compatible versions `[1, 2, 3, 4]`, layout `per-record` | The one durable domain the plugin owns. |
 | Scope contract | `MEMORY_SCHEMA_VERSION` | `1` | Version stamped on `MemoryScope` and `EvidenceRef`. |
-| Record schema | `recordSchemaVersion` | `1`, `2`, `3`, `4` accepted | Every durable record carries one of these; the reader accepts all four. |
+| Record schema | `recordSchemaVersion` | `1`, `2`, `3`, `4`, `5` accepted | Every durable record carries one of these; the reader accepts all five. |
 | L0 evidence line | `schemaVersion: 1` in the serialized JSON line | `1` | The per-event serialized line written by capture. |
 | Session domain record | `sessionRecord()` | `schemaVersion: 2` | The durable `sessions` record wrapping the lines and markers. |
 | Dense index | `DENSE_INDEX_SCHEMA_VERSION` | `3` | Version asserted for index metadata and persisted vectors. |
@@ -304,7 +304,7 @@ The deterministic classifier in `src/sensitivity.ts` only tightens a caller-supp
 
 ### Safe-usage projection
 
-`silent_use` delivers a precomputed `SafeUsageProjection`, never the raw body or its source. A projection carries `allowedEffects` (drawn from `tone`, `avoid_topic`, `avoid_repetition`, `preference_alignment`), `topicTags`, an optional non-identifying `summary`, `disclosure` (`never_explicit` or `user_initiated_only`), `generatedFromVersion` and `generatedAt`. Projections are derived and rebuildable, never canonical. The store rebuilds them from canonical pages and observations during `persist()`, persists them in the `projections` table, restores them on load and exposes them through `projectionFor` and `listProjections`. The recall renderer consumes a projection by printing its internal guidance and only prints the summary when `isNonIdentifyingSummary` accepts it (non-empty, at most 240 characters, no session or event identifier, not equal to and not containing or contained by the raw text). What is not met is a live Agent assembly assertion proving query-time use of only the persisted projection, plus projection metrics.
+`SafeUsageProjection.disclosure` is the single raw-text policy field. `normal` permits ordinary recall; `user_explicit_only` withholds raw text in ordinary turns but permits the stored raw text and recorded source references for an explicit, user-initiated topic match; `never_explicit` never returns raw text, including for an explicit topic match. Recall eligibility and the mention renderer enforce this field. A projection also carries `allowedEffects` (drawn from `tone`, `avoid_topic`, `avoid_repetition`, `preference_alignment`), `topicTags`, an optional non-identifying `summary`, `generatedFromVersion` and `generatedAt`. Projections are derived and rebuildable, never canonical. The store rebuilds them from canonical pages and observations during `persist()`, persists them in the `projections` table, restores them on load and exposes them through `projectionFor` and `listProjections`. The recall renderer prints internal guidance for silent use and only prints the summary when `isNonIdentifyingSummary` accepts it (non-empty, at most 240 characters, no session or event identifier, not equal to and not containing or contained by the raw text). What is not met is a live Agent assembly assertion proving query-time use of only the persisted projection, plus projection metrics.
 
 ### Contested conflict overlay
 
@@ -324,7 +324,7 @@ Observations are inferred patterns stored in their own table and stamped `episte
 | Anchors are required | At least one raw session or confirmed-page anchor; an observation-only proof is rejected. |
 | Minimum distinct anchors | `minObservationEvidence` (default 2) distinct valid anchors are required to create or update a candidate. |
 | Anchor validation | Anchors must resolve to a real user-origin session event or a confirmed, consented page; unknown anchors throw. |
-| Automatic activation | An observation becomes `active` only when it is still a candidate, is `normal` sensitivity, meets `observationActivationMinEvidence` (default 3), meets `observationActivationMinConfidence` (default 0.8), spans at least `observationActivationMinSessions` (default 2) distinct sessions and has no strong contradiction. |
+| Automatic activation | The automatic path marks an observation `active` only when it is still a candidate, is `normal` sensitivity, meets `observationActivationMinEvidence` (default 3), meets `observationActivationMinConfidence` (default 0.8), spans at least `observationActivationMinSessions` (default 2) distinct sessions and has no strong contradiction. |
 | Contradiction weakening | With contradicting anchors, an active observation becomes `weakened`, or `invalidated` when contradictions reach the support count. |
 | Sensitive or psychological content | The observation classifier forces a sensitive classification for psychological, medical, sexual, credential, identity and financial cues, which keeps the record out of ordinary auto-active reasoning. |
 | Status changes | `activateObservation`, `invalidateObservation`, `suppressObservation` are store operations; the control API exposes them as authenticated routes. |
@@ -346,14 +346,14 @@ Aliases are keyed by scope, entity and normalized alias. Upserting an edge with 
 
 ### L0 evidence classification
 
-Raw L0 evidence carries a usage permission too, and with `evidenceClassificationEnabled` the state is decided at capture rather than at read time. It has four states rather than the three of page sensitivity, because `nobody decided` is not the same thing as `decided sensitive`.
+Raw L0 evidence carries a usage permission too, and with `evidenceClassificationEnabled` the state is decided at capture rather than at read time. It has four evidence states rather than the three sensitivity states, because `nobody decided` is not the same thing as `decided sensitive`.
 
 | State | Stored as | Effect on the read path |
 |---|---|---|
-| `normal` | An explicit value | Recallable; the raw line may reach the model when the query explicitly recalls it and the topic matches |
-| `provisional_sensitive` | An explicit value | Protected; treated as sensitive in every read |
-| `sensitive` | An explicit value | Protected; treated as sensitive in every read |
-| unclassified | No value at all | Fail-closed; treated as sensitive in every read |
+| `normal` | An explicit value | Maps to `normal`; raw text may be recalled normally |
+| `provisional_sensitive` | An explicit value | Maps to `user_explicit_only`; raw text requires an explicit user-initiated topic match |
+| `sensitive` | An explicit value | Maps to `never_explicit`; raw text is never returned |
+| unclassified | No value at all | Maps to `never_explicit` by default; `unclassifiedEvidenceDisclosure: user_explicit_only` lowers only this fallback |
 
 Authority matrix:
 
@@ -368,7 +368,7 @@ Two write-path rules follow, and they are deliberately not the same rule. Relaxi
 
 Marker origin and capability suspension: a value written by `deterministic_rule` is suspended, not deleted, while capture classification is off. Turning the capability off really turns it off, because the read path falls back to the fail-closed default for exactly those events, and turning it back on restores them from the same stored record with no migration and no rewrite. A value written by `user` or `management`, and any record persisted before origin existed, carries no capture-rule origin and stays in force at every setting.
 
-`normal` is a use permission, not publication. Classifying a line `normal` does not put it in front of the model: the raw text enters context only on the explicit-recall path, where the query asks for it and the topic matches. The `GET /sessions/:id` route reports per-session counts of `normal`, `provisional_sensitive`, `sensitive` and unclassified lines.
+`normal` is a use permission, not canonical authority. A normal line may be recalled normally. `unclassifiedEvidenceDisclosure` lowers only the unclassified fallback and applies only to a user-initiated, topic-matched request, so it does not permit unsolicited raw disclosure. The `GET /sessions/:id` route reports per-session counts of `normal`, `provisional_sensitive`, `sensitive` and unclassified lines.
 
 ## Recall
 
@@ -431,7 +431,7 @@ Before fusion, every candidate passes through `filterRecallCandidates`. Rejectio
 | `sensitive-no-explicit-request` | A protected result whose topic matches but whose query does not explicitly recall it |
 | `sensitive-topic-mismatch` | A protected result whose topic does not match |
 
-Gate outcomes computed later in the pipeline are recorded as gate reasons. They include `explicit-recall`, `explicit-observation-recall`, `inferred-observation-silent-use`, `sensitive-user-initiated-projection`, `sensitive-default-suppress` and `context-budget`.
+Gate outcomes computed later in the pipeline are recorded as gate reasons. They include `normal-recall`, `explicit-recall`, `explicit-observation-recall`, `inferred-observation-silent-use`, `user-explicit-only-projection`, `never-explicit-projection`, `sensitive-default-suppress` and `context-budget`.
 
 ### Trace counters
 
@@ -478,7 +478,7 @@ Stored text is escaped for `&`, `<` and `>`, so stored content cannot close the 
 
 ### Explicit queries over sensitive material
 
-A protected result is eligible only when the query explicitly recalls it or explicitly asks for observations, and the query topic matches the result. Topic matching removes the explicit-recall cue words from the query, then scores the remaining text against the result text and source references. A match without an explicit request produces `silent_only`. The mention decision then becomes `silent_use` for protected material and the raw body is dropped. An unrelated query produces `sensitive-topic-mismatch` and a suppressed decision.
+A protected result is eligible only when the query topic matches the result. Topic matching removes the explicit-recall cue words from the query, then scores the remaining text against the result text and source references. A match without an explicit request produces `silent_only`. `user_explicit_only` returns raw text and source references only for an explicit, user-initiated topic match; `never_explicit` remains `silent_use` and drops raw text even for that match. An unrelated query produces `sensitive-topic-mismatch` and a suppressed decision.
 
 ### Temporal modes
 
@@ -852,6 +852,7 @@ The plugin declares its configuration with a schemastery schema. All 39 live fie
 | `sensitiveResidentEnabled` | boolean | `false` | Allows eligible sensitive pages in Resident output. | Included |
 | `temporalEnabled` | boolean | `true` | Enables temporal validity and historical recall semantics. | Included |
 | `evidenceClassificationEnabled` | boolean | `false` | Classifies user-origin L0 evidence at capture; off leaves every unmarked event fail-closed sensitive. | Included |
+| `unclassifiedEvidenceDisclosure` | enum | `never_explicit` | Selects `never_explicit` or `user_explicit_only` for unclassified fail-closed evidence; the lower setting applies only to explicit, user-initiated, topic-matched requests. | Included |
 | `minObservationEvidence` | integer, minimum 1 | `2` | Minimum distinct valid anchors for an observation candidate. | Included |
 | `observationActivationMinEvidence` | integer, minimum 1 | `3` | Minimum distinct evidence anchors for automatic observation activation. | Included |
 | `observationActivationMinSessions` | integer, minimum 1 | `2` | Minimum distinct sessions for automatic observation activation. | Included |
@@ -1150,7 +1151,7 @@ Changing Resident modifies the dynamic system context for later requests and may
 - Embedding providers are optional and bounded; deterministic or OpenAI-compatible provider failures degrade to lexical and RRF, so dense recall quality is not guaranteed.
 - No live reranker is wired: `MemoryReranker` is reachable only through direct helper and store callers.
 - Ordinary forget removes derived memory but retains raw evidence; raw purge is a separately gated transaction.
-- Observation candidates may be produced by opt-in Dream reflection; activation remains an authenticated management operation and never confirms a fact or grants explicit mention permission.
+- Observation candidates may be produced by opt-in Dream reflection. Candidate creation or evidence updates can auto-activate a normal, non-contradicted candidate when the configured evidence, distinct-session and confidence thresholds pass. An authenticated management route can also explicitly activate, invalidate or suppress an observation; explicit activation uses the store's minimum-evidence check. Neither activation path confirms a fact or grants explicit mention permission.
 - `storageDomain` is a host persistence boundary, not distributed consensus; multi-node deployment needs additional design.
 - Provider quality still varies. Strict parsing protects the state machine but cannot guarantee relevance or recall completeness.
 - The structured Resident block budget divides the character cap across seven blocks up front, so a scope dominated by one category can under-use the total budget.
@@ -1285,5 +1286,3 @@ Keep long-lived memory changes inside the storage-domain, Candidate, Wiki and Re
 ## License
 
 MIT. The package declares `"license": "MIT"` in `package.json`.
-
-

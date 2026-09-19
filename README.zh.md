@@ -139,7 +139,7 @@
 
 | 状态 | 位置 | 生命周期 |
 |---|---|---|
-| L0 证据、候选、Wiki 页面、来源、job、观察、清除、审计、抑制、激活、索引元数据、向量、别名、投影、冲突 | 一个名为 `riko_memory` 的 DSH 存储域，布局 `per-record`，版本 `4`，兼容版本 `1, 2, 3` | 持久，由存储域插件拥有 |
+| L0 证据、候选、Wiki 页面、来源、job、观察、清除、审计、抑制、激活、索引元数据、向量、别名、投影、冲突 | 一个名为 `riko_memory` 的 DSH 存储域，布局 `per-record`，版本 `5`，兼容版本 `1, 2, 3, 4` | 持久，由存储域插件拥有 |
 | 常驻字符串与结构化块 | 该域内的 `profiles` 记录，以作用域键为键 | 持久，每次重新编译常驻内容时重写 |
 | Wiki 搜索索引与图 | `MemoryProfileStore` 内的 `WikiIndex` 实例 | 进程本地，每次加载或写入后由持久页面重建 |
 | 稠密索引世代 | `DenseVectorIndex` 实例，加上 `index_meta`、`vectors` 与 `jobs` 记录 | 进程本地的活动世代，以及持久的世代与元数据 |
@@ -154,9 +154,9 @@
 
 | 版本 | 常量或字段 | 值 | 含义 |
 |---|---|---|---|
-| 存储域 | `MEMORY_DOMAIN` | 名称 `riko_memory`，版本 `4`，兼容版本 `[1, 2, 3]`，布局 `per-record` | 插件拥有的唯一持久域。 |
+| 存储域 | `MEMORY_DOMAIN` | 名称 `riko_memory`，版本 `5`，兼容版本 `[1, 2, 3, 4]`，布局 `per-record` | 插件拥有的唯一持久域。 |
 | 作用域契约 | `MEMORY_SCHEMA_VERSION` | `1` | 盖在 `MemoryScope` 和 `EvidenceRef` 上的版本。 |
-| 记录 schema | `recordSchemaVersion` | 接受 `1`、`2`、`3`、`4` | 每条持久记录都携带其中之一；读取方接受全部四种。 |
+| 记录 schema | `recordSchemaVersion` | 接受 `1`、`2`、`3`、`4`、`5` | 每条持久记录都携带其中之一；读取方接受全部五种。 |
 | L0 证据行 | 序列化 JSON 行中的 `schemaVersion: 1` | `1` | 捕获写入的逐事件序列化行。 |
 | 会话域记录 | `sessionRecord()` | `schemaVersion: 2` | 包装各行与标记的持久 `sessions` 记录。 |
 | 稠密索引 | `DENSE_INDEX_SCHEMA_VERSION` | `3` | 为索引元数据和持久向量断言的版本。 |
@@ -304,7 +304,7 @@ Dream 模型自身的 `status: confirmed`、`consent: true`、`locked: true`，�
 
 ### 安全使用投影
 
-`silent_use` 交付的是预先计算好的 `SafeUsageProjection`，绝不是原始正文或其来源。投影携带 `allowedEffects`（取自 `tone`、`avoid_topic`、`avoid_repetition`、`preference_alignment`）、`topicTags`、可选的非识别性 `summary`、`disclosure`（`never_explicit` 或 `user_initiated_only`）、`generatedFromVersion` 和 `generatedAt`。投影是派生的、可重建的，绝不是规范内容。存储在 `persist()` 期间根据规范页面和观察重建它们，把它们持久化到 `projections` 表，在加载时恢复，并通过 `projectionFor` 和 `listProjections` 暴露。召回渲染器消费投影时打印其内部指引，并且仅当 `isNonIdentifyingSummary` 接受摘要（非空、至多 240 字符、不含会话或事件标识符、不等于也不包含原文且不被原文包含）时才打印它。尚未满足的是一条实时 Agent 装配断言，用来证明查询时只使用了持久化的投影，外加投影指标。
+`SafeUsageProjection.disclosure` 是唯一的原文 policy 字段。`normal` 允许正常 recall；`user_explicit_only` 在普通 turn 隐藏原文，但在用户主动且主题匹配的显式请求中允许返回存储文本和已记录的来源引用；`never_explicit` 即使主题显式匹配也永远不返回原文。Recall eligibility 和 mention renderer 都执行这个字段。投影还携带 `allowedEffects`（取自 `tone`、`avoid_topic`、`avoid_repetition`、`preference_alignment`）、`topicTags`、可选的非识别性 `summary`、`generatedFromVersion` 和 `generatedAt`。投影是派生的、可重建的，绝不是规范内容。存储在 `persist()` 期间根据规范页面和观察重建它们，把它们持久化到 `projections` 表，在加载时恢复，并通过 `projectionFor` 和 `listProjections` 暴露。召回渲染器在 silent use 时打印内部指引，并且仅当 `isNonIdentifyingSummary` 接受摘要（非空、至多 240 字符、不含会话或事件标识符、不等于也不包含原文且不被原文包含）时才打印它。尚未满足的是一条实时 Agent 装配断言，用来证明查询时只使用了持久化的投影，外加投影指标。
 
 ### 有争议的冲突覆盖层
 
@@ -324,7 +324,7 @@ Dream 模型自身的 `status: confirmed`、`consent: true`、`locked: true`，�
 | 必须有锚点 | 至少一个原始会话锚点或已确认页面锚点；仅有观察的证明会被拒绝。 |
 | 最少不同锚点数 | 创建或更新候选需要 `minObservationEvidence`（默认 2）个不同的有效锚点。 |
 | 锚点校验 | 锚点必须解析到真实的用户来源会话事件，或已确认且已同意的页面；未知锚点会抛出。 |
-| 自动激活 | 仅当观察仍是候选、敏感度为 `normal`、满足 `observationActivationMinEvidence`（默认 3）、满足 `observationActivationMinConfidence`（默认 0.8）、跨越至少 `observationActivationMinSessions`（默认 2）个不同会话且没有强矛盾时，才变为 `active`。 |
+| 自动激活 | 自动路径仅当观察仍是候选、敏感度为 `normal`、满足 `observationActivationMinEvidence`（默认 3）、满足 `observationActivationMinConfidence`（默认 0.8）、跨越至少 `observationActivationMinSessions`（默认 2）个不同会话且没有强矛盾时，才将其变为 `active`。 |
 | 矛盾弱化 | 存在矛盾锚点时，活动观察变为 `weakened`；当矛盾数达到支持数时变为 `invalidated`。 |
 | 敏感或心理内容 | 观察分类器对心理、医疗、性、凭据、身份和财务线索强制敏感分类，使该记录不进入普通的自动激活推理。 |
 | 状态变更 | `activateObservation`、`invalidateObservation`、`suppressObservation` 是存储操作；控制 API 把它们暴露为经过认证的路由。 |
@@ -346,14 +346,14 @@ Dream 模型自身的 `status: confirmed`、`consent: true`、`locked: true`，�
 
 ### L0 证据分类
 
-原始 L0 证据也携带使用许可；打开 `evidenceClassificationEnabled` 后，状态在捕获时而非读取时决定。它有四种状态，而不是页面敏感度的三种，因为 `nobody decided` 与 `decided sensitive` 不是一回事。
+原始 L0 证据也携带使用许可；打开 `evidenceClassificationEnabled` 后，状态在捕获时而非读取时决定。它有四种 evidence 状态，而不是三种 sensitivity 状态，因为 `nobody decided` 与 `decided sensitive` 不是一回事。
 
 | 状态 | 存储为 | 对读取路径的影响 |
 |---|---|---|
-| `normal` | 显式值 | 可召回；当查询显式召回且主题匹配时，原始行可以到达模型 |
-| `provisional_sensitive` | 显式值 | 受保护；在每次读取中都按敏感处理 |
-| `sensitive` | 显式值 | 受保护；在每次读取中都按敏感处理 |
-| 未分类 | 完全没有值 | 失败关闭；在每次读取中都按敏感处理 |
+| `normal` | 显式值 | 映射为 `normal`；原文可以正常召回 |
+| `provisional_sensitive` | 显式值 | 映射为 `user_explicit_only`；原文要求用户主动且主题匹配的显式请求 |
+| `sensitive` | 显式值 | 映射为 `never_explicit`；永远不返回原文 |
+| 未分类 | 完全没有值 | 默认映射为 `never_explicit`；`unclassifiedEvidenceDisclosure: user_explicit_only` 只降低这一 fallback |
 
 权限矩阵：
 
@@ -368,7 +368,7 @@ Dream 模型自身的 `status: confirmed`、`consent: true`、`locked: true`，�
 
 标记来源与能力暂停：当捕获分类关闭时，由 `deterministic_rule` 写入的值被暂停，而不是删除。关闭该能力是真正关闭，因为读取路径对正是这些事件回退到失败关闭默认值；重新打开时会从同一条存储记录恢复它们，无需迁移也无需重写。由 `user` 或 `management` 写入的值，以及任何在来源概念出现之前持久化的记录，都不带捕获规则来源，在任何设置下都保持有效。
 
-`normal` 是一种使用许可，不是发布。把一行分类为 `normal` 并不会把它放到模型面前：原始文本只在显式召回路径上进入上下文，即查询要求它且主题匹配时。`GET /sessions/:id` 路由报告每个会话中 `normal`、`provisional_sensitive`、`sensitive` 和未分类行的计数。
+`normal` 是使用许可，不是规范权威。normal 行可以正常召回。`unclassifiedEvidenceDisclosure` 只降低未分类 fallback，并且只适用于用户主动、主题匹配的请求，因此不会允许未经请求的原文披露。`GET /sessions/:id` 路由报告每个会话中 `normal`、`provisional_sensitive`、`sensitive` 和未分类行的计数。
 
 ## 召回
 
@@ -431,7 +431,7 @@ Dream 模型自身的 `status: confirmed`、`consent: true`、`locked: true`，�
 | `sensitive-no-explicit-request` | 受保护结果，其主题匹配但查询未显式召回它 |
 | `sensitive-topic-mismatch` | 受保护结果，其主题不匹配 |
 
-流水线后续计算的闸门结果会记录为闸门原因。它们包括 `explicit-recall`、`explicit-observation-recall`、`inferred-observation-silent-use`、`sensitive-user-initiated-projection`、`sensitive-default-suppress` 和 `context-budget`。
+流水线后续计算的闸门结果会记录为闸门原因。它们包括 `normal-recall`、`explicit-recall`、`explicit-observation-recall`、`inferred-observation-silent-use`、`user-explicit-only-projection`、`never-explicit-projection`、`sensitive-default-suppress` 和 `context-budget`。
 
 ### 追踪计数器
 
@@ -478,7 +478,7 @@ Dream 模型自身的 `status: confirmed`、`consent: true`、`locked: true`，�
 
 ### 对敏感材料的显式查询
 
-受保护结果仅当查询显式召回它或显式要求观察，并且查询主题与结果匹配时才合格。主题匹配会从查询中移除显式召回线索词，然后用剩余文本对结果文本和来源引用打分。没有显式请求的匹配会产生 `silent_only`。提及决策随后对受保护材料变为 `silent_use`，原始正文被丢弃。不相关的查询产生 `sensitive-topic-mismatch` 和抑制决策。
+受保护结果仅当查询主题与结果匹配时才合格。主题匹配会从查询中移除显式召回线索词，然后用剩余文本对结果文本和来源引用打分。没有显式请求的匹配会产生 `silent_only`。`user_explicit_only` 只有在用户主动、主题匹配的显式请求中才返回原文和来源引用；`never_explicit` 即使匹配也保持 `silent_use` 并丢弃原文。不相关的查询产生 `sensitive-topic-mismatch` 和抑制决策。
 
 ### 时间模式
 
@@ -852,6 +852,7 @@ UI 是管理与审计界面，不是绕过状态机的途径。它调用上表�
 | `sensitiveResidentEnabled` | boolean | `false` | 允许合格的敏感页面出现在常驻输出中。 | 包含 |
 | `temporalEnabled` | boolean | `true` | 启用时间有效性和历史召回语义。 | 包含 |
 | `evidenceClassificationEnabled` | boolean | `false` | 在捕获时对用户来源的 L0 证据分类；关闭时每个未标记事件都按失败关闭处理为敏感。 | 包含 |
+| `unclassifiedEvidenceDisclosure` | enum | `never_explicit` | 为未分类 fail-closed evidence 选择 `never_explicit` 或 `user_explicit_only`；较低设置只适用于用户主动、主题匹配的显式请求。 | 包含 |
 | `minObservationEvidence` | integer，最小 1 | `2` | 观察候选所需的最少不同有效锚点数。 | 包含 |
 | `observationActivationMinEvidence` | integer，最小 1 | `3` | 自动激活观察所需的最少不同证据锚点数。 | 包含 |
 | `observationActivationMinSessions` | integer，最小 1 | `2` | 自动激活观察所需的最少不同会话数。 | 包含 |
@@ -1150,7 +1151,7 @@ pnpm exec vitest run packages/bundle/riko-memory/tests --reporter=dot
 - 嵌入提供方是可选的且有界的；确定性或 OpenAI 兼容提供方失败会降级到词法和 RRF，因此稠密召回质量不被保证。
 - 没有接入实时重排序器：`MemoryReranker` 只能通过直接的辅助和存储调用方触达。
 - 普通遗忘移除派生记忆但保留原始证据；原始清除是单独设闸的事务。
-- 观察候选可以由按需启用的 Dream 反思产生；激活仍是经过认证的管理操作，绝不确认事实或授予显式提及许可。
+- 观察候选可以由按需启用的 Dream 反思产生。创建候选或更新证据时，候选只有在敏感度为 `normal`、没有强矛盾，并满足配置的证据、不同会话和置信度阈值时才会自动激活。经过认证的管理路由也可以显式激活、失效或抑制观察；显式激活使用存储的最少证据检查。两条激活路径都绝不确认事实或授予显式提及许可。
 - `storageDomain` 是宿主持久化边界，不是分布式共识；多节点部署需要额外设计。
 - 提供方质量仍然参差。严格解析保护状态机，但无法保证相关性或召回完整性。
 - 结构化常驻块预算预先在七个小节之间划分字符上限，因此某一类别占主导的作用域可能未用满总预算。
@@ -1285,5 +1286,3 @@ bundle 通过其 `dsh.bundle.patch` 字段声明一个 patch 文件。该 patch 
 ## 许可证
 
 MIT。该包在 `package.json` 中声明 `"license": "MIT"`。
-
-
