@@ -1,6 +1,5 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write packages/bundle/riko-memory/README.md
-README.md: 678eb8cad1eb6b37b7ff00e788c5577ef091d388
-README.zh.md: ef5d499793151bae82d4bd07291e95c1626b6b5a
+# Bilingual-pair consistency record: the git blob hash of each side as of the last
+# confirmed-consistent state. Both languages carry equal authority; after editing
+# either side, bring the other along and re-record the two hashes below.
+README.md: 56b77b334eeb6204e3d9e62530746ba55d9bd473
+README.zh.md: 9e6dbc88456d476e2cbd0327ed64ed53fc2ed6e0
