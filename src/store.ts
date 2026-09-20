@@ -57,6 +57,7 @@ import {
   type WikiSource,
   memoryFromPage,
   pageFromMemory,
+  pageTitleFromContent,
   pageSlug,
   wikiPageId,
   wikiSourceId,
@@ -1284,7 +1285,7 @@ export class MemoryProfileStore {
     await this.waitReady(); let updated: WikiPage | undefined
     await this.mutate(async () => {
       const existing = this.pages.find(page => page.id === id || page.path === id || memoryFromPage(page)?.id === id); if (!existing) return
-      const previous = clonePage(existing); const title = input.title === undefined ? existing.title : input.title.trim(); const description = input.description === undefined ? existing.description : input.description.trim(); const body = input.body === undefined ? existing.body : input.body.trim(); if (!title || !body) throw new Error('Wiki correction requires non-empty title and body')
+      const previous = clonePage(existing); const description = input.description === undefined ? existing.description : input.description.trim(); const body = input.body === undefined ? existing.body : input.body.trim(); const replacementTitleSource = input.description === undefined ? input.body === undefined ? undefined : body : description; const title = input.title === undefined && replacementTitleSource !== undefined && existing.title === pageTitleFromContent(existing.description) ? pageTitleFromContent(replacementTitleSource) : input.title === undefined ? existing.title : input.title.trim(); if (!title || !body) throw new Error('Wiki correction requires non-empty title and body')
       const next: WikiPage = { ...existing, title, description, body, tags: input.tags === undefined ? [...existing.tags] : input.tags.map(tag => tag.trim()).filter(Boolean), ...(input.validUntil === undefined ? {} : input.validUntil === null ? {} : { validUntil: input.validUntil }), status: 'confirmed', consent: true, locked: true, version: existing.version, updatedAt: new Date().toISOString() }
       if (input.validUntil === null) { const { validUntil: _removed, ...withoutExpiry } = next; this.commitPage(withoutExpiry) } else this.commitPage(next)
       this.markCorrectionInvalidation(existing)
@@ -2092,6 +2093,13 @@ export class MemoryProfileStore {
       for (const [index, line] of lines.entries()) {
         const parsed = parseEvidenceLine(line); if (parsed === undefined || parsed.sourceKind !== 'user') continue
         references.add(`session:${sessionId}/event:${parsed.eventSeq ?? index}`)
+      }
+    }
+    if (page.sources.some(source => source.startsWith('client:'))) {
+      const priorClaim = page.description.trim()
+      if (priorClaim) for (const [sessionId, lines] of this.sessionLines) for (const [index, line] of lines.entries()) {
+        const parsed = parseEvidenceLine(line)
+        if (parsed?.sourceKind === 'user' && parsed.text.trim() === priorClaim) references.add(`session:${sessionId}/event:${parsed.eventSeq ?? index}`)
       }
     }
     return [...references]

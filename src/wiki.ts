@@ -319,9 +319,15 @@ export function renderWikiMarkdown(page: Omit<WikiPage, 'id' | 'version' | 'upda
  * @returns the derived Wiki page.
  */
 export function pageFromMemory(item: MemoryItem, now = new Date().toISOString()): WikiPage {
-  const type: WikiPageType = item.kind === 'emotion' ? 'emotion' : item.kind === 'event' ? 'episode' : item.kind === 'fact' ? 'entity' : 'concept'; const title = item.content.length > 72 ? `${item.content.slice(0, 72)}…` : item.content; const path = `wiki/${pageFolder(type)}/${pageSlug(title, item.id)}.md`
+  const type: WikiPageType = item.kind === 'emotion' ? 'emotion' : item.kind === 'event' ? 'episode' : item.kind === 'fact' ? 'entity' : 'concept'; const title = pageTitleFromContent(item.content); const path = `wiki/${pageFolder(type)}/${pageSlug(title, item.id)}.md`
   return { id: wikiPageId(path), path, type, title, description: item.content, body: `# 记忆\n\n${item.content}\n\n来源会话：${item.sourceConversations.map(value => `[[${value}]]`).join('、')}`, sources: [...item.sourceConversations], tags: [item.category, item.kind], timestamp: item.observedAt, observedAt: item.observedAt, ...(item.recordedAt === undefined ? {} : { recordedAt: item.recordedAt }), confidence: item.confidence, sensitivity: item.sensitivity, status: item.status === 'superseded' ? 'superseded' : item.status, consent: item.consent, ...(item.validFrom === undefined ? {} : { validFrom: item.validFrom }), ...(item.validTo === undefined ? {} : { validTo: item.validTo }), ...(item.validUntil === undefined ? {} : { validUntil: item.validUntil }), locked: item.status === 'confirmed', version: 1, updatedAt: now, category: item.category, kind: item.kind }
 }
+
+/** Derive the title used for a content-derived memory page.
+ * @param content - The page content.
+ * @returns The bounded title.
+ */
+export function pageTitleFromContent(content: string): string { return content.length > 72 ? `${content.slice(0, 72)}…` : content }
 
 /**
  * Convert a canonical Wiki page back into a memory item.

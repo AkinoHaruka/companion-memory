@@ -13,8 +13,28 @@ Scope: the Appendix F live corpus declared in the package test tree, the Loader-
 | `../tests/companion-eval.spec.ts` | spec | Runs the corpus once per round and, over that one set of observations, asserts each scenario reaches its expected label or fails closed with its recorded `unsupported` reason, then asserts every metric field, its arithmetic, its scenario attribution, its unsupported reasons, and the projection counts. |
 | `../tests/answer-eval.spec.ts` | spec | Feeds synthetic answers and recalled documents through the aggregation seam without a model and asserts exact numerator/denominator arithmetic. |
 | `../tests/runner-diagnostics.spec.ts` | spec | Asserts the runner's own evidence policies: the newest run artifacts survive while older runs — and only run directories — are removed, and a recorded failure reason carries the cause chain that classifies it. |
+| `../tests/multi-turn-conversation.spec.ts` | spec | Drives eleven Loader-backed multi-turn cases through the real Agent pre-step, management tools, HTTP routes, restart path and system-prompt assembly. |
 | `../tests/support/live-harness.ts` | shared harness | Starts one disposable Loader composition with deterministic local storage and a loopback HTTP listener. |
 | `../tests/support/live-http.ts` | shared harness | Reads fixture responses without the Fetch browser port blocklist. |
+
+## Conversation-shape coverage
+
+`multi-turn-conversation.spec.ts` gives each case a private Loader root and disposes its harness after the case; the restart case retains one owned root across the first disposal and the reopened composition.
+
+| Case | Live sequence | User-visible assertion | Result |
+|---|---|---|---|
+| MT-01 | `memory_correct`, recall, `memory_correct`, recall | The Agent receives the first and second corrected predicates. | Pass |
+| MT-02 | Suppression, unrelated pre-step, explicit later pre-step | The suppressed topic is absent from both later Agent injections and the page is durably suppressed. | Pass |
+| MT-03 | Temporal HTTP transition, current recall, historical recall | The current injection contains Hangzhou and the historical injection contains Shanghai. | Pass |
+| MT-04 | Unrelated pre-step, explicit topic pre-step for a non-normal projection | The first injection omits the sensitive body; the explicit injection contains only internal guidance, and recall returns a non-normal disclosure projection. | Pass |
+| MT-05 | Alias A, alias B, alias-based suppression | Durable aliases show the old target invalidated, the new target active, and the management request suppresses entity B. | Pass |
+| MT-06 | Live observation creation, live contradiction update, recall and debug | The observation becomes invalidated and recall returns no observation text with the invalidation gate reason. | Pass |
+| MT-07 | Pre-step turn 1, Resident mutation, pre-step turn 2 and two assemblies | The second model system context contains the changed Resident value and omits the old value. | Pass |
+| MT-08 | Persist, dispose, reopen, recall, `memory_correct`, recall | The reopened session receives the durable value and then the corrected value. | Pass |
+| D1 | Manual memory, managed Wiki body edit, `memory_correct`, Wiki read | Content-derived page titles follow replacement descriptions or bodies without retaining the old claim. | Pass |
+| D2 | Client-sourced page, raw claims, `memory_correct`, recall | The superseded raw claim is absent while an unrelated claim from the same session remains eligible. | Pass |
+
+Correction keeps a content-derived title aligned with the replacement description, or with the replacement body when only the body changes. It retains invalidation from recorded session references and, for a client-sourced page, adds only exact matches of the prior description from user evidence; unrelated raw claims remain eligible.
 
 ## Corpus
 
