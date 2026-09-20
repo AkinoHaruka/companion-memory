@@ -121,7 +121,9 @@ describe('R1A Resident live acceptance', () => {
 
   it('R1A-03 no partial item', async () => {
     const value = boundedStore('r1a-whole-items', 256)
-    const oversized = page('oversized item', 'oversized item '.repeat(100), {}, 'oversized-item')
+    // The summary line itself must exceed the whole budget: an entry that only exceeded the old
+    // even-split quota now legitimately fits through budget redistribution.
+    const oversized = page('oversized item', 'oversized item '.repeat(100), { description: '' }, 'oversized-item')
     await value.upsertManualPage(oversized)
     const snapshot = value.snapshot().residentSnapshot
     expect(snapshot?.omittedPageIds).toContain(oversized.id)

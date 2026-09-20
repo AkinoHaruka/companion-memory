@@ -9,3 +9,4 @@ target/
 acceptance-summary.json
 acceptance-events.jsonl
 sanitized-provider-errors.log
+dist/

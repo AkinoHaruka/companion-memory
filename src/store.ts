@@ -23,8 +23,8 @@ import {
   type MemoryProjectionRecord,
   type MemoryConflictRecord,
 } from './memory-domain.ts'
-import { classifyEvidenceSensitivity, normalizeEvidenceSensitivity } from './sensitivity.ts'
-import type { ConflictOverlay, DreamSettings, MemoryCategory, MemoryItem, MemoryObservation, MemoryPurgeRecord, MemorySensitivity, MemorySnapshot, ResidentBlock, ResidentBlockKind, ResidentSnapshot, SafeUsageEffect, SafeUsageProjection, SensitivityAuthority, SensitivityChange } from './types.ts'
+import { classifyEvidenceSensitivity, disclosureForSensitivity, normalizeEvidenceSensitivity } from './sensitivity.ts'
+import type { ConflictOverlay, DreamSettings, MemoryCategory, MemoryDisclosure, MemoryItem, MemoryObservation, MemoryPurgeRecord, MemorySensitivity, MemorySnapshot, ResidentBlock, ResidentBlockKind, ResidentSnapshot, SafeUsageEffect, SafeUsageProjection, SensitivityAuthority, SensitivityChange, UnclassifiedEvidenceDisclosure } from './types.ts'
 import {
   analyzeRecallQuery,
   applyRecallBudget,
@@ -39,6 +39,7 @@ import {
   type EmbeddingProvider,
   type MemoryReranker,
   type RecallDocument,
+  type RecallGateDecision,
   type RecallOptions,
   type RecallPlan,
   type RecallResponse,
@@ -113,6 +114,8 @@ export interface MemoryStoreOptions {
   readonly temporal?: boolean
   /** Classify user-origin L0 evidence at capture; false leaves every unmarked event fail-closed. */
   readonly evidenceClassification?: boolean
+  /** Disclosure policy for unclassified fail-closed L0 evidence; the service supplies this from Config. */
+  readonly unclassifiedEvidenceDisclosure?: UnclassifiedEvidenceDisclosure
   /** Minimum distinct evidence anchors required for an observation. */
   readonly minObservationEvidence?: number
   /** Minimum distinct evidence anchors required for automatic observation activation. */
@@ -293,10 +296,11 @@ interface RecallEligibilitySummary {
   readonly reasons: string[]
 }
 
-const RESIDENT_COMPILER_VERSION = 2
+const RESIDENT_COMPILER_VERSION = 3
 const EXPLICIT_RECALL_PATTERN = /还记得|记得.*之前|之前|上次|以前|曾经|过去|回忆|我说过|你记得|do you remember|what did i say|earlier|last time|before/i
 const DENSE_INDEX_NAME = 'dense'
 const DENSE_INDEX_SCHEMA_VERSION = 3
+const ALIAS_REASSIGNMENT_REASON = 'alias reassigned'
 /**
  * Write-behind window for the records an L0 append derives: the session's source
  * record and the scope state record.
@@ -367,6 +371,7 @@ export class MemoryProfileStore {
   private readonly sensitiveResident: boolean
   private readonly temporalEnabled: boolean
   private readonly evidenceClassification: boolean
+  private readonly unclassifiedEvidenceDisclosure: UnclassifiedEvidenceDisclosure
   private readonly embeddingProvider: EmbeddingProvider | undefined
   private readonly reranker: MemoryReranker | undefined
   private readonly embeddingModel: string | undefined
@@ -390,6 +395,7 @@ export class MemoryProfileStore {
     this.sensitiveResident = options.sensitiveResident === true
     this.temporalEnabled = options.temporal !== false
     this.evidenceClassification = options.evidenceClassification === true
+    this.unclassifiedEvidenceDisclosure = options.unclassifiedEvidenceDisclosure ?? 'never_explicit'
     this.minObservationEvidence = normalizeMinObservationEvidence(options.minObservationEvidence)
     this.observationActivationMinEvidence = normalizeMinObservationEvidence(options.observationActivationMinEvidence, 3)
     this.observationActivationMinSessions = normalizePositiveInteger(options.observationActivationMinSessions, 2)
@@ -456,10 +462,14 @@ export class MemoryProfileStore {
     await this.flushEvidence()
     this.wikiIndex.close()
   }
-  /** Return Dream endpoint settings without ever returning a secret. */
+  /** Return Dream endpoint settings without ever returning a secret.
+   * @returns The resulting value.
+   */
   dreamSettings(): DreamSettings { return { ...this.settings } }
 
-  /** Update endpoint metadata and credential reference, never a credential value. */
+  /** Update endpoint metadata and credential reference, never a credential value.
+   * @param input The input.
+   */
   async updateDreamSettings(input: Partial<DreamSettings>): Promise<void> {
     await this.waitReady()
     await this.mutate(async () => {
@@ -474,7 +484,9 @@ export class MemoryProfileStore {
     })
   }
 
-  /** Return a stable client-facing view of the authoritative scope. */
+  /** Return a stable client-facing view of the authoritative scope.
+   * @returns The resulting value.
+   */
   snapshot(): MemorySnapshot {
     const records = this.pages.map((page) => {
       const item = memoryFromPage(page)
@@ -497,6 +509,7 @@ export class MemoryProfileStore {
       profileId: this.profileId,
       records,
       candidates: this.candidates.map(cloneCandidate),
+      aliases: this.listAliases(),
       observations: this.observations.map(cloneObservation),
       pages,
       graph,
@@ -510,21 +523,40 @@ export class MemoryProfileStore {
     }
   }
 
-  /** Return canonical pages, including expired and superseded history. */
+  /** Return canonical pages, including expired and superseded history.
+   * @param options The options.
+   * @returns The resulting value.
+   */
   listPages(options: { status?: WikiPageStatus; type?: WikiPageType } = {}): WikiPage[] {
     return this.pages.filter(page => (options.status === undefined || page.status === options.status) && (options.type === undefined || page.type === options.type)).map(clonePage)
   }
-  /** Return a canonical page by id or path. */
+  /** Return a canonical page by id or path.
+   * @param idOrPath The id or path.
+   * @returns The resulting value.
+   */
   page(idOrPath: string): WikiPage | undefined { const page = this.pages.find(item => item.id === idOrPath || item.path === idOrPath || memoryFromPage(item)?.id === idOrPath); return page === undefined ? undefined : clonePage(page) }
-  /** Search only the derived in-memory index. */
+  /** Search only the derived in-memory index.
+   * @param query The query.
+   * @param maxResults The max results.
+   * @param hop The hop.
+   * @returns The resulting value.
+   */
   search(query: string, maxResults = 20, hop = 0): Array<WikiSearchResult & { page: WikiPage }> { return this.wikiIndex.search(query, maxResults, hop).map(result => ({ ...result, page: clonePage(result.page) })) }
-  /** Search canonical pages at an explicit time without changing current truth. */
+  /** Search canonical pages at an explicit time without changing current truth.
+   * @param query The query.
+   * @param options The options.
+   * @returns The resulting value.
+   */
   searchTemporal(query: string, options: { readonly atTime?: string; readonly history?: boolean; readonly maxResults?: number } = {}): Array<WikiSearchResult & { page: WikiPage }> {
     const temporalMode = options.history === true ? 'history' : options.atTime === undefined ? 'current' : 'at'; const atTime = options.atTime === undefined ? undefined : Date.parse(options.atTime); const effectiveAt = temporalMode === 'current' ? Date.now() : atTime; const pages = this.temporalPages({ temporalMode, ...(options.atTime === undefined ? {} : { atTime: options.atTime }) }).filter(page => page.consent && (temporalMode === 'history' || (temporalMode === 'at' ? page.status !== 'candidate' : page.status === 'confirmed')) && (temporalMode === 'history' || (effectiveAt !== undefined && !Number.isNaN(effectiveAt) && pageIsValidAt(page, effectiveAt, this.temporalEnabled))))
     const maxResults = options.maxResults ?? 20
     return pages.map(clonePage).map(page => ({ page, score: lexicalScoreForPage(query, page), hop: 0 })).filter(result => result.score > 0).sort((left, right) => right.score - left.score || right.page.updatedAt.localeCompare(left.page.updatedAt)).slice(0, Math.max(1, maxResults))
   }
-  /** Run bounded query-time recall over confirmed Wiki pages and raw user evidence. */
+  /** Run bounded query-time recall over confirmed Wiki pages and raw user evidence.
+   * @param query The query.
+   * @param options The options.
+   * @returns The resulting value.
+   */
   async recall(query: string, options: RecallOptions = {}): Promise<RecallResponse> {
     await this.waitReady()
     const startedAt = Date.now()
@@ -652,11 +684,17 @@ export class MemoryProfileStore {
           ...graphEligibility.reasons,
           ...budgeted.gateReasons,
         ])],
+        gateDecisions: budgeted.gateDecisions,
         degradedModes,
       },
     }
   }
-  /** Return graph data and optional L0 evidence nodes. */
+  /** Return graph data and optional L0 evidence nodes.
+   * @param rootPageId The root page id.
+   * @param hop The hop.
+   * @param includeEvidence The include evidence.
+   * @returns The resulting value.
+   */
   graph(rootPageId?: string, hop = 1, includeEvidence = false): { nodes: ReturnType<WikiIndex['graph']>['nodes']; edges: ReturnType<WikiIndex['graph']>['edges'] } {
     const graph = this.wikiIndex.graph(rootPageId, hop)
     if (!includeEvidence) return graph
@@ -670,24 +708,35 @@ export class MemoryProfileStore {
     }
     return { nodes: [...graph.nodes.map(node => ({ ...node, layer: 'L2' as const })), ...sessionNodes.values()], edges: [...graph.edges, ...evidenceEdges] }
   }
-  /** Return source metadata without raw evidence. */
+  /** Return source metadata without raw evidence.
+   * @returns The resulting value.
+   */
   listSources(): WikiSource[] { return this.sources.map(source => ({ ...source })) }
-  /** Return derived observations without promoting them into canonical Wiki facts. */
+  /** Return derived observations without promoting them into canonical Wiki facts.
+   * @returns The resulting value.
+   */
   listObservations(): MemoryObservation[] { return this.observations.map(cloneObservation) }
 
-  /** Return one disclosure-limited projection by canonical page or observation id. */
+  /** Return one disclosure-limited projection by canonical page or observation id.
+   * @param memoryId The memory id.
+   * @returns The resulting value.
+   */
   projectionFor(memoryId: string): SafeUsageProjection | undefined {
     const normalized = projectionMemoryId(memoryId)
     const projection = this.projections.get(normalized)
     return projection === undefined ? undefined : cloneProjection(projection)
   }
 
-  /** Return all cached safe-use projections in deterministic order. */
+  /** Return all cached safe-use projections in deterministic order.
+   * @returns The resulting value.
+   */
   listProjections(): SafeUsageProjection[] {
     return [...this.projections.values()].map(cloneProjection).sort((left, right) => left.memoryId.localeCompare(right.memoryId) || left.id.localeCompare(right.id))
   }
 
-  /** Rebuild safe-use projections from canonical pages and observations. */
+  /** Rebuild safe-use projections from canonical pages and observations.
+   * @returns The resulting value.
+   */
   async rebuildProjections(): Promise<readonly SafeUsageProjection[]> {
     await this.waitReady()
     await this.mutate(async () => {
@@ -698,7 +747,10 @@ export class MemoryProfileStore {
     return this.listProjections()
   }
 
-  /** Apply one authority-checked sensitivity transition to a page or observation. */
+  /** Apply one authority-checked sensitivity transition to a page or observation.
+   * @param input The input.
+   * @returns The resulting value.
+   */
   async setMemorySensitivity(input: {
     readonly id: string
     readonly target: 'page' | 'observation'
@@ -740,12 +792,18 @@ export class MemoryProfileStore {
     return changed
   }
 
-  /** Return persisted conflict overlays for this profile. */
+  /** Return persisted conflict overlays for this profile.
+   * @returns The resulting value.
+   */
   listConflicts(): ConflictOverlay[] {
     return [...this.conflicts.values()].map(cloneConflict).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
   }
 
-  /** Resolve one contested overlay without applying an unreviewed candidate. */
+  /** Resolve one contested overlay without applying an unreviewed candidate.
+   * @param id The id.
+   * @param resolution The resolution.
+   * @returns The resulting value.
+   */
   async resolveConflict(id: string, resolution: 'correction' | 'temporal_transition' | 'management'): Promise<boolean> {
     await this.waitReady()
     let resolved = false
@@ -771,7 +829,10 @@ export class MemoryProfileStore {
     return resolved
   }
 
-  /** Store an inferred pattern after the configured number of distinct valid anchors. */
+  /** Store an inferred pattern after the configured number of distinct valid anchors.
+   * @param input The input.
+   * @returns The resulting value.
+   */
   async upsertObservationCandidate(input: { readonly id?: string; readonly text: string; readonly sourceRefs: readonly string[]; readonly confidence?: number; readonly sensitivity?: MemorySensitivity; readonly observedAt?: string; readonly recordedAt?: string; readonly validFrom?: string | null; readonly validTo?: string | null; readonly derivedFromObservationIds?: readonly string[] }): Promise<MemoryObservation> {
     await this.waitReady(); let result!: MemoryObservation
     await this.mutate(async () => {
@@ -787,13 +848,26 @@ export class MemoryProfileStore {
     return result
   }
 
-  /** Activate an inferred observation as an observation only; it still cannot become a fact. */
+  /** Activate an inferred observation as an observation only; it still cannot become a fact.
+   * @param id The id.
+   * @returns The resulting value.
+   */
   async activateObservation(id: string): Promise<boolean> { return this.changeObservationStatus(id, 'active', 'observation-activated') }
-  /** Invalidate an observation when later evidence weakens or contradicts it. */
+  /** Invalidate an observation when later evidence weakens or contradicts it.
+   * @param id The id.
+   * @returns The resulting value.
+   */
   async invalidateObservation(id: string): Promise<boolean> { return this.changeObservationStatus(id, 'invalidated', 'observation-invalidated') }
-  /** Suppress an observation from recall without deleting its auditably derived record. */
+  /** Suppress an observation from recall without deleting its auditably derived record.
+   * @param id The id.
+   * @returns The resulting value.
+   */
   async suppressObservation(id: string): Promise<boolean> { return this.changeObservationStatus(id, 'suppressed', 'observation-suppressed') }
-  /** Update an observation with distinct supporting and contradicting evidence anchors. */
+  /** Update an observation with distinct supporting and contradicting evidence anchors.
+   * @param id The id.
+   * @param input The input.
+   * @returns The resulting value.
+   */
   async updateObservationEvidence(id: string, input: { readonly supportingRefs?: readonly string[]; readonly contradictingRefs?: readonly string[]; readonly evidenceAt?: string }): Promise<MemoryObservation | undefined> {
     await this.waitReady(); let result: MemoryObservation | undefined
     await this.mutate(async () => {
@@ -806,12 +880,16 @@ export class MemoryProfileStore {
     })
     return result
   }
-  /** Validate reflection anchors before admitting a batch of observation candidates. */
+  /** Validate reflection anchors before admitting a batch of observation candidates.
+   * @param refs The refs.
+   */
   validateObservationCandidateAnchors(refs: readonly string[]): void {
     const anchors = this.validateObservationAnchors(refs)
     if (anchors.length < this.minObservationEvidence) throw new Error(`Observation requires at least ${this.minObservationEvidence} distinct evidence anchors`)
   }
-  /** Record a sanitized reflection failure without changing Wiki or Resident data. */
+  /** Record a sanitized reflection failure without changing Wiki or Resident data.
+   * @param error The error.
+   */
   async noteReflectionFailure(error: unknown): Promise<void> {
     await this.waitReady()
     await this.mutate(async () => {
@@ -819,15 +897,24 @@ export class MemoryProfileStore {
       await this.persist()
     })
   }
-  /** Return purge journal metadata without retaining raw content. */
+  /** Return purge journal metadata without retaining raw content.
+   * @returns The resulting value.
+   */
   listPurges(): MemoryPurgeRecord[] { return this.purges.map(purge => ({ ...purge })) }
-  /** Build a non-mutating, scope-local purge plan and deterministic confirmation token. */
+  /** Build a non-mutating, scope-local purge plan and deterministic confirmation token.
+   * @param sessionId The session id.
+   * @returns The resulting value.
+   */
   purgePlan(sessionId: string): MemoryPurgePlan {
     const normalized = sessionId.trim(); if (!normalized) throw new Error('purge requires sessionId')
     const impact = this.purgeImpact(normalized); const confirmation = contentHash(JSON.stringify({ scope: this.scope.key, sessionId: normalized, impact })).slice(0, 32)
     return { sessionId: normalized, impact, confirmation }
   }
-  /** Execute a dry-run or explicitly authorized, resumable session purge. */
+  /** Execute a dry-run or explicitly authorized, resumable session purge.
+   * @param sessionId The session id.
+   * @param options The options.
+   * @returns The resulting value.
+   */
   async purgeSession(sessionId: string, options: MemoryPurgeOptions = {}): Promise<boolean | MemoryPurgePlan> {
     await this.waitReady(); const normalized = sessionId.trim(); if (!normalized) throw new Error('purge requires sessionId')
     if (options.dryRun === true) return this.purgePlan(normalized)
@@ -858,19 +945,25 @@ export class MemoryProfileStore {
     })
     return changed
   }
-  /** Return the durable audit trail, including correction and forget lineage. */
+  /** Return the durable audit trail, including correction and forget lineage.
+   * @returns The resulting value.
+   */
   listAudits(): MemoryAuditRecord[] {
     return [...this.audits.values()]
       .map(record => ({ ...record, ...(record.detail === undefined ? {} : { detail: structuredClone(record.detail) }) }))
       .sort((a, b) => a.at.localeCompare(b.at))
   }
-  /** Return the last-valid resident projection. */
+  /** Return the last-valid resident projection.
+   * @returns The resulting value.
+   */
   renderResident(): string { return this.resident }
 
   /** Append one L0 event to the scope-local session record.
    *
    * When evidence classification is enabled, a user-origin event is classified in the same
    * mutation as its append, so a persisted line always carries the value it was captured with.
+   * @param sessionId The session id.
+   * @param line The line.
    */
   async appendSessionEvent(sessionId: string, line: string): Promise<void> {
     await this.waitReady(); await this.mutate(async () => {
@@ -948,7 +1041,10 @@ export class MemoryProfileStore {
     }
     return { normal, provisional_sensitive: provisional, sensitive, unclassified }
   }
-  /** Read one scope-local session evidence stream. */
+  /** Read one scope-local session evidence stream.
+   * @param sessionId The session id.
+   * @returns The resulting value.
+   */
   async sessionEvidence(sessionId: string): Promise<string | undefined> { await this.waitReady(); const value = this.sessionLines.get(sessionId); return value && value.length > 0 ? `${value.join('\n')}\n` : undefined }
   /** Persist the sensitivity classification for one index-aligned L0 event.
    *
@@ -1074,13 +1170,23 @@ export class MemoryProfileStore {
     })
     return changed
   }
-  /** Return whether this L0 source needs a Dream pass. */
+  /** Return whether this L0 source needs a Dream pass.
+   * @param sessionId The session id.
+   * @returns The resulting value.
+   */
   async shouldDreamSession(sessionId: string): Promise<boolean> { await this.waitReady(); return this.sources.find(item => item.ref === sessionId)?.status !== 'ingested' }
 
-  /** Convert compatibility records into controlled Wiki candidates/pages. */
+  /** Convert compatibility records into controlled Wiki candidates/pages.
+   * @param items The items.
+   * @param dreamAt The dream at.
+   */
   async ingest(items: readonly MemoryItem[], dreamAt = new Date().toISOString()): Promise<void> { const refs = new Set(items.flatMap(item => item.sourceConversations)); await this.ingestPages(items.map(item => pageFromMemory(item, dreamAt)), dreamAt, refs.size === 1 ? [...refs][0] : undefined) }
 
-  /** Merge Dream output; unconfirmed pages remain candidates. */
+  /** Merge Dream output; unconfirmed pages remain candidates.
+   * @param items The items.
+   * @param dreamAt The dream at.
+   * @param ingestedSourceRef The ingested source ref.
+   */
   async ingestPages(items: readonly WikiPage[], dreamAt = new Date().toISOString(), ingestedSourceRef?: string): Promise<void> {
     await this.waitReady(); await this.mutate(async () => {
       const before = { pages: this.pages.map(clonePage), candidates: this.candidates.map(cloneCandidate), sources: this.sources.map(source => ({ ...source })), state: { ...this.state }, resident: this.resident }
@@ -1092,9 +1198,13 @@ export class MemoryProfileStore {
     })
   }
 
-  /** Add one explicit management-confirmed memory. */
+  /** Add one explicit management-confirmed memory.
+   * @param item The item.
+   */
   async upsertManual(item: MemoryItem): Promise<void> { await this.upsertManualPage(pageFromMemory({ ...item, status: 'confirmed', consent: true }, new Date().toISOString())) }
-  /** Add one explicit management-confirmed Wiki page. */
+  /** Add one explicit management-confirmed Wiki page.
+   * @param input The input.
+   */
   async upsertManualPage(input: WikiPage): Promise<void> {
     await this.waitReady()
     await this.mutate(async () => {
@@ -1116,7 +1226,11 @@ export class MemoryProfileStore {
     })
   }
 
-  /** Correct a canonical page and keep its version/audit lineage. */
+  /** Correct a canonical page and keep its version/audit lineage.
+   * @param id The id.
+   * @param input The input.
+   * @returns The resulting value.
+   */
   async editPage(id: string, input: { readonly title?: string; readonly description?: string; readonly body?: string; readonly tags?: readonly string[]; readonly validUntil?: string | null }): Promise<WikiPage | undefined> {
     await this.waitReady(); let updated: WikiPage | undefined
     await this.mutate(async () => {
@@ -1130,7 +1244,11 @@ export class MemoryProfileStore {
     return updated
   }
 
-  /** Record a new temporal state while retaining the prior page and lineage. */
+  /** Record a new temporal state while retaining the prior page and lineage.
+   * @param id The id.
+   * @param input The input.
+   * @returns The resulting value.
+   */
   async updatePageTemporal(id: string, input: { readonly title?: string; readonly description?: string; readonly body?: string; readonly tags?: readonly string[]; readonly observedAt?: string; readonly recordedAt?: string; readonly validFrom: string; readonly validTo?: string | null; readonly validUntil?: string | null; readonly sensitivity?: 'normal' | 'sensitive' }): Promise<WikiPage | undefined> {
     await this.waitReady(); let updated: WikiPage | undefined
     await this.mutate(async () => {
@@ -1148,7 +1266,10 @@ export class MemoryProfileStore {
     return updated
   }
 
-  /** Mark a canonical page superseded while retaining its version and source lineage. */
+  /** Mark a canonical page superseded while retaining its version and source lineage.
+   * @param id The id.
+   * @returns The resulting value.
+   */
   async supersede(id: string): Promise<boolean> {
     await this.waitReady(); let changed = false
     await this.mutate(async () => {
@@ -1166,16 +1287,29 @@ export class MemoryProfileStore {
     return changed
   }
 
-  /** Confirm one candidate through an explicit management operation. */
+  /** Confirm one candidate through an explicit management operation.
+   * @param id The id.
+   * @returns The resulting value.
+   */
   async confirm(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const candidate = this.candidates.find(item => item.id === id && item.status === 'candidate'); if (!candidate) return; const conflict = candidate.conflictPageId === undefined ? this.pages.find(page => page.path === candidate.proposedPath) : this.pages.find(page => page.id === candidate.conflictPageId); if (conflict?.locked) return; found = true; this.commitPage(this.normalizeIncomingPage({ ...candidate.page, status: 'confirmed', consent: true, locked: true }, true)); this.candidates = this.candidates.filter(item => item.id !== id); this.markSuccess(); await this.persist(); await this.audit('candidate-confirmed', { id }) }); return found }
-  /** Reject one candidate while retaining a durable audit record. */
+  /** Reject one candidate while retaining a durable audit record.
+   * @param id The id.
+   * @returns The resulting value.
+   */
   async reject(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { if (!this.candidates.some(item => item.id === id && item.status === 'candidate')) return; found = true; this.candidates = this.candidates.filter(item => item.id !== id); this.markSuccess(); await this.persist(); await this.audit('candidate-rejected', { id }) }); return found }
-  /** Remove derived Wiki data and disclose that raw L0 session evidence remains. */
-  async forget(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const page = this.pages.find(item => item.id === id || item.path === id || memoryFromPage(item)?.id === id); if (!page) return; found = true; this.pages = this.pages.filter(item => item.id !== page.id); this.candidates = this.candidates.filter(candidate => candidate.page.id !== page.id && candidate.proposedPath !== page.path && candidate.conflictPageId !== page.id); this.observations = this.observations.filter(observation => !observation.sourceRefs.includes(`page:${page.id}`)); this.activations.delete(`page:${page.id}`); this.projections.delete(page.id); for (const [key, suppression] of this.suppressions) if (suppression.targetKind === 'page' && suppression.targetId === page.id) this.suppressions.delete(key); for (const [key, conflict] of this.conflicts) if (conflict.oldCanonicalId === page.id || conflict.newCandidateId === page.id) this.conflicts.delete(key); const now = new Date().toISOString(); for (const [key, alias] of this.aliases) if (alias.entityId === page.id && alias.status !== 'invalidated') this.aliases.set(key, { ...alias, status: 'invalidated', invalidatedAt: now, invalidatedReason: 'canonical entity forgotten', updatedAt: now }); this.rebuildAliasesInMemory(); this.markSuccess(); await this.persist(); await this.audit('derived-memory-forgotten', { id: page.id, rawSessionRetained: true }) }); return found }
-  /** Preserve the last-valid resident while recording a sanitized failure. */
+  /** Remove derived Wiki data and disclose that raw L0 session evidence remains.
+   * @param id The id.
+   * @returns The resulting value.
+   */
+  async forget(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const page = this.pages.find(item => item.id === id || item.path === id || memoryFromPage(item)?.id === id); if (!page) return; found = true; this.pages = this.pages.filter(item => item.id !== page.id); this.candidates = this.candidates.filter(candidate => candidate.page.id !== page.id && candidate.proposedPath !== page.path && candidate.conflictPageId !== page.id); this.observations = this.observations.filter(observation => !observation.sourceRefs.includes(`page:${page.id}`)); this.activations.delete(`page:${page.id}`); this.projections.delete(page.id); for (const [key, suppression] of this.suppressions) if (suppression.targetKind === 'page' && suppression.targetId === page.id) this.suppressions.delete(key); for (const [key, conflict] of this.conflicts) if (conflict.oldCanonicalId === page.id || conflict.newCandidateId === page.id) this.conflicts.delete(key); const now = new Date().toISOString(); for (const [key, alias] of this.aliases) if (alias.entityId === page.id && alias.status !== 'invalidated') this.aliases.set(key, { ...alias, schemaVersion: 5, status: 'invalidated', validTo: now, invalidatedAt: now, invalidatedReason: 'canonical entity forgotten', updatedAt: now }); this.rebuildAliasesInMemory(); this.markSuccess(); await this.persist(); await this.audit('derived-memory-forgotten', { id: page.id, rawSessionRetained: true }) }); return found }
+  /** Preserve the last-valid resident while recording a sanitized failure.
+   * @param error The error.
+   */
   async markDreamFailure(error: unknown): Promise<void> { await this.waitReady(); await this.mutate(async () => { const message = error instanceof Error ? error.message : String(error); this.state = { ...this.state, lastError: sanitizeProviderError(message) }; await this.persist(); await this.audit('dream-failed', { error: this.state.lastError }) }) }
 
-  /** Persist a durable Dream job/cursor record for restart recovery. */
+  /** Persist a durable Dream job/cursor record for restart recovery.
+   * @param job The job.
+   */
   async upsertJob(job: Record<string, unknown>): Promise<void> {
     await this.waitReady()
     await this.mutate(async () => {
@@ -1185,38 +1319,55 @@ export class MemoryProfileStore {
       await this.persist()
     })
   }
-  /** Return the durable job state used to resume a profile after restart. */
+  /** Return the durable job state used to resume a profile after restart.
+   * @param id The id.
+   * @returns The resulting value.
+   */
   job(id: string): Record<string, unknown> | undefined { const value = this.jobs.get(id); return value === undefined ? undefined : { ...value } }
 
-  /** Add or explicitly replace one scope-aware alias record. */
+  /** Add or explicitly replace one scope-aware alias record.
+   * @param input The input.
+   * @returns The resulting value.
+   */
   async upsertAlias(input: MemoryAliasInput): Promise<MemoryAliasRecord> {
     await this.waitReady(); let result!: MemoryAliasRecord
     await this.mutate(async () => {
       const entityId = input.entityId.trim(); const alias = input.alias.trim(); const sourceRefs = [...new Set(input.sourceRefs.map(ref => ref.trim()).filter(Boolean))]; if (!entityId || !alias || sourceRefs.length === 0) throw new Error('alias requires entityId, alias and sourceRefs')
-      const normalizedAlias = normalizeAlias(alias); const confidence = Math.min(1, Math.max(0, input.confidence ?? 0.5)); const resolutionKind = input.resolutionKind ?? 'explicit_coreference'; const status = input.status === 'invalidated' ? 'invalidated' : resolutionKind === 'explicit_coreference' || resolutionKind === 'management' ? input.status ?? 'active' : 'contested'; for (const [id, existing] of this.aliases) if (id.startsWith('alias-') && existing.normalizedAlias === normalizedAlias && id !== `alias-${contentHash(`${this.scope.key}\n${entityId}\n${normalizedAlias}`).slice(0, 24)}`) this.aliases.delete(id)
-      const id = `alias-${contentHash(`${this.scope.key}\n${entityId}\n${normalizedAlias}`).slice(0, 24)}`; const now = new Date().toISOString(); const next: MemoryAliasRecord = { schemaVersion: 3, scope: this.scope, id, entityId, alias, normalizedAlias, confidence, sourceRefs, createdAt: this.aliases.get(id)?.createdAt ?? now, updatedAt: now, status, resolutionKind, ...(input.validFrom === undefined ? {} : { validFrom: input.validFrom }), ...(input.validTo === undefined ? {} : { validTo: input.validTo }), ...(status === 'invalidated' ? { invalidatedAt: now, invalidatedReason: 'invalidated at upsert' } : {}) }; this.aliases.set(id, next); this.rebuildAliasesInMemory(); await this.persist(); await this.audit('alias-upserted', { entityId, alias: normalizedAlias, status, resolutionKind }); result = { ...next, sourceRefs: [...next.sourceRefs] }
+      const normalizedAlias = normalizeAlias(alias); const confidence = Math.min(1, Math.max(0, input.confidence ?? 0.5)); const resolutionKind = input.resolutionKind ?? 'explicit_coreference'; const status = input.status === 'invalidated' ? 'invalidated' : resolutionKind === 'explicit_coreference' || resolutionKind === 'management' ? input.status ?? 'active' : 'contested'; const id = `alias-${contentHash(`${this.scope.key}\n${entityId}\n${normalizedAlias}`).slice(0, 24)}`; const now = new Date().toISOString(); const existing = this.aliases.get(id); const replaced = [...this.aliases.entries()].filter(([existingId, record]) => existingId.startsWith('alias-') && existingId !== id && record.normalizedAlias === normalizedAlias && aliasStatus(record) !== 'invalidated'); for (const [replacedId, record] of replaced) this.aliases.set(replacedId, { ...record, schemaVersion: 5, status: 'invalidated', validTo: now, invalidatedAt: now, invalidatedReason: ALIAS_REASSIGNMENT_REASON, replacedBy: id, updatedAt: now }); const validFrom = input.validFrom ?? (replaced.length > 0 ? now : existing?.validFrom); const validTo = input.validTo ?? existing?.validTo; const next: MemoryAliasRecord = { schemaVersion: 5, scope: this.scope, id, entityId, alias, normalizedAlias, confidence, sourceRefs, createdAt: existing?.createdAt ?? now, updatedAt: now, status, resolutionKind, ...(validFrom === undefined ? {} : { validFrom }), ...(validTo === undefined ? {} : { validTo }), ...(status === 'invalidated' ? { invalidatedAt: now, invalidatedReason: 'invalidated at upsert' } : {}) }; this.aliases.set(id, next); this.rebuildAliasesInMemory(); await this.persist(); await this.audit('alias-upserted', { entityId, alias: normalizedAlias, status, resolutionKind, ...(replaced.length === 0 ? {} : { replacedBy: id }) }); result = { ...next, sourceRefs: [...next.sourceRefs] }
     })
     return result
   }
 
-  /** Return all explicit and derived aliases in deterministic order. */
+  /** Return all explicit and derived aliases in deterministic order.
+   * @returns The resulting value.
+   */
   listAliases(): MemoryAliasRecord[] { return [...this.aliases.values()].map(alias => ({ ...alias, sourceRefs: [...alias.sourceRefs] })).sort((left, right) => left.normalizedAlias.localeCompare(right.normalizedAlias) || left.entityId.localeCompare(right.entityId) || left.id.localeCompare(right.id)) }
 
-  /** Resolve an exact normalized alias without graph propagation or ranking. */
-  resolveAlias(text: string): readonly MemoryAliasResolution[] { const normalizedAlias = normalizeAlias(text); return this.listAliases().filter(alias => alias.normalizedAlias === normalizedAlias && aliasIsCurrentlyActive(alias)).map(alias => ({ entityId: alias.entityId, alias: alias.alias, confidence: alias.confidence })).sort((left, right) => right.confidence - left.confidence || left.entityId.localeCompare(right.entityId)) }
+  /** Resolve an exact normalized alias without graph propagation or ranking.
+   * @param text The text.
+   * @param options The options.
+   * @returns The resulting value.
+   */
+  resolveAlias(text: string, options: { readonly atTime?: string; readonly history?: boolean } = {}): readonly MemoryAliasResolution[] { const normalizedAlias = normalizeAlias(text); const temporalMode = options.history === true ? 'history' : options.atTime === undefined ? 'current' : 'at'; const atTime = options.atTime === undefined ? undefined : Date.parse(options.atTime); if (temporalMode === 'at' && (atTime === undefined || Number.isNaN(atTime))) throw new Error('alias resolution atTime must be an ISO timestamp'); return this.listAliases().filter(alias => alias.normalizedAlias === normalizedAlias && (temporalMode === 'current' ? aliasIsCurrentlyActive(alias) : temporalMode === 'history' ? aliasIsHistoricallyReachable(alias) : aliasIsValidAt(alias, atTime))).map(alias => ({ entityId: alias.entityId, alias: alias.alias, confidence: alias.confidence })).sort((left, right) => right.confidence - left.confidence || left.entityId.localeCompare(right.entityId)) }
 
-  /** Invalidate one alias edge without changing any canonical page. */
+  /** Invalidate one alias edge without changing any canonical page.
+   * @param id The id.
+   * @param reason The reason.
+   * @returns The resulting value.
+   */
   async invalidateAlias(id: string, reason: string): Promise<boolean> {
     await this.waitReady(); let changed = false
     await this.mutate(async () => {
       const existing = this.aliases.get(id)
       if (existing === undefined || existing.status === 'invalidated') return
-      const now = new Date().toISOString(); this.aliases.set(id, { ...existing, status: 'invalidated', invalidatedAt: now, invalidatedReason: reason.trim(), updatedAt: now }); this.rebuildAliasesInMemory(); await this.persist(); await this.audit('alias-invalidated', { id, reason: reason.trim() }); changed = true
+      const now = new Date().toISOString(); this.aliases.set(id, { ...existing, schemaVersion: 5, status: 'invalidated', validTo: now, invalidatedAt: now, invalidatedReason: reason.trim(), updatedAt: now }); this.rebuildAliasesInMemory(); await this.persist(); await this.audit('alias-invalidated', { id, reason: reason.trim() }); changed = true
     })
     return changed
   }
 
-  /** Rebuild derived aliases from current canonical titles, tags, and wikilinks. */
+  /** Rebuild derived aliases from current canonical titles, tags, and wikilinks.
+   * @returns The resulting value.
+   */
   async rebuildAliases(): Promise<readonly MemoryAliasRecord[]> {
     await this.waitReady(); await this.mutate(async () => { this.rebuildAliasesInMemory(); await this.persist(); await this.audit('aliases-rebuilt') }); return this.listAliases()
   }
@@ -1405,7 +1556,9 @@ export class MemoryProfileStore {
         if (parsed === undefined || parsed.text.length === 0 || parsed.sourceKind !== 'user') continue
         const observedAt = normalizeOptionalTemporalInstant(parsed.observedAt)
         const marker = this.effectiveEvidenceMarker(sessionId, index)
-        const document = documentFromEvidence(sessionId, parsed.eventSeq ?? index, parsed.text, observedAt, marker.sensitivity) as RecallDocument & { readonly observedAt?: string }
+        const storedMarker = this.evidenceMarkers.get(sessionId)?.get(index)
+        const disclosure = storedMarker === undefined || this.isSuspendedEvidenceMarker(storedMarker) ? this.unclassifiedEvidenceDisclosure : disclosureForSensitivity(marker.sensitivity)
+        const document = documentFromEvidence(sessionId, parsed.eventSeq ?? index, parsed.text, observedAt, marker.sensitivity, disclosure) as RecallDocument & { readonly observedAt?: string }
         candidates.push({ document, evidence: { sessionId, lineIndex: index, ...(observedAt === undefined ? {} : { observedAt }) } })
       }
     }
@@ -1485,13 +1638,17 @@ export class MemoryProfileStore {
       if (!evidenceTemporalEligible(evidence.observedAt, plan, this.temporalEnabled)) return { eligibility: 'rejected', rejectionReason: plan.temporalMode === 'at' ? 'temporal-after-cutoff' : 'temporal-future' }
     }
     const sensitivity = candidate.document.sensitivity
-    if (sensitivity === 'sensitive' || sensitivity === 'provisional_sensitive') {
-      const topicMatch = recallTopicMatches(query, candidate.document)
+    const disclosure = candidate.document.projection?.disclosure ?? disclosureForSensitivity(sensitivity ?? 'sensitive')
+    if (disclosure === 'normal') return { eligibility: 'eligible' }
+    const topicMatch = recallTopicMatches(query, candidate.document)
+    if (disclosure === 'user_explicit_only') {
       if ((EXPLICIT_RECALL_PATTERN.test(query) || OBSERVATION_REQUEST_PATTERN.test(query)) && topicMatch) return { eligibility: 'eligible' }
       if (topicMatch) return { eligibility: 'silent_only', rejectionReason: 'sensitive-no-explicit-request' }
       return { eligibility: 'rejected', rejectionReason: 'sensitive-topic-mismatch' }
     }
-    return { eligibility: 'eligible' }
+    if ((EXPLICIT_RECALL_PATTERN.test(query) || OBSERVATION_REQUEST_PATTERN.test(query)) && topicMatch) return { eligibility: 'eligible' }
+    if (topicMatch) return { eligibility: 'silent_only', rejectionReason: 'sensitive-no-explicit-request' }
+    return { eligibility: 'rejected', rejectionReason: 'sensitive-topic-mismatch' }
   }
   private pageIsSuppressed(page: WikiPage): boolean { return page.usagePolicy === 'suppressed' || [...this.suppressions.values()].some(record => record.active && record.targetKind === 'page' && record.targetId === page.id) }
   private isObservationSuppressed(id: string): boolean { return [...this.suppressions.values()].some(record => record.active && record.targetKind === 'observation' && record.targetId === id) }
@@ -1603,7 +1760,7 @@ export class MemoryProfileStore {
       index_meta: [...this.indexMeta.values()].map(record => [scopedRecordKey(this.scope, record.indexName), record] as [string, DenseIndexLifecycleMetadata]),
       vectors: [...this.vectors.entries()].map(([key, record]) => [scopedRecordKey(this.scope, vectorStorageKey(record, key)), record] as [string, MemoryVectorRecord]),
       aliases: [...this.aliases.values()].map(record => [scopedRecordKey(this.scope, record.id), record] as [string, MemoryAliasRecord]),
-      projections: [...this.projections.values()].map(projection => [scopedRecordKey(this.scope, projectionStorageKey(projection)), { schemaVersion: 4, scope: this.scope, projection }] as [string, MemoryProjectionRecord]),
+      projections: [...this.projections.values()].map(projection => [scopedRecordKey(this.scope, projectionStorageKey(projection)), { schemaVersion: 5, scope: this.scope, projection }] as [string, MemoryProjectionRecord]),
       conflicts: [...this.conflicts.values()].map(conflict => [scopedRecordKey(this.scope, conflictStorageKey(conflict)), { schemaVersion: 4, scope: this.scope, conflict }] as [string, MemoryConflictRecord]),
     }
     const state = this.stateRecord(compiled, nextState)
@@ -1814,7 +1971,7 @@ export class MemoryProfileStore {
   }
   private upsertManualSources(page: WikiPage): void { const now = new Date().toISOString(); for (const ref of page.sources) { const existing = this.sources.find(source => source.ref === ref); const source: WikiSource = { id: existing?.id ?? wikiSourceId('manual', ref), ref, kind: 'manual', sha256: contentHash(`${page.path}\n${page.body}`), status: 'ingested', observedAt: existing?.observedAt ?? now, ingestedAt: now }; this.sources = [...this.sources.filter(item => item.ref !== ref), source] } }
   private rebuildAliasesInMemory(): void {
-    const now = new Date().toISOString(); const explicit = new Map([...this.aliases.entries()].filter(([id]) => id.startsWith('alias-')).map(([id, record]) => this.pages.some(page => page.id === record.entityId) ? [id, record] as const : [id, { ...record, status: 'invalidated' as const, invalidatedAt: record.invalidatedAt ?? now, invalidatedReason: record.invalidatedReason ?? 'canonical entity missing', updatedAt: now }] as const)); const next = new Map<string, MemoryAliasRecord>(explicit); const pagesByTitle = new Map(this.pages.map(page => [normalizeAlias(page.title), page.id])); const add = (page: WikiPage, alias: string, confidence: number): void => { const normalizedAlias = normalizeAlias(alias); if (!normalizedAlias || [...next.values()].some(record => record.normalizedAlias === normalizedAlias)) return; const id = `derived-${contentHash(`${this.scope.key}\n${page.id}\n${normalizedAlias}`).slice(0, 24)}`; next.set(id, { schemaVersion: 3, scope: this.scope, id, entityId: page.id, alias: alias.trim(), normalizedAlias, confidence, sourceRefs: [`page:${page.id}`], createdAt: now, updatedAt: now, status: 'contested', resolutionKind: 'derived_inference' }) }
+    const now = new Date().toISOString(); const explicit = new Map([...this.aliases.entries()].filter(([id]) => id.startsWith('alias-')).map(([id, record]) => this.pages.some(page => page.id === record.entityId) ? [id, record] as const : [id, { ...record, schemaVersion: 5, status: 'invalidated' as const, validTo: record.validTo ?? now, invalidatedAt: record.invalidatedAt ?? now, invalidatedReason: record.invalidatedReason ?? 'canonical entity missing', updatedAt: now }] as const)); const next = new Map<string, MemoryAliasRecord>(explicit); const pagesByTitle = new Map(this.pages.map(page => [normalizeAlias(page.title), page.id])); const add = (page: WikiPage, alias: string, confidence: number): void => { const normalizedAlias = normalizeAlias(alias); if (!normalizedAlias || [...next.values()].some(record => record.normalizedAlias === normalizedAlias && aliasStatus(record) !== 'invalidated')) return; const id = `derived-${contentHash(`${this.scope.key}\n${page.id}\n${normalizedAlias}`).slice(0, 24)}`; next.set(id, { schemaVersion: 5, scope: this.scope, id, entityId: page.id, alias: alias.trim(), normalizedAlias, confidence, sourceRefs: [`page:${page.id}`], createdAt: now, updatedAt: now, status: 'contested', resolutionKind: 'derived_inference' }) }
     for (const page of this.pages) {
       if (page.status !== 'confirmed' || !page.consent) continue
       add(page, page.title, 1); for (const tag of page.tags) add(page, tag, 0.7); for (const linked of page.body.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g)) { const target = pagesByTitle.get(normalizeAlias(linked[1] ?? '')); if (target === undefined) continue; const targetPage = this.pages.find(candidate => candidate.id === target); if (targetPage !== undefined) add(targetPage, linked[1] ?? '', 0.8) }
@@ -1865,6 +2022,12 @@ function activationContainsPurgeTarget(record: MemoryActivationRecord, sessionId
 function suppressionContainsPurgeTarget(record: MemorySuppressionRecord, pageIds: ReadonlySet<string>, observationIds: ReadonlySet<string>, fragments: readonly string[]): boolean { return record.targetKind === 'page' && pageIds.has(record.targetId) || record.targetKind === 'observation' && observationIds.has(record.targetId) || recordContainsPurgeContent(record.reason, fragments) }
 function aliasContainsPurgeTarget(record: MemoryAliasRecord, sessionId: string, pageIds: ReadonlySet<string>, fragments: readonly string[]): boolean { return record.sourceRefs.some(ref => sourceRefBelongsToSession(ref, sessionId) || pageIds.has(ref.slice('page:'.length))) || recordContainsPurgeContent(record.alias, fragments) || recordContainsPurgeContent(record.entityId, fragments) }
 
+/**
+ * Derive a stable memory identifier from a category and content hash.
+ * @param category The category.
+ * @param content The content.
+ * @returns The resulting value.
+ */
 export function memoryId(category: MemoryCategory, content: string): string { return contentHash(`${category}\n${content.trim()}`).slice(0, 24) }
 
 function uniqueRecallDocuments(documents: readonly RecallDocument[]): RecallDocument[] {
@@ -1890,7 +2053,11 @@ function projectionMemoryId(value: string): string { return value.startsWith('pa
 function projectionStorageKey(projection: SafeUsageProjection): string { return `projection-${contentHash(projection.memoryId).slice(0, 24)}` }
 function conflictStorageKey(conflict: ConflictOverlay): string { return `conflict-${contentHash(conflict.id).slice(0, 24)}` }
 function conflictId(scope: MemoryScope, oldCanonicalId: string, newCandidateId: string): string { return `conflict-${contentHash(`${scope.key}\n${oldCanonicalId}\n${newCandidateId}`).slice(0, 24)}` }
-function cloneProjection(projection: SafeUsageProjection): SafeUsageProjection { return { ...projection, allowedEffects: [...projection.allowedEffects], topicTags: [...projection.topicTags] } }
+function cloneProjection(projection: SafeUsageProjection): SafeUsageProjection {
+  const legacyDisclosure = String(projection.disclosure)
+  const disclosure: MemoryDisclosure = legacyDisclosure === 'user_initiated_only' ? 'never_explicit' : projection.disclosure
+  return { ...projection, allowedEffects: [...projection.allowedEffects], topicTags: [...projection.topicTags], disclosure }
+}
 function cloneConflict(conflict: ConflictOverlay): ConflictOverlay { return { ...conflict } }
 
 function projectionFromPage(scope: MemoryScope, page: WikiPage): SafeUsageProjection {
@@ -1900,14 +2067,15 @@ function projectionFromPage(scope: MemoryScope, page: WikiPage): SafeUsageProjec
   const allowedEffects: readonly SafeUsageEffect[] = sensitivity !== 'normal'
     ? ['avoid_topic']
     : page.kind === 'preference' ? ['tone', 'preference_alignment'] : page.category === 'interaction_rules' ? ['tone', 'avoid_topic'] : ['avoid_repetition']
+  const plainFact = sensitivity === 'normal' && page.kind !== 'preference' && page.category !== 'interaction_rules'
   const category = page.category?.replaceAll('_', ' ') ?? page.type
   const summary = `A ${category} memory may guide conversation handling without disclosing its specific content.`
-  return { id: `projection-${contentHash(`${scope.key}\n${page.id}`).slice(0, 24)}`, memoryId: page.id, allowedEffects, topicTags, summary, disclosure: sensitivity === 'sensitive' ? 'never_explicit' : 'user_initiated_only', generatedFromVersion: contentHash(JSON.stringify({ kind: 'page', id: page.id, page })).slice(0, 24), generatedAt: new Date().toISOString() }
+  return { id: `projection-${contentHash(`${scope.key}\n${page.id}`).slice(0, 24)}`, memoryId: page.id, allowedEffects, topicTags, summary, disclosure: disclosureForSensitivity(sensitivity), ...(plainFact ? { ordinaryRawText: true } : {}), generatedFromVersion: contentHash(JSON.stringify({ kind: 'page', id: page.id, page })).slice(0, 24), generatedAt: new Date().toISOString() }
 }
 
 function projectionFromObservation(scope: MemoryScope, observation: MemoryObservation): SafeUsageProjection {
   const sensitivity = observation.sensitivity
-  return { id: `projection-${contentHash(`${scope.key}\n${observation.id}`).slice(0, 24)}`, memoryId: observation.id, allowedEffects: ['avoid_topic'], topicTags: ['observation', 'inferred'], summary: 'An inferred pattern may guide cautious handling without disclosing its specific content.', disclosure: sensitivity === 'sensitive' ? 'never_explicit' : 'user_initiated_only', generatedFromVersion: contentHash(JSON.stringify({ kind: 'observation', id: observation.id, observation })).slice(0, 24), generatedAt: new Date().toISOString() }
+  return { id: `projection-${contentHash(`${scope.key}\n${observation.id}`).slice(0, 24)}`, memoryId: observation.id, allowedEffects: ['avoid_topic'], topicTags: ['observation', 'inferred'], summary: 'An inferred pattern may guide conversation handling without disclosing its specific content.', disclosure: disclosureForSensitivity(sensitivity), generatedFromVersion: contentHash(JSON.stringify({ kind: 'observation', id: observation.id, observation })).slice(0, 24), generatedAt: new Date().toISOString() }
 }
 
 function conflictParts(page: WikiPage): { readonly subject: string; readonly predicate: string } {
@@ -1923,27 +2091,33 @@ function normalizedAssertion(page: WikiPage): string { return normalizeStructura
 function currentStateAssertion(page: WikiPage): boolean { return page.validTo === undefined && page.validUntil === undefined && !/以前|过去|之前|曾经|historical|formerly|used to/i.test(`${page.title} ${page.description} ${page.body}`) }
 function normalizeStructuralText(value: string): string { return value.replace(/\s+/g, ' ').trim().toLocaleLowerCase() }
 
-function aliasIsCurrentlyActive(alias: MemoryAliasRecord): boolean {
-  const status = alias.status ?? (alias.resolutionKind === 'derived_inference' ? 'contested' : 'active')
-  if (status !== 'active') return false
-  const now = Date.now()
-  if (alias.validFrom !== undefined) { const from = Date.parse(alias.validFrom); if (Number.isNaN(from) || now < from) return false }
-  if (alias.validTo !== undefined) { const to = Date.parse(alias.validTo); if (Number.isNaN(to) || now >= to) return false }
+function aliasStatus(alias: MemoryAliasRecord): NonNullable<MemoryAliasRecord['status']> { return alias.status ?? (alias.resolutionKind === 'derived_inference' ? 'contested' : 'active') }
+function aliasIsCurrentlyActive(alias: MemoryAliasRecord): boolean { return aliasStatus(alias) === 'active' && aliasIsValidAt(alias, Date.now()) }
+function aliasIsValidAt(alias: MemoryAliasRecord, atTime: number | undefined): boolean {
+  if (atTime === undefined) return false
+  if (alias.validFrom !== undefined) { const from = Date.parse(alias.validFrom); if (Number.isNaN(from) || atTime < from) return false }
+  if (alias.validTo !== undefined) { const to = Date.parse(alias.validTo); if (Number.isNaN(to) || atTime >= to) return false }
   return true
 }
+function aliasIsHistoricallyReachable(alias: MemoryAliasRecord): boolean { return aliasStatus(alias) === 'active' || alias.replacedBy !== undefined }
 
 function lexicalConfidenceForResults(results: readonly { readonly score: number }[]): 'strong' | 'weak' | 'none' { const score = results[0]?.score ?? 0; return score === 0 ? 'none' : score >= 3 ? 'strong' : 'weak' }
-function enforceObservationMentionPolicy<T extends { readonly results: readonly RecallResult[]; readonly gateCounts: { readonly explicit: number; readonly silentUse: number; readonly suppress: number }; readonly gateReasons: readonly string[] }>(budgeted: T, query: string): T {
+function enforceObservationMentionPolicy<T extends { readonly results: readonly RecallResult[]; readonly gateCounts: { readonly explicit: number; readonly silentUse: number; readonly suppress: number }; readonly gateReasons: readonly string[]; readonly gateDecisions: readonly RecallGateDecision[] }>(budgeted: T, query: string): T {
   if (OBSERVATION_REQUEST_PATTERN.test(query)) return budgeted
   let explicit = 0
   let silentUse = 0
+  const downgraded = new Set<string>()
   const results = budgeted.results.map((result) => {
     if (result.sourceType !== 'observation' || result.mentionDecision !== 'explicit') return result
     explicit += 1; silentUse += 1
+    downgraded.add(result.id)
     return { ...result, mentionDecision: 'silent_use' as const }
   })
   if (explicit === 0) return budgeted
-  return { ...budgeted, results, gateCounts: { ...budgeted.gateCounts, explicit: budgeted.gateCounts.explicit - explicit, silentUse: budgeted.gateCounts.silentUse + silentUse }, gateReasons: [...new Set([...budgeted.gateReasons, 'inferred-observation-silent-use'])] }
+  const gateDecisions = budgeted.gateDecisions.map(decision => downgraded.has(decision.id) && decision.decision === 'explicit'
+    ? { ...decision, decision: 'silent_use' as const, reason: 'inferred-observation-silent-use' }
+    : decision)
+  return { ...budgeted, results, gateCounts: { ...budgeted.gateCounts, explicit: budgeted.gateCounts.explicit - explicit, silentUse: budgeted.gateCounts.silentUse + silentUse }, gateReasons: [...new Set([...budgeted.gateReasons, 'inferred-observation-silent-use'])], gateDecisions }
 }
 
 const OBSERVATION_REQUEST_PATTERN = /观察|推断|推测|模式|系统发现|observation|inference|inferred|pattern/i
@@ -2061,10 +2235,29 @@ function compileResidentBlocks(pages: readonly WikiPage[], maxChars: number): Re
     const bucket = entries.get(kind) as Array<{ text: string; pageId: string }>
     bucket.push({ text, pageId: page.id })
   }
+  // Pass 1 guarantees every block its fair minimum share; pass 2 hands the unused pool to blocks that
+  // still have entries, in block order, so one heavy category no longer strands the whole budget.
+  const admitted = new Map<ResidentBlockKind, Array<{ text: string; pageId: string }>>(RESIDENT_BLOCK_ORDER.map(kind => [kind, []]))
+  const hungry = new Map<ResidentBlockKind, Array<{ text: string; pageId: string }>>(RESIDENT_BLOCK_ORDER.map(kind => [kind, []]))
+  const present = new Set<ResidentBlockKind>()
+  let rendered = RESIDENT_PREFIX.length + RESIDENT_SUFFIX.length
+  const admit = (kind: ResidentBlockKind, item: { text: string; pageId: string }): boolean => {
+    const delta = present.has(kind) ? item.text.length + 1 : 4 + kind.length + item.text.length + 2
+    if (rendered + delta > cap) return false
+    rendered += delta; present.add(kind); (admitted.get(kind) as Array<{ text: string; pageId: string }>).push(item); return true
+  }
+  for (const kind of RESIDENT_BLOCK_ORDER) {
+    let used = 0
+    for (const item of entries.get(kind) ?? []) {
+      const next = used === 0 ? item.text.length : item.text.length + 1
+      if (used + next > charBudget) { (hungry.get(kind) as Array<{ text: string; pageId: string }>).push(item); continue }
+      if (admit(kind, item)) used += next
+    }
+  }
+  for (const kind of RESIDENT_BLOCK_ORDER) for (const item of hungry.get(kind) ?? []) if (!admit(kind, item)) omittedPageIds.add(item.pageId)
   const blocks = RESIDENT_BLOCK_ORDER.map((kind) => {
-    const selected: string[] = []; const sourcePageIds: string[] = []; let used = 0
-    for (const item of entries.get(kind) ?? []) { const next = used === 0 ? item.text.length : item.text.length + 1; if (used + next > charBudget) { omittedPageIds.add(item.pageId); continue }; selected.push(item.text); sourcePageIds.push(item.pageId); used += next }
-    return { kind, entries: selected, sourcePageIds, charBudget }
+    const list = admitted.get(kind) as Array<{ text: string; pageId: string }>
+    return { kind, entries: list.map(item => item.text), sourcePageIds: list.map(item => item.pageId), charBudget }
   }).filter(block => block.entries.length > 0)
   const fitted = fitResidentBlocks(blocks, cap); for (const pageId of fitted.omittedPageIds) omittedPageIds.add(pageId)
   const content = renderResidentBlocks(fitted.blocks, cap); const includedPageIds = new Set(fitted.blocks.flatMap(block => block.sourcePageIds)); const allPageIds = new Set(pages.map(page => page.id)); for (const pageId of allPageIds) if (!includedPageIds.has(pageId)) omittedPageIds.add(pageId)

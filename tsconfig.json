@@ -1,42 +1,17 @@
 {
-  "extends": "../../../tsconfig.base.json",
+  // Self-contained mirror checkout: type-checking and gate verification happen in the
+  // deepseek-harness monorepo; this config only needs to serve local tooling (tsdown).
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "lib/types"
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "strict": true,
+    "noEmit": true,
+    "types": ["node"]
   },
-  "include": [
-    "src"
-  ],
-  "references": [
-    {
-      "path": "../../../vendor/cordis"
-    },
-    {
-      "path": "../../../vendor/timer"
-    },
-    {
-      "path": "../../credentials/credentials"
-    },
-    {
-      "path": "../../core/agent"
-    },
-    {
-      "path": "../../preset/agent-presets"
-    },
-    {
-      "path": "../../core/session"
-    },
-    {
-      "path": "../../session/session-projection"
-    },
-    {
-      "path": "../../core/system-prompt"
-    },
-    {
-      "path": "../../storage/storage-domain"
-    },
-    {
-      "path": "../../host/webserver"
-    }
-  ]
+  "include": ["src"]
 }

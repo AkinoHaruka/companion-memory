@@ -3,7 +3,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { MemoryScope } from './contracts.ts'
 import type { WikiPage, WikiSearchResult } from './wiki.ts'
-import type { MemorySensitivity, SafeUsageProjection } from './types.ts'
+import type { MemoryDisclosure, MemorySensitivity, SafeUsageProjection } from './types.ts'
+import { disclosureForSensitivity } from './sensitivity.ts'
 
 /** Query modes understood by the first recall planner. */
 export type RecallIntent = 'none' | 'stable_profile' | 'episodic' | 'temporal' | 'entity' | 'multi_hop' | 'correction_check'
@@ -64,6 +65,14 @@ export interface RecallResult {
   readonly userInitiatedTopic?: boolean
 }
 
+/** Per-candidate mention-gate outcome with channel attribution. */
+export interface RecallGateDecision {
+  readonly id: string
+  readonly channels: readonly string[]
+  readonly decision: 'explicit' | 'silent_use' | 'suppress'
+  readonly reason?: string
+}
+
 /** Sanitized explanation of one recall execution. It intentionally excludes the full query. */
 export interface RecallTrace {
   readonly traceId: string
@@ -85,6 +94,8 @@ export interface RecallTrace {
   readonly rejectedByTemporal?: number
   readonly contextChars?: number
   readonly gateReasons?: readonly string[]
+  /** Per-candidate gate outcomes with channel attribution; lists at most the first 24 candidates. */
+  readonly gateDecisions: readonly RecallGateDecision[]
   readonly degradedModes: readonly string[]
 }
 
@@ -162,7 +173,12 @@ const RECALL_STOPWORDS = new Set([
   '的', '了', '吗', '呢', '我', '你', '是', '说', '过', '那个', '什么', '怎么', '一下', '之前',
 ])
 
-/** Analyze a user query without making an external model call. */
+/**
+ * Analyze a user query without making an external model call.
+ * @param query The user query to classify.
+ * @param options Bounded recall planner options; empty by default.
+ * @returns The bounded recall plan.
+ */
 export function analyzeRecallQuery(query: string, options: Pick<RecallOptions, 'maxCandidates' | 'maxContextChars' | 'vectorEnabled' | 'atTime' | 'history' | 'observationsEnabled' | 'graphEnabled' | 'graphMaxHop' | 'lexicalCandidateCap' | 'denseCandidateCap'> = {}): RecallPlan {
   const normalized = query.trim()
   const lower = normalized.toLocaleLowerCase()
@@ -225,7 +241,12 @@ export function analyzeRecallQuery(query: string, options: Pick<RecallOptions, '
   }
 }
 
-/** Decide whether the store should run the dense candidate generator after lexical ranking. */
+/**
+ * Decide whether the store should run the dense candidate generator after lexical ranking.
+ * @param plan The recall plan produced by the planner.
+ * @param lexicalConfidence The lexical channel confidence band.
+ * @returns Whether the dense candidate generator should run.
+ */
 export function shouldRunDense(plan: RecallPlan, lexicalConfidence: 'strong' | 'weak' | 'none'): boolean {
   if (lexicalConfidence === 'strong') return false
   if (plan.densePolicy === 'off') return false
@@ -241,7 +262,11 @@ function classifyDensePolicy(input: { readonly vectorEnabled: boolean; readonly 
   return 'conditional'
 }
 
-/** Tokenize Latin, numeric and CJK text for a deterministic lexical channel. */
+/**
+ * Tokenize Latin, numeric and CJK text for a deterministic lexical channel.
+ * @param value The text to tokenize.
+ * @returns The deduplicated lexical token list.
+ */
 export function lexicalTokens(value: string): string[] {
   const normalized = value.normalize('NFKC').toLocaleLowerCase()
   const tokens: string[] = []
@@ -264,7 +289,12 @@ export function lexicalTokens(value: string): string[] {
   return [...new Set(tokens)]
 }
 
-/** Score one text for lexical recall; larger values are better. */
+/**
+ * Score one text for lexical recall; larger values are better.
+ * @param query The normalized query tokens.
+ * @param text The candidate text to score.
+ * @returns The non-negative lexical match score.
+ */
 export function lexicalScore(query: string, text: string): number {
   const normalizedQuery = query.normalize('NFKC').toLocaleLowerCase().trim()
   const normalizedText = text.normalize('NFKC').toLocaleLowerCase()
@@ -276,7 +306,13 @@ export function lexicalScore(query: string, text: string): number {
   return matched + exactBonus
 }
 
-/** Rank a bounded document list using the same lexical rules as Wiki search. */
+/**
+ * Rank a bounded document list using the same lexical rules as Wiki search.
+ * @param query The query used for lexical scoring.
+ * @param documents The candidate documents to rank.
+ * @param maxResults The maximum number of documents to return.
+ * @returns The ranked documents, best score first.
+ */
 export function rankLexical(query: string, documents: readonly RecallDocument[], maxResults: number): RankedDocument[] {
   return documents
     .map(document => ({ document, score: lexicalScore(query, document.text) }))
@@ -285,7 +321,13 @@ export function rankLexical(query: string, documents: readonly RecallDocument[],
     .slice(0, Math.max(1, maxResults))
 }
 
-/** Fuse channel rankings using Reciprocal Rank Fusion. */
+/**
+ * Fuse channel rankings using Reciprocal Rank Fusion.
+ * @param channels The per-channel ranked document lists.
+ * @param query The query used to merge the channels.
+ * @param options Bounded fusion options; falls back to defaults.
+ * @returns The fused, deduplicated recall results.
+ */
 export function fuseRecallChannels(channels: Readonly<Record<string, readonly RecallDocument[]>>, query: string, options: Pick<RecallOptions, 'rrfK' | 'maxCandidates' | 'lexicalCandidateCap' | 'denseCandidateCap'> = {}): RecallResult[] {
   const k = boundedInteger(options.rrfK, DEFAULT_RRF_K, 1, 10_000)
   const maxCandidates = boundedInteger(options.maxCandidates, DEFAULT_MAX_CANDIDATES, 1, 32)
@@ -342,56 +384,83 @@ export function fuseRecallChannels(channels: Readonly<Record<string, readonly Re
     }))
 }
 
-/** Apply the Phase 1 conservative mention policy and exact serialized character budget. */
-export function applyRecallBudget(results: readonly RecallResult[], plan: RecallPlan, query: string): { results: RecallResult[]; gateCounts: { explicit: number; silentUse: number; suppress: number }; gateReasons: readonly string[]; eligibleCandidates: number; rejectedByEligibility: number; rejectedBySensitivity: number; rejectedByTemporal: number; planChannels: readonly string[]; contextChars: number } {
+/** Bound the per-candidate gate-decision list so traces stay small over HTTP and in raw results. */
+const GATE_DECISION_LIMIT = 24
+
+/**
+ * Apply the Phase 1 conservative mention policy and exact serialized character budget.
+ * @param results The ranked recall results to gate.
+ * @param plan The recall plan that bounds the context budget.
+ * @param query The user query used for topic and explicitness checks.
+ * @returns The gated results and the recounted gate tallies.
+ */
+export function applyRecallBudget(results: readonly RecallResult[], plan: RecallPlan, query: string): { results: RecallResult[]; gateCounts: { explicit: number; silentUse: number; suppress: number }; gateReasons: readonly string[]; gateDecisions: readonly RecallGateDecision[]; eligibleCandidates: number; rejectedByEligibility: number; rejectedBySensitivity: number; rejectedByTemporal: number; planChannels: readonly string[]; contextChars: number } {
   const explicit = EXPLICIT_RECALL_PATTERN.test(query)
   const observationRequest = OBSERVATION_REQUEST_PATTERN.test(query)
   const counts = { explicit: 0, silentUse: 0, suppress: 0 }
   const selected: RecallResult[] = []
   const reasons = new Set<string>()
+  const gateDecisions: RecallGateDecision[] = []
   let eligibleCandidates = 0
   let rejectedByEligibility = 0
   let rejectedBySensitivity = 0
   let rejectedByTemporal = 0
   for (const result of results) {
     const topicMatch = recallTopicMatchesResult(query, result)
+    const disclosure = recallDisclosure(result)
     const protectedSensitivity = result.sensitivity !== undefined && result.sensitivity !== 'normal'
     const userInitiatedTopic = (explicit || observationRequest) && topicMatch
+    const explicitProjectionRecall = result.projection?.disclosure === 'user_explicit_only' && userInitiatedTopic && (result.sourceType !== 'observation' || observationRequest)
+    const specificProjectionTopic = result.projection !== undefined && topicMatch && recallSpecificTopicMatches(query, result)
+    const normalProjectionRecall = disclosure === 'normal' && specificProjectionTopic && result.projection?.ordinaryRawText === true
+    const silentProjectionRecall = result.projection?.disclosure === 'user_explicit_only' && specificProjectionTopic && !userInitiatedTopic
     const eligibility = deriveEligibility(result, plan, query, topicMatch)
     let decision: RecallResult['mentionDecision'] = 'silent_use'
+    let reason: string | undefined
     if (eligibility.eligibility === 'rejected') {
       rejectedByEligibility += 1
       if (eligibility.rejectionReason === 'sensitive-topic-mismatch') rejectedBySensitivity += 1
       if (eligibility.rejectionReason === 'temporal-not-current') rejectedByTemporal += 1
       counts.suppress += 1
-      reasons.add(eligibility.rejectionReason ?? 'eligibility-rejected')
+      reason = eligibility.rejectionReason ?? 'eligibility-rejected'
+      reasons.add(reason)
+      if (gateDecisions.length < GATE_DECISION_LIMIT) gateDecisions.push({ id: result.id, channels: result.channels, decision: 'suppress', reason })
       continue
     }
-    if (protectedSensitivity && !userInitiatedTopic) {
+    if (protectedSensitivity && !userInitiatedTopic && !silentProjectionRecall) {
       rejectedBySensitivity += 1
       counts.suppress += 1
-      reasons.add(eligibility.eligibility === 'silent_only' ? 'sensitive-default-suppress' : eligibility.rejectionReason ?? 'sensitive-default-suppress')
+      reason = eligibility.eligibility === 'silent_only' ? 'sensitive-default-suppress' : eligibility.rejectionReason ?? 'sensitive-default-suppress'
+      reasons.add(reason)
+      if (gateDecisions.length < GATE_DECISION_LIMIT) gateDecisions.push({ id: result.id, channels: result.channels, decision: 'suppress', reason })
       continue
     }
     eligibleCandidates += 1
-    if (protectedSensitivity) { decision = 'silent_use'; reasons.add('sensitive-user-initiated-projection') }
-    else if ((explicit || observationRequest) && topicMatch && (result.sourceType !== 'observation' || observationRequest)) { decision = 'explicit'; reasons.add(observationRequest && result.sourceType === 'observation' ? 'explicit-observation-recall' : 'explicit-recall') }
-    else if (result.sourceType === 'observation') reasons.add('inferred-observation-silent-use')
-    const governed = protectedSensitivity
-      ? { ...result, text: '', sourceRefs: [], ...eligibility, userInitiatedTopic, mentionDecision: decision }
-      : { ...result, ...eligibility, userInitiatedTopic, mentionDecision: decision }
+    if (explicitProjectionRecall) { decision = 'explicit'; reason = observationRequest && result.sourceType === 'observation' ? 'explicit-observation-recall' : 'explicit-recall'; reasons.add(reason) }
+    else if (normalProjectionRecall) { decision = 'explicit'; reason = 'explicit-ordinary-topic-match' }
+    else if (silentProjectionRecall) decision = 'silent_use'
+    else if (protectedSensitivity) { decision = 'silent_use'; reason = 'sensitive-user-initiated-projection'; reasons.add(reason) }
+    else if ((explicit || observationRequest) && topicMatch && (result.sourceType !== 'observation' || observationRequest)) { decision = 'explicit'; reason = observationRequest && result.sourceType === 'observation' ? 'explicit-observation-recall' : 'explicit-recall'; reasons.add(reason) }
+    else if (result.sourceType === 'observation') { reason = 'inferred-observation-silent-use'; reasons.add(reason) }
+    const rawAllowed = disclosure === 'normal' || disclosure === 'user_explicit_only' && decision === 'explicit'
+    const governed = rawAllowed
+      ? { ...result, ...eligibility, userInitiatedTopic, mentionDecision: decision }
+      : { ...result, text: '', sourceRefs: [], ...eligibility, userInitiatedTopic, mentionDecision: decision }
     if (serializedRecallContext([...selected, governed]).length > plan.maxContextChars) {
       counts.suppress += 1
       reasons.add('context-budget')
+      if (gateDecisions.length < GATE_DECISION_LIMIT) gateDecisions.push({ id: result.id, channels: result.channels, decision: 'suppress', reason: 'context-budget' })
       continue
     }
     counts[decision === 'explicit' ? 'explicit' : 'silentUse'] += 1
+    if (gateDecisions.length < GATE_DECISION_LIMIT) gateDecisions.push({ id: result.id, channels: result.channels, decision, ...(reason === undefined ? {} : { reason }) })
     selected.push(governed)
   }
   return {
     results: selected,
     gateCounts: counts,
     gateReasons: [...reasons],
+    gateDecisions,
     eligibleCandidates,
     rejectedByEligibility,
     rejectedBySensitivity,
@@ -401,7 +470,12 @@ export function applyRecallBudget(results: readonly RecallResult[], plan: Recall
   }
 }
 
-/** Render recall as explicitly delimited model data, escaping stored text. */
+/**
+ * Render recall as explicitly delimited model data, escaping stored text.
+ * @param results The recall results to render.
+ * @param maxChars The serialized character budget; defaults to the package cap.
+ * @returns The escaped, delimited memory context block.
+ */
 export function renderRecallContext(results: readonly RecallResult[], maxChars = DEFAULT_MAX_CONTEXT_CHARS): string {
   const cap = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : DEFAULT_MAX_CONTEXT_CHARS
   const selected: RecallResult[] = []
@@ -413,7 +487,11 @@ export function renderRecallContext(results: readonly RecallResult[], maxChars =
   return serializedRecallContext(selected)
 }
 
-/** Build a canonical recall document from a confirmed Wiki page. */
+/**
+ * Build a canonical recall document from a confirmed Wiki page.
+ * @param page The confirmed Wiki page source.
+ * @returns The canonical recall document.
+ */
 export function documentFromPage(page: WikiPage): RecallDocument {
   return {
     id: `page:${page.id}`,
@@ -427,7 +505,11 @@ export function documentFromPage(page: WikiPage): RecallDocument {
   }
 }
 
-/** Build a derived observation document; the epistemic boundary is retained in the result. */
+/**
+ * Build a derived observation document; the epistemic boundary is retained in the result.
+ * @param observation The observation record to derive from.
+ * @returns The derived observation recall document.
+ */
 export function documentFromObservation(observation: { readonly id: string; readonly text: string; readonly sourceRefs: readonly string[]; readonly sensitivity: MemorySensitivity; readonly validTo?: string | null }): RecallDocument {
   const validTo = observation.validTo ?? undefined
   return { id: `observation:${observation.id}`, sourceType: 'observation', text: observation.text, sourceRefs: [...observation.sourceRefs], epistemicStatus: 'inferred', temporalStatus: validTo !== undefined && Date.parse(validTo) <= Date.now() ? 'historical' : 'current', sensitivity: observation.sensitivity, ...(exactFingerprint(observation.text) === '' ? {} : { factFingerprint: `observation:${observation.id}` }) }
@@ -435,10 +517,16 @@ export function documentFromObservation(observation: { readonly id: string; read
 
 function effectiveValidTo(page: WikiPage): string | undefined { return page.validTo ?? page.validUntil ?? undefined }
 
+function recallDisclosure(result: Pick<RecallResult, 'projection' | 'sensitivity'>): MemoryDisclosure {
+  if (result.projection !== undefined) return result.projection.disclosure
+  return result.sensitivity === undefined || result.sensitivity === 'normal' ? 'normal' : 'never_explicit'
+}
+
 function deriveEligibility(result: RecallResult, plan: RecallPlan, query: string, topicMatch: boolean): EligibilityDecision {
   const currentStateQuery = plan.temporalMode === 'current' && /现在|目前|current|currently/i.test(query)
   if (currentStateQuery && result.temporalStatus !== 'current') return { eligibility: 'rejected', rejectionReason: 'temporal-not-current' }
-  if (result.sensitivity === undefined || result.sensitivity === 'normal') return { eligibility: 'eligible' }
+  const disclosure = recallDisclosure(result)
+  if (disclosure === 'normal') return { eligibility: 'eligible' }
   if ((EXPLICIT_RECALL_PATTERN.test(query) || OBSERVATION_REQUEST_PATTERN.test(query)) && topicMatch) return { eligibility: 'eligible' }
   if (topicMatch) return { eligibility: 'silent_only', rejectionReason: 'sensitive-no-explicit-request' }
   return { eligibility: 'rejected', rejectionReason: 'sensitive-topic-mismatch' }
@@ -448,6 +536,13 @@ function recallTopicMatchesResult(query: string, result: RecallResult): boolean 
   const topicQuery = query.replace(/还记得|记得|之前|上次|以前|曾经|过去|回忆|我说过|你记得|do you remember|what did i say|earlier|last time/gi, ' ')
   const searchable = `${result.text}\n${result.sourceRefs.join('\n')}`
   return lexicalScore(topicQuery, searchable) > 0 || result.sourceRefs.some(reference => query.toLocaleLowerCase().includes(reference.toLocaleLowerCase()))
+}
+
+function recallSpecificTopicMatches(query: string, result: RecallResult): boolean {
+  const queryTerms = lexicalTokens(query)
+  if (queryTerms.length < 2) return false
+  const textTerms = new Set(lexicalTokens(result.text))
+  return queryTerms.every(term => textTerms.has(term))
 }
 
 function recallPlanChannels(plan: RecallPlan): string[] {
@@ -470,7 +565,8 @@ function serializedRecallContext(results: readonly RecallResult[]): string {
     '[RECALLED_MEMORY]',
   ]
   for (const result of renderable) {
-    if (result.mentionDecision === 'silent_use' || result.sensitivity !== undefined && result.sensitivity !== 'normal') {
+    const disclosure = recallDisclosure(result)
+    if (result.mentionDecision === 'silent_use' || disclosure === 'never_explicit') {
       lines.push('- [silent_use]')
       lines.push(...silentUsageGuidance(result))
       continue
@@ -536,22 +632,30 @@ function canMergeRecallDocuments(left: RecallDocument, right: RecallDocument): b
  * @param text User-authored event text.
  * @param observedAt Optional event observation time.
  * @param sensitivity Explicit store-side sensitivity classification.
+ * @param disclosure Explicit disclosure policy derived from the sensitivity.
  * @returns A raw evidence document with fail-closed sensitivity.
  */
-export function documentFromEvidence(sessionId: string, eventSeq: number, text: string, observedAt?: string, sensitivity: MemorySensitivity = 'sensitive'): RecallDocument {
+export function documentFromEvidence(sessionId: string, eventSeq: number, text: string, observedAt?: string, sensitivity: MemorySensitivity = 'sensitive', disclosure: MemoryDisclosure = disclosureForSensitivity(sensitivity)): RecallDocument {
+  const id = `evidence:${sessionId}:${eventSeq}`
   return {
-    id: `evidence:${sessionId}:${eventSeq}`,
+    id,
     sourceType: 'evidence',
     text,
     sourceRefs: [`session:${sessionId}/event:${eventSeq}`],
     epistemicStatus: 'confirmed',
     temporalStatus: observedAt !== undefined && Date.parse(observedAt) < Date.now() ? 'historical' : 'unknown',
     sensitivity,
+    projection: { id: `projection:${id}`, memoryId: id, allowedEffects: [], topicTags: [], disclosure, generatedFromVersion: 'evidence', generatedAt: observedAt ?? new Date().toISOString() },
     ...(exactFingerprint(text) === '' ? {} : { factFingerprint: exactFingerprint(text) }),
   }
 }
 
-/** Create a trace id and a non-reversible scope/query identifier. */
+/**
+ * Create a trace id and a non-reversible scope/query identifier.
+ * @param scope The memory scope whose key seeds the identifiers.
+ * @param query The query that seeds the query identifier.
+ * @returns The trace id and the scope and query hashes.
+ */
 export function recallTraceIdentity(scope: MemoryScope, query: string): { traceId: string; scopeHash: string; queryHash: string } {
   return {
     traceId: randomUUID(),
@@ -560,7 +664,12 @@ export function recallTraceIdentity(scope: MemoryScope, query: string): { traceI
   }
 }
 
-/** Compute cosine similarity for two finite vectors. */
+/**
+ * Compute cosine similarity for two finite vectors.
+ * @param left The first finite vector.
+ * @param right The second finite vector.
+ * @returns The cosine similarity, or zero when undefined.
+ */
 export function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
   if (left.length === 0 || left.length !== right.length) return 0
   let dot = 0; let leftNorm = 0; let rightNorm = 0
@@ -572,7 +681,16 @@ export function cosineSimilarity(left: readonly number[], right: readonly number
   return leftNorm === 0 || rightNorm === 0 ? 0 : dot / Math.sqrt(leftNorm * rightNorm)
 }
 
-/** Run the optional dense provider with bounded timeout and a single retry. */
+/**
+ * Run the optional dense provider with bounded timeout and a single retry.
+ * @param query The query embedded for dense recall.
+ * @param documents The candidate documents to embed and rank.
+ * @param provider The embedding provider used for dense recall.
+ * @param maxResults The maximum number of documents to return.
+ * @param timeoutMs Per-call timeout in milliseconds; defaults to the package cap.
+ * @param signal Optional abort signal for the embedding calls.
+ * @returns The dense-ranked recall documents.
+ */
 export async function denseRank(query: string, documents: readonly RecallDocument[], provider: EmbeddingProvider, maxResults: number, timeoutMs = DEFAULT_TIMEOUT_MS, signal?: AbortSignal): Promise<RecallDocument[]> {
   if (documents.length === 0) return []
   const vectors = await withRetry(() => withTimeout(provider.embedDocuments(documents.map(document => document.text), signal), timeoutMs, signal), signal)
@@ -604,5 +722,9 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number, signal?
   finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
 }
 
-/** Convert current or historical Wiki search hits into recall documents. */
+/**
+ * Convert current or historical Wiki search hits into recall documents.
+ * @param results The Wiki search hits to convert.
+ * @returns The derived canonical recall documents.
+ */
 export function documentsFromWikiResults(results: readonly WikiSearchResult[]): RecallDocument[] { return results.map(result => documentFromPage(result.page)) }

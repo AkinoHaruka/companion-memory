@@ -23,7 +23,7 @@ const RAW_TURN = '我的储物柜编号是 B-417'
 const QUERY = '你还记得我的储物柜 B-417 吗？'
 const HEADERS = { 'content-type': 'application/json', 'x-dsh-memory-profile': 'standard' }
 /** The switch on, so the L0 channel this file observes actually exists. */
-const CONFIG = ['    recallEnabled: true', '    evidenceClassificationEnabled: true']
+const CONFIG = ['    recallEnabled: true', '    evidenceClassificationEnabled: true', '    unclassifiedEvidenceDisclosure: never_explicit']
 
 /** Ask one fixture route and return its parsed JSON body. */
 async function call<T>(base: string, path: string, init: RequestInit = {}): Promise<T> {
@@ -50,6 +50,7 @@ describe('L0 evidence classification over the live surface', () => {
 
       const config = await call<Record<string, unknown>>(base, '/config')
       expect(config.evidenceClassificationEnabled).toBe(true)
+      expect(config.unclassifiedEvidenceDisclosure).toBe('never_explicit')
 
       const session = await call<{ readonly redacted: boolean; readonly evidence: { readonly lineCount: number; readonly classificationCounts: unknown } }>(base, `/sessions/${SESSION_ID}`)
       expect(session.redacted).toBe(true)
@@ -62,6 +63,24 @@ describe('L0 evidence classification over the live surface', () => {
       expect(recall.context).toContain('B-417')
       const debug = await call<unknown>(base, '/recall/debug', { method: 'POST', body: JSON.stringify({ query: QUERY }) })
       for (const body of [JSON.stringify(config), JSON.stringify(session), JSON.stringify(debug)]) expect(body).not.toContain('B-417')
+    } finally {
+      await harness?.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts the lower unclassified disclosure policy from profile configuration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'riko-evidence-disclosure-'))
+    let harness: LiveHarness | undefined
+    try {
+      harness = await startLiveHarness(['    recallEnabled: true', '    unclassifiedEvidenceDisclosure: user_explicit_only'], root)
+      await appendUserTurn(harness, RAW_TURN)
+      const config = await call<Record<string, unknown>>(harness.base, '/config')
+      expect(config.unclassifiedEvidenceDisclosure).toBe('user_explicit_only')
+      const ordinary = await call<{ readonly context: string }>(harness.base, '/recall', { method: 'POST', body: JSON.stringify({ query: '我的储物柜 B-417' }) })
+      expect(ordinary.context).not.toContain('B-417')
+      const explicit = await call<{ readonly context: string }>(harness.base, '/recall', { method: 'POST', body: JSON.stringify({ query: QUERY }) })
+      expect(explicit.context).toContain('B-417')
     } finally {
       await harness?.dispose()
       await rm(root, { recursive: true, force: true })

@@ -221,6 +221,22 @@ describe('storage-domain-backed MemoryProfileStore', () => {
     expect(snapshot.residentSnapshot?.content.length).toBe(snapshot.residentSnapshot?.diagnostics?.actualChars); expect(snapshot.residentSnapshot?.content.length).toBeLessThanOrEqual(300)
   })
 
+  it('redistributes the unused Resident block budget instead of stranding it', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 600); stores.push(store)
+    const bareConcept = (content: string): WikiPage => ({ id: `${scopeA.stableAgentPresetId}-${content}`, path: `wiki/concepts/${content}.md`, type: 'concept', title: content, description: content, body: content, sources: ['session-a'], tags: [], timestamp: '2026-09-17T00:00:00.000Z', confidence: 1, status: 'confirmed', consent: true, locked: true, version: 1, updatedAt: '2026-09-17T00:00:00.000Z' })
+    await store.upsertManualPage({ ...bareConcept('partner Kai'), type: 'relationship', path: 'wiki/relationships/partner-kai.md' })
+    for (let index = 1; index <= 40; index += 1) await store.upsertManualPage(bareConcept(`P${String(index).padStart(2, '0')}`))
+    const snapshot = store.snapshot().residentSnapshot
+    // The single relationship page keeps its fair minimum share while the preference block absorbs
+    // the budget the six empty blocks leave unused; the old even split admitted only four of the
+    // forty preference entries and rendered ~229 chars.
+    expect(store.renderResident()).toContain('partner Kai')
+    expect(snapshot?.blocks?.find(block => block.kind === 'preferences')?.entries.length).toBe(27)
+    expect(snapshot?.diagnostics?.includedCount).toBe(28)
+    expect(store.renderResident().length).toBeGreaterThan(500)
+    expect(store.renderResident().length).toBeLessThanOrEqual(600)
+  })
+
   it('bounds and migrates an over-budget legacy Resident instead of serving it', async () => {
     const domain = new DomainFixture(); const legacyValue = '<persistent-memory>legacy ' + 'x'.repeat(400) + '</persistent-memory>'
     await domain.table('profiles').put('owner-a--preset-a', { schemaVersion: 1, scope: scopeA, resident: legacyValue, settings: { apiUrl: 'https://provider.example/chat', credentialRef: 'DSH_MEMORY_DREAM_API_KEY', model: 'legacy', maxTokens: 1200 } })

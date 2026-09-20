@@ -82,11 +82,17 @@ export interface WikiSource {
   readonly ingestedAt?: string
 }
 
+/** Edge relation categories linking two Wiki pages. */
 export type WikiRelationType = 'related_to' | 'supports' | 'contradicts' | 'refines' | 'derived_from' | 'evidenced_by'
+/** Directed wikilink edge between a source page and a resolved target title. */
 export interface WikiEdge { readonly sourcePageId: string; readonly targetTitle: string; readonly targetPageId?: string; readonly relationType?: WikiRelationType; readonly targetKind?: 'page' | 'session' }
+/** Node in the derived Wiki graph, keyed by canonical page id. */
 export interface WikiGraphNode { readonly id: string; readonly title: string; readonly type: string; readonly layer?: 'L0' | 'L2' }
+/** Single asserted relation from a page body to a target title. */
 export interface WikiRelation { readonly targetTitle: string; readonly relationType: WikiRelationType }
+/** One ranked search hit with its graph hop distance. */
 export interface WikiSearchResult { readonly page: WikiPage; readonly score: number; readonly hop: number }
+/** Canonical page with durable bookkeeping fields stripped for file round-trips. */
 export type ParsedWikiPage = Omit<WikiPage, 'id' | 'version' | 'updatedAt'> & { readonly fileVersion?: number; readonly fileUpdatedAt?: string }
 
 const PAGE_FOLDERS: Record<WikiPageType, string> = { source: 'sources', entity: 'entities', concept: 'concepts', episode: 'episodes', emotion: 'emotions', relationship: 'relationships', synthesis: 'synthesis', other: 'other' }
@@ -101,22 +107,35 @@ export const WIKI_GRAPH_MAX_HOPS = 2
  * part of the plugin API.
  */
 export class WikiIndex {
+  /** Fixed storage-domain key this derived projection mirrors. */
   readonly path = 'storage-domain:riko_memory'
   private pages: WikiPage[] = []
   private sources: WikiSource[] = []
 
-  /** Open a derived index; the argument is accepted for migration-compatible callers but never opened. */
+  /**
+   * Open a derived index; the argument is accepted for migration-compatible callers but never opened.
+   * @param _ignoredPath - legacy path argument retained for call-site compatibility; it is ignored.
+   * @returns a fresh in-memory derived index.
+   */
   static async open(_ignoredPath?: string): Promise<WikiIndex> { return new WikiIndex() }
   /** Release derived memory only; storage-domain owns durability. */
   close(): void { this.pages = []; this.sources = [] }
 
-  /** Rebuild search and graph views from authoritative records. */
+  /**
+   * Rebuild search and graph views from authoritative records.
+   * @param pages - the canonical pages to project.
+   * @param sources - the raw sources to project.
+   */
   rebuild(pages: readonly WikiPage[], sources: readonly WikiSource[]): void {
     this.pages = pages.map(clonePage)
     this.sources = sources.map(source => ({ ...source }))
   }
 
-  /** List canonical page summaries. */
+  /**
+   * List canonical page summaries.
+   * @param options - optional status and type filters; both default to no filter.
+   * @returns the matching page summaries, newest first.
+   */
   listPages(options: { status?: WikiPageStatus; type?: WikiPageType } = {}): Array<Pick<WikiPage, 'id' | 'path' | 'title' | 'type' | 'description' | 'status' | 'consent' | 'observedAt' | 'recordedAt' | 'validFrom' | 'validTo' | 'validUntil' | 'locked' | 'confidence' | 'version' | 'updatedAt'>> {
     return this.pages
       .filter(page => (options.status === undefined || page.status === options.status) && (options.type === undefined || page.type === options.type))
@@ -133,7 +152,12 @@ export class WikiIndex {
       }))
   }
 
-  /** Return graph nodes and resolved wikilink edges. */
+  /**
+   * Return graph nodes and resolved wikilink edges.
+   * @param rootPageId - when given, restrict the view to this page and its neighborhood.
+   * @param maxHop - maximum expansion hops from the root, capped by the recall gate.
+   * @returns the subgraph nodes and resolved wikilink edges.
+   */
   graph(rootPageId?: string, maxHop = 1): { nodes: WikiGraphNode[]; edges: WikiEdge[] } {
     const byTitle = new Map(this.pages.map(page => [normalizeTitle(page.title), page.id]))
     const edges: WikiEdge[] = []
@@ -161,7 +185,13 @@ export class WikiIndex {
     return { nodes: nodes.filter(node => included.has(node.id)), edges: edges.filter(edge => edge.targetPageId !== undefined && included.has(edge.sourcePageId) && included.has(edge.targetPageId)) }
   }
 
-  /** Search the derived index with bounded token scoring and CJK substring fallback. */
+  /**
+   * Search the derived index with bounded token scoring and CJK substring fallback.
+   * @param query - the free-text query to score against page content.
+   * @param maxResults - maximum number of direct hits to return.
+   * @param maxHop - extra graph-neighbor results to include when non-zero.
+   * @returns ranked search hits, direct matches first.
+   */
   search(query: string, maxResults = 20, maxHop = 0): WikiSearchResult[] {
     if (query.trim().length === 0) return []
     const base = this.pages.map((page) => {
@@ -176,16 +206,37 @@ export class WikiIndex {
     return [...base, ...this.pages.filter(page => nearby.has(page.id) && !existing.has(page.id)).map(page => ({ page, score: 0, hop: 1 }))]
   }
 
-  /** Return the current source metadata view. */
+  /**
+   * Return the current source metadata view.
+   * @returns copies of the tracked raw source records.
+   */
   listSources(): WikiSource[] { return this.sources.map(source => ({ ...source })) }
-  /** The storage-domain schema version for this derived projection. */
+  /**
+   * The storage-domain schema version for this derived projection.
+   * @returns the projection schema version, currently 2.
+   */
   schemaVersion(): number { return 2 }
 }
 
+/**
+ * Deterministically derive a canonical page id from its normalized path.
+ * @param path - the normalized Wiki page path.
+ * @returns the 24-character hex page id.
+ */
 export function wikiPageId(path: string): string { return createHash('sha256').update(normalizeWikiPath(path)).digest('hex').slice(0, 24) }
+/**
+ * Deterministically derive a canonical source id from its kind and reference.
+ * @param kind - the source kind, `session` or `manual`.
+ * @param ref - the source-specific reference string.
+ * @returns the 24-character hex source id.
+ */
 export function wikiSourceId(kind: WikiSource['kind'], ref: string): string { return createHash('sha256').update(`${kind}\n${ref}`).digest('hex').slice(0, 24) }
 
-/** Normalize a model-provided path and reject filesystem escapes. */
+/**
+ * Normalize a model-provided path and reject filesystem escapes.
+ * @param value - the raw Wiki path to normalize and validate.
+ * @returns the normalized, typed Wiki Markdown path.
+ */
 export function normalizeWikiPath(value: string): string {
   const normalized = value.trim().replaceAll('\\', '/')
   if (!normalized.startsWith('wiki/') || normalized.includes('\0') || normalized.includes('..') || normalized.startsWith('/')) throw new Error(`Wiki path must stay under wiki/: ${value}`)
@@ -196,12 +247,33 @@ export function normalizeWikiPath(value: string): string {
   return path
 }
 
+/**
+ * Map a page type to its typed storage folder name.
+ * @param type - the Wiki page type.
+ * @returns the folder name used under `wiki/`.
+ */
 export function pageFolder(type: WikiPageType): string { return PAGE_FOLDERS[type] }
+/**
+ * Slugify a page title into a filesystem-safe, NFKC-normalized identifier.
+ * @param title - the human-readable page title.
+ * @param fallback - the slug to use when the title normalizes to empty.
+ * @returns the truncated, dash-separated slug.
+ */
 export function pageSlug(title: string, fallback: string): string {
   const normalized = title.normalize('NFKC').trim().toLowerCase().replace(/[^\p{Letter}\p{Number}]+/gu, '-').replace(/^-+|-+$/g, '')
   return (normalized || fallback).slice(0, 96)
 }
+/**
+ * Extract the target titles referenced by wikilinks in a page body.
+ * @param body - the Markdown page body to scan.
+ * @returns the list of referenced target titles.
+ */
 export function parseWikilinks(body: string): string[] { return parseWikiRelations(body).map(relation => relation.targetTitle) }
+/**
+ * Parse every wikilink relation asserted in a page body.
+ * @param body - the Markdown page body to scan.
+ * @returns the extracted relations, de-duplicated by target and type.
+ */
 export function parseWikiRelations(body: string): WikiRelation[] {
   const relations: WikiRelation[] = []
   for (const match of body.matchAll(WIKILINK_RE)) {
@@ -213,7 +285,12 @@ export function parseWikiRelations(body: string): WikiRelation[] {
   return relations
 }
 
-/** Parse the controlled frontmatter form accepted by the Wiki state machine. */
+/**
+ * Parse the controlled frontmatter form accepted by the Wiki state machine.
+ * @param markdown - the raw Markdown page including frontmatter.
+ * @param fallbackPath - the path used when frontmatter omits a typed directory.
+ * @returns the parsed, validated page ready for storage.
+ */
 export function parseWikiMarkdown(markdown: string, fallbackPath: string): ParsedWikiPage {
   const normalizedPath = normalizeWikiPath(fallbackPath); const lines = markdown.replaceAll('\r\n', '\n').split('\n')
   if (lines[0] !== '---') throw new Error(`Wiki page lacks frontmatter: ${fallbackPath}`)
@@ -225,21 +302,41 @@ export function parseWikiMarkdown(markdown: string, fallbackPath: string): Parse
   return { path: normalizedPath, type, title, description: stringValue(metadata.description), body, sources: listValue(metadata.sources), tags: listValue(metadata.tags), timestamp: stringValue(metadata.timestamp) || new Date(0).toISOString(), ...(observedAt ? { observedAt } : {}), ...(recordedAt ? { recordedAt } : {}), confidence: clampNumber(metadata.confidence, 0.5), ...(sensitivity === undefined ? {} : { sensitivity }), status: normalizeStatus(metadata.status), consent: booleanValue(metadata.consent), ...(validFrom !== undefined ? { validFrom } : {}), ...(validTo !== undefined ? { validTo } : {}), ...(validUntil ? { validUntil } : {}), ...(validFromPrecision === undefined ? {} : { validFromPrecision }), ...(temporalNote === undefined ? {} : { temporalNote }), ...(supersededBy ? { supersededBy } : {}), ...(supersedes === undefined ? {} : { supersedes }), ...(supersessionReason === undefined ? {} : { supersessionReason }), ...(epistemicStatus === undefined ? {} : { epistemicStatus }), ...(authority === undefined ? {} : { authority }), locked: booleanValue(metadata.locked), ...(fileVersion === undefined ? {} : { fileVersion }), ...(fileUpdatedAt ? { fileUpdatedAt } : {}), ...(category === undefined ? {} : { category }), ...(kind === undefined ? {} : { kind }) }
 }
 
-/** Render one page as canonical, deterministic Markdown for export/debug views. */
+/**
+ * Render one page as canonical, deterministic Markdown for export/debug views.
+ * @param page - the page to serialize, with optional version/updatedAt overrides.
+ * @returns the canonical Markdown representation.
+ */
 export function renderWikiMarkdown(page: Omit<WikiPage, 'id' | 'version' | 'updatedAt'> & Partial<Pick<WikiPage, 'version' | 'updatedAt'>>): string {
   const lines = ['---', `type: ${page.type}`, `title: ${yamlScalar(page.title)}`, `description: ${yamlScalar(page.description)}`, 'sources:', ...page.sources.map(source => `  - ${yamlScalar(source)}`), 'tags:', ...page.tags.map(tag => `  - ${yamlScalar(tag)}`), `timestamp: ${yamlScalar(page.timestamp)}`, ...(page.observedAt === undefined ? [] : [`observed_at: ${yamlScalar(page.observedAt)}`]), ...(page.recordedAt === undefined ? [] : [`recorded_at: ${yamlScalar(page.recordedAt)}`]), `confidence: ${page.confidence.toFixed(3)}`, ...(page.sensitivity === undefined ? [] : [`sensitivity: ${page.sensitivity}`]), `status: ${page.status}`, `consent: ${String(page.consent)}`, ...(page.validFrom === undefined ? [] : [page.validFrom === null ? 'valid_from: null' : `valid_from: ${yamlScalar(page.validFrom)}`]), ...(page.validTo === undefined ? [] : [page.validTo === null ? 'valid_to: null' : `valid_to: ${yamlScalar(page.validTo)}`]), ...(page.validFromPrecision === undefined ? [] : [`valid_from_precision: ${page.validFromPrecision}`]), ...(page.temporalNote === undefined ? [] : [`temporal_note: ${yamlScalar(page.temporalNote)}`]), ...(page.supersededBy === undefined ? [] : [`superseded_by: ${yamlScalar(page.supersededBy)}`]), ...(page.supersedes === undefined ? [] : ['supersedes:', ...page.supersedes.map(id => `  - ${yamlScalar(id)}`)]), ...(page.supersessionReason === undefined ? [] : [`supersession_reason: ${page.supersessionReason}`]), ...(page.epistemicStatus === undefined ? [] : [`epistemic_status: ${page.epistemicStatus}`]), ...(page.authority === undefined ? [] : ['authority:', ...page.authority.map(value => `  - ${yamlScalar(value)}`)]), ...(page.validUntil === undefined ? [] : [`valid_until: ${yamlScalar(page.validUntil)}`]), `locked: ${String(page.locked)}`, `version: ${String(page.version ?? 1)}`, `updated_at: ${yamlScalar(page.updatedAt ?? page.timestamp)}`, ...(page.category === undefined ? [] : [`category: ${page.category}`]), ...(page.kind === undefined ? [] : [`kind: ${page.kind}`]), '---', '', page.body.trim(), '']
   return lines.join('\n')
 }
 
+/**
+ * Project one memory item into a canonical Wiki page draft.
+ * @param item - the memory item to convert.
+ * @param now - the timestamp used as the page write time.
+ * @returns the derived Wiki page.
+ */
 export function pageFromMemory(item: MemoryItem, now = new Date().toISOString()): WikiPage {
   const type: WikiPageType = item.kind === 'emotion' ? 'emotion' : item.kind === 'event' ? 'episode' : item.kind === 'fact' ? 'entity' : 'concept'; const title = item.content.length > 72 ? `${item.content.slice(0, 72)}…` : item.content; const path = `wiki/${pageFolder(type)}/${pageSlug(title, item.id)}.md`
   return { id: wikiPageId(path), path, type, title, description: item.content, body: `# 记忆\n\n${item.content}\n\n来源会话：${item.sourceConversations.map(value => `[[${value}]]`).join('、')}`, sources: [...item.sourceConversations], tags: [item.category, item.kind], timestamp: item.observedAt, observedAt: item.observedAt, ...(item.recordedAt === undefined ? {} : { recordedAt: item.recordedAt }), confidence: item.confidence, sensitivity: item.sensitivity, status: item.status === 'superseded' ? 'superseded' : item.status, consent: item.consent, ...(item.validFrom === undefined ? {} : { validFrom: item.validFrom }), ...(item.validTo === undefined ? {} : { validTo: item.validTo }), ...(item.validUntil === undefined ? {} : { validUntil: item.validUntil }), locked: item.status === 'confirmed', version: 1, updatedAt: now, category: item.category, kind: item.kind }
 }
 
+/**
+ * Convert a canonical Wiki page back into a memory item.
+ * @param page - the Wiki page to read.
+ * @returns the reconstructed memory item, or undefined when the page lacks category or kind.
+ */
 export function memoryFromPage(page: WikiPage): MemoryItem | undefined {
   if (page.category === undefined || page.kind === undefined) return undefined; const content = page.description || page.body
   return { id: contentHash(`${page.category}\n${content.trim()}`).slice(0, 24), kind: page.kind, category: page.category, content, confidence: page.confidence, status: page.status, sourceConversations: [...page.sources], observedAt: page.observedAt ?? page.timestamp, ...(page.recordedAt === undefined ? {} : { recordedAt: page.recordedAt }), ...(page.validFrom === undefined ? {} : { validFrom: page.validFrom }), ...(page.validTo === undefined ? {} : { validTo: page.validTo }), ...(page.validUntil === undefined ? {} : { validUntil: page.validUntil }), sensitivity: page.sensitivity ?? 'normal', consent: page.consent }
 }
+/**
+ * Hash arbitrary content into a stable identifier string.
+ * @param value - the content to hash.
+ * @returns the hex-encoded SHA-256 digest.
+ */
 export function contentHash(value: string): string { return createHash('sha256').update(value).digest('hex') }
 
 function clonePage(page: WikiPage): WikiPage { return { ...page, sources: [...page.sources], tags: [...page.tags], ...(page.supersedes === undefined ? {} : { supersedes: [...page.supersedes] }), ...(page.authority === undefined ? {} : { authority: [...page.authority] }) } }

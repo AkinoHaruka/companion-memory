@@ -19,7 +19,7 @@ const projection: SafeUsageProjection = {
   allowedEffects: ['tone', 'avoid_topic'],
   topicTags: ['health'],
   summary: 'Use a calm and concise tone.',
-  disclosure: 'user_initiated_only',
+  disclosure: 'never_explicit',
   generatedFromVersion: 'memory-v1',
   generatedAt: '2026-09-19T00:00:00.000Z',
 }

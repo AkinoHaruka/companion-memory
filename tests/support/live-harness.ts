@@ -122,7 +122,7 @@ export async function startLiveHarness(config: readonly string[] = [], rootOverr
     }
   }
   try {
-    await writeFile(join(root, 'credentials.yaml'), 'version: 1\nrefs:\n  DSH_MEMORY_DREAM_API_KEY: fixture-secret\n')
+    await writeFile(join(root, 'credentials.yaml'), 'version: 1\nrefs:\n  DSH_MEMORY_DREAM_API_KEY: fixture-secret\n  DSH_MEMORY_BGE_KEY: bge-local\n')
     const configPath = join(root, `cordis-${String(Date.now())}-${String(Math.random()).slice(2)}.yml`)
     await writeFile(configPath, [
       '- name: fixture-dependencies',

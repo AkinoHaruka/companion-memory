@@ -5,7 +5,7 @@
  * loosening is authorized; this module never loosens.
  */
 
-import type { MemorySensitivity } from './types.ts'
+import type { MemoryDisclosure, MemorySensitivity } from './types.ts'
 
 /** Cue set that forces a sensitive classification for recognised private content. */
 export const sensitiveClaimCue = /密码|口令|验证码|令牌|密钥|秘钥|私钥|访问令牌|token|api[-_ ]?key|secret|private key|ssh key|credential|password|health|medical|diagnos|disease|illness|病|疾病|诊断|医疗|药物|处方|癌|抑郁|创伤|sexual|intimate|sex|银行|银行卡|账户|信用卡|工资|薪资|收入|债务|贷款|财务|financial|秘密|私密|隐私|保密|不能告诉|出轨|婚姻冲突|家庭冲突|relationship conflict|affair|divorce|身份证|身份证件|护照|驾驶证|驾照|社保|医保|地址|住址|家庭住址|电话号码|手机号|email|邮箱/i
@@ -41,4 +41,15 @@ export function classifyEvidenceSensitivity(text: string): MemorySensitivity { r
 export function normalizeEvidenceSensitivity(value: unknown): MemorySensitivity {
   if (value === 'normal' || value === 'provisional_sensitive' || value === 'sensitive') return value
   throw new Error('evidence sensitivity must be normal, provisional_sensitive or sensitive')
+}
+
+/**
+ * Map a decided sensitivity to the one raw-text disclosure policy it permits.
+ * @param sensitivity The decided memory sensitivity.
+ * @returns The single permitted raw-text disclosure policy.
+ */
+export function disclosureForSensitivity(sensitivity: MemorySensitivity): MemoryDisclosure {
+  if (sensitivity === 'normal') return 'normal'
+  if (sensitivity === 'provisional_sensitive') return 'user_explicit_only'
+  return 'never_explicit'
 }

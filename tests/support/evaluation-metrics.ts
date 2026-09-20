@@ -1,5 +1,5 @@
 /** Appendix G scoring over raw live observations; unsupported measurements never become zero. */
-import type { RawOutcome } from './companion-runner.ts'
+import type { DenseAblationRun, RawOutcome } from './companion-runner.ts'
 
 /** Every measurement retains its denominator and contributing scenario identifiers. */
 export interface Metric {
@@ -19,6 +19,12 @@ function ratio(rows: readonly RawOutcome[], score: (row: RawOutcome) => number, 
   if (rows.length === 0) return unsupported(`No executed observations for ${scope}.`)
   const numerator = rows.reduce((sum, row) => sum + score(row), 0)
   return { status: 'measured', value: numerator / rows.length, numerator, denominator: rows.length, scenarios: rows.map(row => row.scenario.id), scope }
+}
+
+function candidateMatchesExpected(row: RawOutcome, text: string): boolean {
+  const expected = row.scenario.expected.contains
+  if (expected === undefined) return false
+  return text.includes(expected) || text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').includes(expected)
 }
 
 /** Compute all sixteen Appendix G fields and three explicitly named injection proxies.
@@ -77,5 +83,74 @@ export function aggregateMetrics(outcomes: readonly RawOutcome[], k = 8): Record
     falsePersonalizationInjectionRate: ratio(select('F.03', 'F.09', 'F.10'), row => Number(forbidden(row)), 'unconfirmed claim disclosure in model input'),
     unwantedMentionInjectionRate: ratio(select('F.11', 'F.12'), row => Number(forbidden(row)), 'unsolicited sensitive raw disclosure in model input'),
     memoryOveruseInjectionRate: ratio(select('F.27'), row => Number(row.results.length > 0 || row.injected !== '[]'), 'dynamic recall only; always-on Resident is reported in raw results'),
+  }
+}
+
+function denseTrials(run: DenseAblationRun): RawOutcome[] {
+  const trials = [...run.denseOff.outcomes, ...run.denseOn.outcomes]
+  if (trials.some(row => row.status === 'error')) throw new Error('Cannot score incomplete dense ablation')
+  return trials.filter(row => row.status === 'executed')
+}
+
+/**
+ * Compute dense ablation fields from paired keyless corpus runs without replacing unsupported data.
+ * @param run Paired deterministic dense-on and dense-off observations.
+ * @returns The three dense ablation measurements, including explicit unsupported status when required.
+ */
+export function aggregateDenseAblationMetrics(run: DenseAblationRun): Record<string, Metric> {
+  const off = new Map(run.denseOff.outcomes.map(row => [row.scenario.id, row]))
+  const on = new Map(run.denseOn.outcomes.map(row => [row.scenario.id, row]))
+  if (off.size !== run.denseOff.outcomes.length || on.size !== run.denseOn.outcomes.length) throw new Error('Duplicate scenario identifiers in dense ablation')
+  const paired = [...off.keys()].filter(id => on.has(id)).flatMap((id) => {
+    const disabled = off.get(id)!
+    const enabled = on.get(id)!
+    return disabled.status === 'executed' && enabled.status === 'executed' && enabled.scenario.expected.contains !== undefined
+      ? [{ id, disabled, enabled }]
+      : []
+  })
+  const uniqueWin = (row: (typeof paired)[number]): boolean => {
+    const expected = row.enabled.scenario.expected.contains
+    return expected !== undefined && row.enabled.injected.includes(expected) && !row.disabled.injected.includes(expected)
+  }
+  const uniqueWins = paired.filter(uniqueWin)
+  const uniqueGain: Metric = paired.length === 0 ? unsupported('No executed dense on/off pairs with an expected memory.') : {
+    status: 'measured',
+    value: uniqueWins.length / paired.length,
+    numerator: uniqueWins.length,
+    denominator: paired.length,
+    scenarios: paired.map(row => row.id),
+    scope: 'Expected-memory scenarios whose expected text reaches injected context with deterministic dense enabled but not disabled',
+  }
+  const candidates = denseTrials(run).flatMap(row => row.results.filter(result => result.channels.includes('dense')).map(result => ({ row, result })))
+  const noisyCandidates = candidates.filter(({ row, result }) => !candidateMatchesExpected(row, result.text))
+  const noise: Metric = candidates.length === 0 ? unsupported('No dense-sourced candidates entered injected context in the deterministic ablation.') : {
+    status: 'measured',
+    value: noisyCandidates.length / candidates.length,
+    numerator: noisyCandidates.length,
+    denominator: candidates.length,
+    scenarios: candidates.map(({ row }) => row.scenario.id),
+    scope: 'Dense-channel results retained in the injected-context candidate list; rendered or raw result text must contain that scenario expected text',
+  }
+  const denseDecisions = denseTrials(run).flatMap(row => (row.trace?.gateDecisions ?? [])
+    .filter(decision => decision.channels.includes('dense'))
+    .map(decision => ({ row, decision })))
+  const rejectedDense = denseDecisions.filter(({ decision }) => decision.decision === 'suppress')
+  const reasonCounts = new Map<string, number>()
+  for (const { decision } of rejectedDense) { const name = decision.reason ?? 'no-reason'; reasonCounts.set(name, (reasonCounts.get(name) ?? 0) + 1) }
+  const reasonSummary = [...reasonCounts.entries()].map(([name, count]) => `${name} x${count}`).join(', ') || 'none'
+  const gateRejection: Metric = denseDecisions.length === 0
+    ? unsupported('No dense-channel candidates reached the mention gate in the deterministic ablation.')
+    : {
+        status: 'measured',
+        value: rejectedDense.length / denseDecisions.length,
+        numerator: rejectedDense.length,
+        denominator: denseDecisions.length,
+        scenarios: denseDecisions.map(({ row }) => row.scenario.id),
+        scope: `Dense-channel candidates that reached the mention gate; rejection means the gate suppressed the candidate, attributed per candidate in RecallTrace.gateDecisions. Rejected reasons: ${reasonSummary}`,
+      }
+  return {
+    denseUniqueRecallGain: uniqueGain,
+    denseNoiseRate: noise,
+    denseGateRejectionRate: gateRejection,
   }
 }

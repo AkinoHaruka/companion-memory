@@ -22,7 +22,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { memoryScopeForPreset, type MemoryScope } from './contracts.ts'
 import { MEMORY_DOMAIN, type MemoryDomain, type MemorySessionRecord } from './memory-domain.ts'
 import { memoryId, MemoryProfileStore } from './store.ts'
-import type { DreamSettings, MemoryCategory, MemoryItem, MemoryKind, MemoryObservation, MemorySensitivity, MemorySnapshot } from './types.ts'
+import type { DreamSettings, MemoryCategory, MemoryItem, MemoryKind, MemoryObservation, MemorySensitivity, MemorySnapshot, UnclassifiedEvidenceDisclosure } from './types.ts'
 import { contentHash, pageFolder, pageSlug, parseWikiMarkdown, renderWikiMarkdown, wikiPageId, type WikiPage } from './wiki.ts'
 import { WIKI_GRAPH_MAX_HOPS } from './wiki.ts'
 import { memoryUiHtml } from './ui.ts'
@@ -38,45 +38,85 @@ export type { EmbeddingProvider, MemoryReranker, RecallIntent, RecallOptions, Re
 
 /** Runtime configuration. Secrets are never accepted here; only credential references are. */
 export interface Config {
+  /** Owner namespace used to derive the isolated memory scope. */
   readonly ownerNamespace: string
+  /** HTTP prefix for the management API and UI. */
   readonly apiPath: string
+  /** Single bearer token for the default profile. */
   readonly apiToken: string
+  /** Bearer-token map that binds profiles to separate scopes. */
   readonly apiTokens: Readonly<Record<string, string>>
+  /** Profile selected by the single-token authentication mode. */
   readonly apiTokenProfile: string
+  /** Owner-admin bearer token that grants management access across profiles. */
   readonly ownerAdminToken: string
+  /** Dream provider endpoint used for Wiki extraction. */
   readonly dreamApiUrl: string
+  /** Credential reference resolved when Dream calls the provider. */
   readonly dreamCredentialRef: string
+  /** Model name sent to the Dream provider. */
   readonly dreamModel: string
+  /** Maximum Dream completion tokens. */
   readonly dreamMaxTokens: number
+  /** Interval for scheduled Dream recovery and sweep work. */
   readonly dreamIntervalMs: number
+  /** Delay before session activity schedules Dream. */
   readonly debounceMs: number
+  /** Maximum serialized Resident prompt length. */
   readonly maxResidentChars: number
+  /** Maximum transcript length used for Dream input and recovery. */
   readonly maxSessionChars: number
+  /** Enables query-time recall in the Agent hook and HTTP route. */
   readonly recallEnabled: boolean
+  /** Enables planner-gated dense vector recall. */
   readonly recallVectorEnabled: boolean
+  /** Allows bounded raw L0 evidence as a recall channel. */
   readonly recallRawEvidenceEnabled: boolean
+  /** Allows active observations as a recall channel. */
   readonly recallObservationEnabled: boolean
+  /** Enables bounded Wiki graph expansion during recall. */
   readonly recallGraphEnabled: boolean
+  /** Enables authenticated raw-session purge transactions. */
   readonly purgeEnabled: boolean
+  /** Maximum recall results before rendering. */
   readonly recallMaxCandidates: number
+  /** Maximum rendered recall context length. */
   readonly recallMaxContextChars: number
+  /** Enables the structured Resident projection path. */
   readonly residentV2Enabled: boolean
+  /** Enables bounded structured Resident blocks. */
   readonly residentBlocksEnabled: boolean
+  /** Allows eligible sensitive pages in Resident output. */
   readonly sensitiveResidentEnabled: boolean
+  /** Enables temporal validity and historical recall semantics. */
   readonly temporalEnabled: boolean
   /** Classify user-origin L0 evidence at capture; off leaves every unmarked event fail-closed sensitive. */
   readonly evidenceClassificationEnabled: boolean
+  /** Disclosure policy for unclassified fail-closed L0 evidence; lowering this enables only explicit, topic-matched recovery. */
+  readonly unclassifiedEvidenceDisclosure: UnclassifiedEvidenceDisclosure
+  /** Minimum distinct valid anchors for an observation candidate. */
   readonly minObservationEvidence: number
+  /** Minimum distinct evidence anchors for automatic observation activation. */
   readonly observationActivationMinEvidence: number
+  /** Minimum distinct sessions for automatic observation activation. */
   readonly observationActivationMinSessions: number
+  /** Minimum confidence for automatic observation activation. */
   readonly observationActivationMinConfidence: number
+  /** Enables Dream reflection that proposes anchored observations. */
   readonly reflectionEnabled: boolean
+  /** Maximum observation proposals accepted from one reflection. */
   readonly reflectionMaxObservations: number
+  /** Enables temporal reconciliation during Dream processing. */
   readonly temporalReconcileEnabled: boolean
+  /** Selects no, deterministic, or OpenAI-compatible embeddings. */
   readonly embeddingProvider: 'off' | 'deterministic' | 'openai-compatible'
+  /** HTTPS endpoint for the OpenAI-compatible embedding provider. */
   readonly embeddingEndpoint: string
+  /** Credential reference for the embedding provider. */
   readonly embeddingCredentialRef: string
+  /** Model name sent to the OpenAI-compatible embedding provider. */
   readonly embeddingModel: string
+  /** Vector dimension used by deterministic and compatible providers. */
   readonly embeddingDimension: number
 }
 
@@ -120,6 +160,7 @@ export class RikoMemoryService extends Service {
     sensitiveResidentEnabled: z.boolean().default(false),
     temporalEnabled: z.boolean().default(true),
     evidenceClassificationEnabled: z.boolean().default(false),
+    unclassifiedEvidenceDisclosure: z.union(['never_explicit', 'user_explicit_only'] as const).default('never_explicit'),
     minObservationEvidence: z.number().step(1).min(1).default(2),
     observationActivationMinEvidence: z.number().step(1).min(1).default(3),
     observationActivationMinSessions: z.number().step(1).min(1).default(2),
@@ -224,7 +265,11 @@ export class RikoMemoryService extends Service {
     void this.track(this.recoverPersistedDreams(), 'startup Dream recovery')
   }
 
-  /** Read one already-open profile scope for in-process composition tests. */
+  /**
+   * Read one already-open profile scope for in-process composition tests.
+   * @param profileId - Profile identifier whose snapshot is read.
+   * @returns The durable snapshot for that profile.
+   */
   async snapshot(profileId: string): Promise<MemorySnapshot> { const store = this.storeForProfile(profileId); await store.waitReady(); return store.snapshot() }
 
   private attachAgent(agent: Agent): void {
@@ -421,6 +466,7 @@ export class RikoMemoryService extends Service {
         sensitiveResident: this.config.sensitiveResidentEnabled,
         temporal: this.config.temporalEnabled,
         evidenceClassification: this.config.evidenceClassificationEnabled,
+        unclassifiedEvidenceDisclosure: this.config.unclassifiedEvidenceDisclosure,
         minObservationEvidence: this.config.minObservationEvidence,
         observationActivationMinEvidence: this.config.observationActivationMinEvidence,
         observationActivationMinSessions: this.config.observationActivationMinSessions,
@@ -635,6 +681,7 @@ export class RikoMemoryService extends Service {
       sensitiveResidentEnabled: this.config.sensitiveResidentEnabled,
       temporalEnabled: this.config.temporalEnabled,
       evidenceClassificationEnabled: this.config.evidenceClassificationEnabled,
+      unclassifiedEvidenceDisclosure: this.config.unclassifiedEvidenceDisclosure,
       minObservationEvidence: this.config.minObservationEvidence,
       observationActivationMinEvidence: this.config.observationActivationMinEvidence,
       observationActivationMinSessions: this.config.observationActivationMinSessions,
@@ -694,6 +741,10 @@ export default RikoMemoryService
 
 class ProviderError extends Error { constructor(readonly reason: string) { super(`Dream provider failure: ${reason}`); this.name = 'ProviderError' } }
 
+/**
+ * Reject an invalid plugin configuration before any durable state is opened.
+ * @param config - Configuration to validate.
+ */
 export function validateConfig(config: Config): void {
   const apiToken = config.apiToken ?? ''
   const apiTokens = config.apiTokens ?? {}
@@ -706,6 +757,7 @@ export function validateConfig(config: Config): void {
   const observationActivationMinEvidence = config.observationActivationMinEvidence ?? 3
   const observationActivationMinSessions = config.observationActivationMinSessions ?? 2
   const observationActivationMinConfidence = config.observationActivationMinConfidence ?? 0.8
+  const unclassifiedEvidenceDisclosure = config.unclassifiedEvidenceDisclosure ?? 'never_explicit'
   if (!config.ownerNamespace.trim()) throw new Error('riko-memory ownerNamespace must not be empty')
   if (!config.apiPath.startsWith('/') || config.apiPath.endsWith('/') || config.apiPath.includes('?')) throw new Error('riko-memory apiPath must be absolute without trailing slash or query')
   if (apiToken && Object.keys(apiTokens).length > 0) throw new Error('riko-memory apiToken and apiTokens are mutually exclusive')
@@ -721,6 +773,7 @@ export function validateConfig(config: Config): void {
   if (!Number.isInteger(observationActivationMinEvidence) || observationActivationMinEvidence < 1) throw new Error('riko-memory observationActivationMinEvidence must be an integer of at least 1')
   if (!Number.isInteger(observationActivationMinSessions) || observationActivationMinSessions < 1) throw new Error('riko-memory observationActivationMinSessions must be an integer of at least 1')
   if (!Number.isFinite(observationActivationMinConfidence) || observationActivationMinConfidence < 0 || observationActivationMinConfidence > 1) throw new Error('riko-memory observationActivationMinConfidence must be between 0 and 1')
+  if (unclassifiedEvidenceDisclosure !== 'never_explicit' && unclassifiedEvidenceDisclosure !== 'user_explicit_only') throw new Error('riko-memory unclassifiedEvidenceDisclosure must be never_explicit or user_explicit_only')
   if (!Number.isInteger(embeddingDimension) || embeddingDimension < 8 || embeddingDimension > 4_096) throw new Error('riko-memory embeddingDimension must be an integer from 8 through 4096')
   if (embeddingProvider !== 'off' && embeddingProvider !== 'deterministic' && embeddingProvider !== 'openai-compatible') throw new Error('riko-memory embeddingProvider is invalid')
   let dreamUrl: URL
@@ -730,13 +783,15 @@ export function validateConfig(config: Config): void {
   if (embeddingProvider === 'openai-compatible') {
     let embeddingUrl: URL
     try { embeddingUrl = new URL(config.embeddingEndpoint ?? '') } catch { throw new Error('riko-memory embeddingEndpoint must be a valid HTTPS URL') }
-    if (embeddingUrl.protocol !== 'https:') throw new Error('riko-memory embeddingEndpoint must use HTTPS')
+    if (embeddingUrl.protocol !== 'https:' && !isLoopbackHttpUrl(embeddingUrl)) throw new Error('riko-memory embeddingEndpoint must use HTTPS (plain HTTP is allowed only for loopback hosts)')
     if (embeddingUrl.username || embeddingUrl.password) throw new Error('riko-memory embeddingEndpoint must not contain an embedded credential')
     if (!(config.embeddingModel ?? '').trim()) throw new Error('riko-memory embeddingModel is required for openai-compatible embeddings')
   }
   for (const [profile, token] of Object.entries(apiTokens)) { normalizeProfileId(profile); if (!token.trim()) throw new Error(`riko-memory apiTokens.${profile} must not be empty`) }
 }
 function normalizeProfileId(value: string): string { const normalized = value.trim(); if (!/^[A-Za-z0-9._-]{1,64}$/.test(normalized)) throw new Error('riko-memory profile id must contain only letters, numbers, dot, underscore and dash'); return normalized }
+/** Plain-HTTP embedding endpoints are only acceptable for loopback hosts, where the traffic never leaves the machine (local inference servers). */
+function isLoopbackHttpUrl(url: URL): boolean { return url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1' || url.hostname === '[::1]') }
 function serializableEventData(event: SessionEvent): unknown { switch (event.type) { case 'user/message': return { message: event.data }; case 'assistant/message': return { message: event.data.message, turn: event.data.turn, step: event.data.step }; case 'tool/result': return { message: event.data.message, turn: event.data.turn, step: event.data.step }; default: return event.data } }
 function bearerToken(req: IncomingMessage): string | undefined { const raw = req.headers.authorization; const match = typeof raw === 'string' ? /^Bearer\s+(.+)$/.exec(raw) : undefined; return match?.[1] }
 function safeError(error: unknown): string { const message = error instanceof Error ? error.message : String(error); return message.replace(/bearer\s+[^\s]+/gi, 'Bearer [redacted]').replace(/sk-[A-Za-z0-9_-]+/g, '[redacted]').slice(0, 500) }
@@ -890,6 +945,12 @@ function transcriptFromEvidence(lines: readonly string[], maxChars: number): str
   return transcriptText(messages, maxChars)
 }
 
+/**
+ * Parse one Dream provider response into bounded Wiki page candidates.
+ * @param text - Raw provider response carrying `<<<FILE>>>` blocks.
+ * @param session - Owning session, or its identifier.
+ * @returns The parsed pages; a response with no valid block raises a provider failure.
+ */
 export function parseWikiOutput(text: string, session: Pick<Session, 'id'> | string): WikiPage[] { const sessionId = typeof session === 'string' ? session : String(session.id); const pages: WikiPage[] = []; for (const match of text.matchAll(/<<<FILE\s+path="([^"]+)">>>([\s\S]*?)<<<END>>>/g)) { const path = match[1]?.trim(); const block = match[2]; if (!path || block === undefined || block.length > 30_000) continue; try { const parsed = parseWikiMarkdown(block.trim(), path); const description = truncate((parsed.description || firstBodySentence(parsed.body) || parsed.title).replace(/\s+/g, ' ').trim(), 120); const body = truncate(parsed.body.replace(/\s+/g, ' ').trim(), 1_200); const title = compactGeneratedTitle(parsed.type, parsed.title, description, body); const identity = contentHash(`${parsed.type}\n${title.toLocaleLowerCase()}\n${description.toLocaleLowerCase()}\n${body.toLocaleLowerCase()}`).slice(0, 10); const normalizedPath = `wiki/${pageFolder(parsed.type)}/${pageSlug(title, identity)}-${identity}.md`; pages.push({ ...parsed, id: wikiPageId(normalizedPath), path: normalizedPath, title, description, body, sources: [sessionId], status: 'candidate', consent: false, locked: false, version: 1, updatedAt: new Date().toISOString() }) } catch { /* invalid FILE blocks are rejected, never partially stored */ } } if (pages.length === 0) throw new ProviderError('invalid-file-protocol'); return pages }
 
 interface ExplicitCoreference {

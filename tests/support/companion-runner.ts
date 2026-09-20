@@ -81,6 +81,27 @@ export interface CorpusRunOptions {
    * deliberate capability comparison, and those scenarios are then reported as unsupported.
    */
   readonly evidenceClassification?: boolean
+  /** Whether this run uses the keyless deterministic dense provider, and whether vector recall is enabled. */
+  readonly denseEnabled?: boolean
+  /**
+   * Real embedding endpoint used instead of the deterministic provider when dense recall is on.
+   * The endpoint must speak the OpenAI `/embeddings` protocol over loopback HTTP; the
+   * `embedding-failure` scenario keeps its hardcoded 503 fixture regardless, because that
+   * scenario measures degradation, not retrieval quality.
+   */
+  readonly denseEmbedding?: { readonly endpoint: string; readonly model: string; readonly credentialRef: string }
+}
+
+/** One corpus execution set for one side of the dense ablation. */
+export interface CorpusRun {
+  readonly path: string
+  readonly outcomes: readonly RawOutcome[]
+}
+
+/** Paired corpus runs with the same scenarios and deterministic dense settings. */
+export interface DenseAblationRun {
+  readonly denseOff: CorpusRun
+  readonly denseOn: CorpusRun
 }
 
 /**
@@ -119,7 +140,12 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
   let providerCalls = 0
   // A scenario that measures the L0 classification channel starts its own harness with the capability on,
   // so every append in this scenario is classified as it is captured rather than being reinterpreted later.
-  const config = ['    recallEnabled: true', '    purgeEnabled: true', '    recallGraphEnabled: true', '    temporalEnabled: true', '    dreamApiUrl: https://api.test/api/v1/chat/completions', ...(scenario.requiresEvidenceClassification === true ? ['    evidenceClassificationEnabled: true'] : []), ...(kind === 'overflow' || kind === 'long-tail' ? ['    maxResidentChars: 256'] : []), ...(kind === 'embedding-failure' ? ['    recallVectorEnabled: true', '    embeddingProvider: openai-compatible', '    embeddingEndpoint: https://api.test/embeddings', '    embeddingCredentialRef: DSH_MEMORY_DREAM_API_KEY', '    embeddingModel: fixture'] : [])]
+  const denseConfig = options.denseEnabled === undefined
+    ? kind === 'embedding-failure' ? ['    recallVectorEnabled: true', '    embeddingProvider: openai-compatible', '    embeddingEndpoint: https://api.test/embeddings', '    embeddingCredentialRef: DSH_MEMORY_DREAM_API_KEY', '    embeddingModel: fixture'] : []
+    : options.denseEmbedding
+      ? ['    recallVectorEnabled: true', '    embeddingProvider: openai-compatible', `    embeddingEndpoint: ${options.denseEmbedding.endpoint}`, `    embeddingModel: ${options.denseEmbedding.model}`, `    embeddingCredentialRef: ${options.denseEmbedding.credentialRef}`]
+      : [`    recallVectorEnabled: ${String(options.denseEnabled)}`, '    embeddingProvider: deterministic']
+  const config = ['    recallEnabled: true', '    purgeEnabled: true', '    recallGraphEnabled: true', '    temporalEnabled: true', '    dreamApiUrl: https://api.test/api/v1/chat/completions', ...(scenario.requiresEvidenceClassification === true ? ['    evidenceClassificationEnabled: true'] : []), ...(kind === 'overflow' || kind === 'long-tail' ? ['    maxResidentChars: 256'] : []), ...denseConfig]
   const markdown = (text: string): string => `---\ntype: concept\ntitle: ${text}\ndescription: ${text}\nsources:\n  - ${sessionId}\ntimestamp: 2026-09-19T00:00:00.000Z\nconfidence: 0.9\nstatus: confirmed\nconsent: true\nlocked: true\n---\n${text}\n`
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input).startsWith('https://api.test/embeddings')) return Promise.resolve(new Response('{}', { status: 503 }))
@@ -252,7 +278,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
     }, () => Promise.resolve({ kind: 'enter' as const, messages: [] }))
     raw.injected = kind === 'historical' ? recalled.context : JSON.stringify(step.kind === 'enter' ? step.messages : [])
     if (kind === 'dream') raw.checks.authority = raw.snapshot.pages.every(page => !page.description.includes(scenario.setup.text)) && raw.snapshot.candidates.length > 0
-    if (kind === 'embedding-failure') raw.checks.providerFallback = raw.trace.degradedModes.includes('vector-degraded')
+    if (kind === 'embedding-failure' && options.denseEnabled === undefined) raw.checks.providerFallback = raw.trace.degradedModes.includes('vector-degraded')
     if (kind === 'overflow') raw.checks.wholeItemBudget = raw.resident.length <= 256 && !raw.resident.includes('oversized whole item')
     if (kind === 'evidence') raw.checks.rawRecovery = raw.results.some(result => result.sourceType === 'evidence' && result.text.includes('B-417'))
     if (kind === 'correct') raw.checks.correction = !JSON.stringify([raw.snapshot.pages, raw.resident, raw.results]).includes(scenario.setup.text) && raw.snapshot.pages.some(page => page.description.includes(scenario.setup.replacement!))
@@ -367,4 +393,26 @@ export async function runCompanionCorpus(options: CorpusRunOptions = {}): Promis
     await writeFile(path, JSON.stringify({ schemaVersion: 1, outcomes }, null, 2) + '\n')
   }
   return { path, outcomes }
+}
+
+/**
+ * Run every corpus case once with dense disabled and once with deterministic dense recall enabled.
+ * @returns Paired raw observations and their artifact paths.
+ */
+export async function runDenseAblation(): Promise<DenseAblationRun> {
+  const denseOff = await runCompanionCorpus({ denseEnabled: false })
+  const denseOn = await runCompanionCorpus({ denseEnabled: true })
+  return { denseOff, denseOn }
+}
+
+/**
+ * Same pairing as {@link runDenseAblation}, but the dense-on trial uses a real OpenAI-compatible
+ * embedding endpoint instead of the deterministic provider.
+ * @param embedding Loopback endpoint, model name, and credential ref for the real provider.
+ * @returns Paired raw observations and their artifact paths.
+ */
+export async function runDenseAblationWithProvider(embedding: NonNullable<CorpusRunOptions['denseEmbedding']>): Promise<DenseAblationRun> {
+  const denseOff = await runCompanionCorpus({ denseEnabled: false })
+  const denseOn = await runCompanionCorpus({ denseEnabled: true, denseEmbedding: embedding })
+  return { denseOff, denseOn }
 }

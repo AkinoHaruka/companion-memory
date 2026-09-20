@@ -1,4 +1,5 @@
 import type { WikiCandidate, WikiRelationType } from './wiki.ts'
+import type { MemoryAliasRecord } from './memory-domain.ts'
 
 /** Durable records owned by one Riko memory profile. */
 
@@ -20,14 +21,22 @@ export interface SensitivityChange {
 /** Effect a safe-use projection may communicate to the main model. */
 export type SafeUsageEffect = 'tone' | 'avoid_topic' | 'avoid_repetition' | 'preference_alignment'
 
-/** Rebuildable, disclosure-limited projection for silent-use memory. */
+/** Raw-text disclosure policy carried by every memory projection. */
+export type MemoryDisclosure = 'normal' | 'user_explicit_only' | 'never_explicit'
+
+/** Deployment-selectable policy for unclassified fail-closed L0 evidence. */
+export type UnclassifiedEvidenceDisclosure = Exclude<MemoryDisclosure, 'normal'>
+
+/** Rebuildable projection that carries safe-use effects and raw-text disclosure policy. */
 export interface SafeUsageProjection {
   readonly id: string
   readonly memoryId: string
   readonly allowedEffects: readonly SafeUsageEffect[]
   readonly topicTags: readonly string[]
   readonly summary?: string
-  readonly disclosure: 'never_explicit' | 'user_initiated_only'
+  readonly disclosure: MemoryDisclosure
+  /** Whether an ordinary, non-explicit turn may receive the stored raw text. Absent means no, so a projection that never opted in stays guidance-only. */
+  readonly ordinaryRawText?: boolean
   readonly generatedFromVersion: string
   readonly generatedAt: string
 }
@@ -48,6 +57,7 @@ export interface ConflictOverlay {
   readonly resolution?: 'correction' | 'temporal_transition' | 'management'
 }
 
+/** Coarse thematic bucket classifying one memory record. */
 export type MemoryCategory =
   | 'traits_roles'
   | 'interaction_rules'
@@ -110,6 +120,7 @@ export interface WikiPageSummary {
   readonly updatedAt: string
 }
 
+/** Determinism-defined unit of the compiled resident. */
 export type ResidentBlockKind = 'identity' | 'preferences' | 'relationships' | 'currentState' | 'communicationStyle' | 'activePeople' | 'openThreads'
 
 /** Deterministic internal Resident unit. The public compatibility surface remains `ResidentSnapshot.content`. */
@@ -117,9 +128,11 @@ export interface ResidentBlock {
   readonly kind: ResidentBlockKind
   readonly entries: readonly string[]
   readonly sourcePageIds: readonly string[]
+  /** The guaranteed minimum character share for this block; budget redistribution may push it beyond this. */
   readonly charBudget: number
 }
 
+/** Lifecycle status of one inferred observation. */
 export type ObservationStatus = 'candidate' | 'active' | 'invalidated' | 'suppressed' | 'weakened'
 
 /** Derived pattern; it is never interchangeable with a user-confirmed fact. */
@@ -145,6 +158,7 @@ export interface MemoryObservation {
   readonly invalidatedAt?: string
 }
 
+/** Durable purge lifecycle record for one session. */
 export interface MemoryPurgeRecord {
   readonly operationId: string
   readonly sessionId: string
@@ -181,6 +195,7 @@ export interface MemorySnapshot {
   readonly records: readonly MemoryItem[]
   /** Unconfirmed Wiki page proposals waiting for client confirmation or rejection. */
   readonly candidates: readonly WikiCandidate[]
+  readonly aliases: readonly MemoryAliasRecord[]
   readonly observations?: readonly MemoryObservation[]
   /** Canonical Wiki page summaries used by the graph UI. */
   readonly pages?: readonly WikiPageSummary[]
