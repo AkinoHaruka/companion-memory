@@ -27,6 +27,9 @@ export type MemoryDisclosure = 'normal' | 'user_explicit_only' | 'never_explicit
 /** Deployment-selectable policy for unclassified fail-closed L0 evidence. */
 export type UnclassifiedEvidenceDisclosure = Exclude<MemoryDisclosure, 'normal'>
 
+/** Recall layer used to preserve canonical and derived authority during bounded selection. */
+export type RecallAuthorityTier = 'canonical' | 'observation' | 'graph' | 'evidence'
+
 /** Rebuildable projection that carries safe-use effects and raw-text disclosure policy. */
 export interface SafeUsageProjection {
   readonly id: string
@@ -35,7 +38,8 @@ export interface SafeUsageProjection {
   readonly topicTags: readonly string[]
   readonly summary?: string
   readonly disclosure: MemoryDisclosure
-  /** Whether an ordinary, non-explicit turn may receive the stored raw text. Absent means no, so a projection that never opted in stays guidance-only. */
+  /** Whether an ordinary, non-explicit turn may receive the stored raw text. */
+  /** Absent means no, so a projection that never opted in stays guidance-only. */
   readonly ordinaryRawText?: boolean
   readonly generatedFromVersion: string
   readonly generatedAt: string

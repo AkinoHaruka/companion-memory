@@ -72,7 +72,7 @@ User conversation
 
 ### v1 明确不做
 
-- 超出可选且有界的 dense-recall provider 与 index seam 之外的持久 vector-index lifecycle。
+- 超出可选且有界的 dense-recall provider 与 index seam 之外的生产级后台 vector-index compaction 和多节点 index ownership。
 - 多节点协调、公网多租户部署和分布式 job ownership。
 - 所有 evidence、audit 以及外部备份副本的完整加密擦除。
 - 把每一句对话都当成记忆。
@@ -169,7 +169,7 @@ Provider 返回的 `status: confirmed`、`consent: true`、`locked: true`，或�
 
 ## Query-Time Recall v1
 
-可选的 `recallEnabled` 会在 Resident 之外按当前用户 query 召回长尾细节，默认关闭。第一阶段使用 scope 内 canonical lexical search，并以原始用户证据作 secondary recall；结果受 `recallMaxCandidates` 和 `recallMaxContextChars` 限制。`embeddingProvider` 可启用 deterministic-local 或 OpenAI-compatible dense recall；provider 失败会降级到 lexical/RRF，不阻断聊天。可选的语义增益消融（`tests/dense-semantic-gain.spec.ts`，由 `DSH_MEMORY_BGE_ENDPOINT` 门控）度量词法排序结构性够不着的释义召回：在 10 页硬干扰语料上，纯词法命中 0/5，deterministic hash 命中 2/5，BGE-small-zh-v1.5 向量命中 5/5。live hook 也不会提供 `MemoryReranker`，rerank 只可由直接 helper/store 调用和测试触达。Recall 还支持调用方提供明确的 `atTime` 或 `history` 来读取保留的时间线。详见 [docs/recall-v1.md](docs/recall-v1.md) 与 [docs/migration-phase-2-temporal-resident.md](docs/migration-phase-2-temporal-resident.md)。
+可选的 `recallEnabled` 会在 Resident 之外按当前用户 query 召回长尾细节，默认关闭。第一阶段使用 scope 内 canonical lexical search，并以原始用户证据作 secondary recall。预算先用 `min(recallMaxCandidates, recallAuthoritativeReserve)` 为非 evidence 权威结果保留席位，再在融合结果中考虑剩余候选；raw evidence 受 `recallRawEvidenceMaxCandidates` 限制，canonical 文本标为 `[authoritative]`，选中的 supporting evidence 标为 `[supplement]`，而当已选非 L0 文本覆盖 raw 细节的全部词项时会抑制重复 raw 细节。最终上下文仍受 `recallMaxContextChars` 限制。`embeddingProvider` 可启用 deterministic-local 或 OpenAI-compatible dense recall；provider 失败会降级到 lexical/RRF，不阻断聊天。keyless deterministic 消融在 companion 对比中测得 unique recall gain 为 0/16、dense noise 为 2/9、gate rejection 为 0/9；更大的 12 个场景、每场景 20 页的 keyless chaos probe 在本次运行打印了 unique gain 0/12、noise 60/60、gate rejection 36/96。这些是 keyless routing 和 selection 测量，不是 BGE 质量结果。BGE 门控的语义语料（`tests/dense-semantic-gain.spec.ts`）测量 lexical 排序在结构上无法达到的改写召回：在本地 BGE-small-zh-v1.5 服务上记录的结果是 lexical-only 命中 0/5，deterministic hash provider 命中 2/5，BGE 向量命中 5/5；该运行需要 `DSH_MEMORY_BGE_ENDPOINT`，因此默认 package run 不报告 BGE 质量测量。live hook 也不会提供 `MemoryReranker`，rerank 只可由直接 helper/store 调用和测试触达。Recall 还支持调用方提供明确的 `atTime` 或 `history` 来读取保留的时间线。suppression cue 会作为 policy evidence 保留并驱动 suppression；在 suppression 生效期间，它不会作为普通 raw recall 返回。详见 [docs/recall-v1.md](docs/recall-v1.md) 与 [docs/migration-phase-2-temporal-resident.md](docs/migration-phase-2-temporal-resident.md)。
 
 Observation 管理、图谱扩展和 raw Session purge 分别由 `recallObservationEnabled`、`recallGraphEnabled`、`purgeEnabled` 控制，默认全部关闭。启用的 Dream reflection 可以创建带 anchor 的 Observation candidate；创建 candidate 或更新 evidence 时，只要记录仍是 candidate、敏感度为 `normal`、没有强矛盾，并满足配置的 evidence、不同 Session 和 confidence 下限，runtime 就可以自动激活它。另一个路径是经过认证的 `POST /memory/v1/observations/:id/activate` 管理操作；它在通过 store 的最少 evidence 检查后显式激活记录，匹配的路由可以让记录 invalidated 或 suppressed。两条激活路径都不会确认 fact 或授予 explicit mention permission。Observation 必须有 raw/confirmed evidence anchor，始终与 Wiki fact 分开。普通 `memory_forget` 仍会保留 raw Session 证据。
 
@@ -244,11 +244,13 @@ UI 是管理与审计界面，不是绕过状态机的后门。它展示 Residen
 | GET | `/memory/v1/candidates` | 列出待处理 Dream Candidates | profile auth；无 flag | 仅管理 |
 | GET | `/memory/v1/observations` | 列出推断 Observation 及状态 | profile auth；无 flag | 管理/验收专用 |
 | GET | `/memory/v1/purges` | 读取 scope 内 purge journal metadata | profile auth；无 flag | 管理/验收专用 |
+| GET | `/memory/v1/conflicts` | 列出 contested 和 resolved conflict overlay | profile auth；无 flag | 仅管理 |
 | GET | `/memory/v1/audits` | 读取 scope 内 lifecycle audits | profile auth；无 flag | 仅管理 |
 | POST | `/memory/v1/recall` | 执行有界 query-time recall | profile auth；`recallEnabled` | 管理检查；live Agent recall 使用独立 pre-step hook |
 | POST | `/memory/v1/recall/debug` | 读取 Recall 计划、通道、gate 和降级状态 | profile auth；`recallEnabled` | 管理/诊断专用 |
 | POST | `/memory/v1/observations` | 创建带 anchor 的 Observation candidate | profile auth；无 flag | 管理/验收专用；不是 Dream/Agent 创建 |
 | POST | `/memory/v1/observations/:id/activate`、`/invalidate` 或 `/suppress` | 修改一个 Observation 状态 | profile auth；无 flag | 管理/验收专用 |
+| POST | `/memory/v1/conflicts/:id/resolve` | 使用 JSON `{ "resolution": "correction" | "temporal_transition" | "management" }` 解决 contested overlay；其他值返回 `400`，状态未变化时返回 `404` | profile auth；无 flag | 仅管理 |
 | POST | `/memory/v1/purge` | flag 开启后 purge 一个 raw Session | profile auth；`purgeEnabled` | 管理/验收专用 |
 | POST | `/memory/v1/wiki/candidates/:id/confirm` 或 `/reject` | 确认或拒绝 Candidate | profile auth；无 flag | 仅管理 |
 | POST | `/memory/v1/candidates/:id/confirm` 或 `/reject` | Candidate 操作的兼容别名 | profile auth；无 flag | 仅管理 |
@@ -272,7 +274,7 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 
 插件使用 DSH workspace 依赖和 `0.1.6-alpha.2` 基线。GitHub 镜像是源码/包镜像，实际运行仍应安装到兼容的 DSH Harness worktree。
 
-配置 owner namespace 和稳定 Agent preset。两者缺一时长期记忆读写都会 fail-closed。下表完整列出 40 个 live `Config` 字段。`configResponse()` 只返回安全的运行状态；`ownerNamespace`、`apiToken` 和 `apiTokens` 因为会暴露 scope 或凭据而特意不返回，`maxSessionChars` 是内部边界，也不通过该响应返回。OpenAI-compatible embedding 必须配置非空 model、credential reference 和 HTTPS endpoint（仅环回主机接受明文 HTTP）；deterministic embedding 使用配置的 dimension。OpenRouter 临时验收只把变量注入当前进程：
+配置 owner namespace 和稳定 Agent preset。两者缺一时长期记忆读写都会 fail-closed。下表完整列出 42 个 live `Config` 字段。`configResponse()` 只返回安全的运行状态；`ownerNamespace`、`apiToken` 和 `apiTokens` 因为会暴露 scope 或凭据而特意不返回。OpenAI-compatible embedding 必须配置非空 model、credential reference 和 HTTPS endpoint（仅环回主机接受明文 HTTP）；deterministic embedding 使用配置的 dimension。OpenRouter 临时验收只把变量注入当前进程：
 
 | 配置字段 | 默认值 | 说明 | `configResponse()` |
 |---|---:|---|---|
@@ -289,7 +291,7 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 | `dreamIntervalMs` | `3600000` | 定时 Dream 恢复和 sweep 的间隔。 | 返回。 |
 | `debounceMs` | `5000` | Session 活动触发 Dream 调度前的延迟。 | 返回。 |
 | `maxResidentChars` | `12000` | Resident prompt 序列化后的最大长度。 | 返回。 |
-| `maxSessionChars` | `40000` | Dream 输入和恢复使用的最大 transcript 长度。 | 不返回：内部边界。 |
+| `maxSessionChars` | `40000` | Dream 输入和恢复使用的最大 transcript 长度。 | 返回。 |
 | `recallEnabled` | `false` | 启用 Agent hook 和 HTTP route 的 query-time recall。 | 返回。 |
 | `recallVectorEnabled` | `false` | 启用 planner 控制的 dense vector recall。 | 返回。 |
 | `recallRawEvidenceEnabled` | `true` | 允许有界 raw L0 evidence 作为 recall 通道。 | 返回。 |
@@ -298,12 +300,14 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 | `purgeEnabled` | `false` | 启用经过认证的 raw-session purge transaction。 | 返回。 |
 | `recallMaxCandidates` | `8` | 渲染前允许的最大 recall 结果数。 | 返回。 |
 | `recallMaxContextChars` | `3000` | 渲染后的 recall context 最大长度。 | 返回。 |
+| `recallAuthoritativeReserve` | `4` | 为非 evidence 权威 recall 候选保留的最小席位数。 | 返回。 |
+| `recallRawEvidenceMaxCandidates` | `2` | 每次 recall 最多考虑的 raw L0 evidence 候选数。 | 返回。 |
 | `residentV2Enabled` | `true` | 启用结构化 Resident projection 路径。 | 返回。 |
 | `residentBlocksEnabled` | `true` | 启用有界的结构化 Resident block。 | 返回。 |
 | `sensitiveResidentEnabled` | `false` | 允许符合条件的 sensitive page 进入 Resident 输出。 | 返回。 |
 | `temporalEnabled` | `true` | 启用 temporal validity 和历史 recall 语义。 | 返回。 |
-| `evidenceClassificationEnabled` | `false` | 在捕获时对 user-origin L0 evidence 分类；关闭时所有未标记事件按 fail-closed 视为 sensitive。 | 返回。 |
-| `unclassifiedEvidenceDisclosure` | `never_explicit` | 未分类 fail-closed L0 evidence 的策略：`never_explicit` 或 `user_explicit_only`。降低它只会为用户主动且主题匹配的请求恢复精确细节。 | 返回。 |
+| `evidenceClassificationEnabled` | `false` | 在捕获时对 user-origin L0 evidence 分类；关闭时未标记 evidence 保持未分类，而 capture-rule marker 按 fail-closed sensitive 处理。 | 返回。 |
+| `unclassifiedEvidenceDisclosure` | `user_explicit_only` | 只用于真正未分类 L0 evidence 的 fallback：`user_explicit_only` 或 `never_explicit`。已存储的 `sensitive` evidence，以及分类关闭时按 sensitive 处理的 capture-rule evidence，仍保持 `never_explicit`。 | 返回。 |
 | `minObservationEvidence` | `2` | Observation candidate 所需的最少不同有效锚点数。 | 返回。 |
 | `observationActivationMinEvidence` | `3` | 自动激活 Observation 所需的最少不同证据锚点数。 | 返回。 |
 | `observationActivationMinSessions` | `2` | 自动激活 Observation 所需的最少不同 Session 数。 | 返回。 |
@@ -319,9 +323,9 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 
 Provider 提议可以收紧敏感性，但不能降低已有页面的敏感性。`memory_remember` 使用确定性保守提升。管理端通过 `PUT /memory/v1/wiki/pages/:id` 显式设置 `sensitivity` 为 `normal`、`provisional_sensitive` 或 `sensitive` 时，转换会写入审计。
 
-L0 evidence 本身也带一层使用许可；打开 `evidenceClassificationEnabled` 后，它在捕获时而不是读取时确定。`normal` 映射为 `normal` disclosure，可以正常召回；`provisional_sensitive` 映射为 `user_explicit_only`，普通 turn 不返回原文，但当前 query 明确询问且主题匹配时可以返回存储文本和来源引用；`sensitive` 以及所有未分类的 fail-closed event 默认映射为 `never_explicit`。`unclassifiedEvidenceDisclosure: user_explicit_only` 只降低未分类 fallback，并且只适用于用户主动、主题匹配的请求。捕获规则写入的值在能力关闭时是挂起而不是删除，重新打开并重启后会从同一条记录恢复。状态、权威矩阵与回滚语义以 [docs/v3.1-decision-semantics.md](docs/v3.1-decision-semantics.md) 为准。
+L0 evidence 本身也带一层使用许可；打开 `evidenceClassificationEnabled` 后，它在捕获时而不是读取时确定。Recall 首先读取 `evidenceSensitivityState`：缺少 marker 时是 `unclassified`，使用 `unclassifiedEvidenceDisclosure`；明确存储的 `normal` 或 `provisional_sensitive` marker 使用各自的 disclosure policy；明确存储的 `sensitive` marker 使用 `never_explicit`；capture classification 关闭时，`deterministic_rule` marker 按 `sensitive` 处理。这意味着全局 default 只适用于系统确实从未分类的 evidence，不能放宽已存储的 sensitive evidence 或暂停中的 fail-closed capture marker。设置 `unclassifiedEvidenceDisclosure: never_explicit` 会让真正未分类的 raw text 即使匹配请求也保持静默。捕获规则写入的值在能力关闭时是挂起而不是删除，重新打开并重启后会从同一条记录恢复。状态、权威矩阵与回滚语义以 [docs/v3.1-decision-semantics.md](docs/v3.1-decision-semantics.md) 为准。
 
-`SafeUsageProjection.disclosure` 是唯一的原文 disclosure policy 字段：`normal` 允许原文，`user_explicit_only` 只在显式主题匹配后返回原文和已记录的来源引用，`never_explicit` 即使 query 匹配也永远不返回原文。Recall eligibility 检查和 mention renderer 都执行这个字段；`never_explicit` projection 始终保持 silent。普通 turn 只有在 projection 同时置了 `ordinaryRawText`、且 query 的词汇全部出现在存储文本中时才会拿到原文——这正是 preference 页面与 interaction rule 保持只给指引的原因；`allowedEffects` 只描述这条记忆可以被如何使用，不参与是否返回原文的判定。
+`SafeUsageProjection.disclosure` 是唯一的原文 disclosure policy 字段：`normal` 允许原文，`user_explicit_only` 只有在用户主动发起 turn、明确回忆该主题且主题匹配时才返回原文和已记录的来源引用，`never_explicit` 即使 query 匹配也永远不返回原文。Recall eligibility 检查和 mention renderer 都执行这个字段；`never_explicit` projection 始终保持 silent。普通 turn 只有在 projection 同时置了 `ordinaryRawText`、且 query 的词汇全部出现在存储文本中时才会拿到原文——这正是 preference 页面与 interaction rule 保持只给指引的原因；`allowedEffects` 只描述这条记忆可以被如何使用，不参与是否返回原文的判定。
 
 ```text
 DSH_MEMORY_DREAM_API_URL=https://openrouter.ai/api
@@ -367,7 +371,7 @@ sanitized-provider-errors.log
 - 强依赖 DSH，不是任意 Node、Rust 或 MCP host 的通用库。
 - 稳定 preset 是硬前提；配置不完整时会故意 fail-closed。
 - Candidate 审核会延迟自动记忆；用户明确要求时可用显式工具走快速路径。
-- Deterministic 和 OpenAI-compatible embedding provider 已 live-wired，并在失败时降级到 lexical；持久 vector-index lifecycle 和 rerank 仍是独立能力。
+- Deterministic 和 OpenAI-compatible embedding provider 已 live-wired，并在失败时降级到 lexical；runtime 会把有界 vector-index generation 持久化到 `index_meta` 和 `vectors`，重启后恢复匹配 generation，并在 mismatch 或 rebuild 失败时记录降级；生产级后台 compaction 和多节点 index ownership 仍是独立能力。
 - 当前没有接入 live Agent 的 reranker；`MemoryReranker` 只能由直接 helper/store caller 使用。
 - Forget v1 只删除派生记忆，不删除 raw evidence。
 - Observation candidate 可以由启用的 Dream reflection 产生。创建 candidate 或更新 evidence 时，candidate 只有在敏感度为 `normal`、没有强矛盾，并满足配置的 evidence、不同 Session 和 confidence 阈值时才会自动激活。经过认证的管理路由也可以显式 activate、invalidate 或 suppress Observation；显式 activation 只使用 store 的最少 evidence 检查。两条激活路径都不等于 fact confirmation，也不授予 explicit mention permission。
@@ -376,11 +380,11 @@ sanitized-provider-errors.log
 
 ## 当前状态与后续工作
 
-当前已实现：scope 安全的 L0 evidence、L1 Candidate、L2 Wiki、L3 Resident 契约；DSH 持久化与重启恢复；显式工具；profile/token 校验；安全 Dream/embedding credential；OpenAI-compatible 和 Anthropic-compatible Dream 协议；deterministic/OpenAI-compatible embedding wiring 和 lexical fallback；FILE 解析；标题/正文限制；wikilink 规范化；候选 fingerprint 合并；来源保留；last-valid Resident 回退；持久化 job/cursor；有界结构化 Resident block；live Agent 的 lexical/RRF query-time recall 以及可选 dense、raw-evidence、graph 通道；Temporal validity 与历史召回；当前的保守 Mention Gate；带可选 Dream reflection 的 anchored Observation candidate 和 HTTP 管理；authority-checked 三状态 sensitivity 转换；显式同上下文 alias coreference；带 dry-run、confirmation、verification 和中断重试的 raw Session/page/candidate/source/observation journal purge；管理 UI、候选审核和审计路由；带真实 Loader runner 的 Appendix F companion 语料；以及从原始观测结果算出的 Appendix G 聚合指标，详见 [docs/companion-eval.md](docs/companion-eval.md)。
+当前已实现：scope 安全的 L0 evidence、L1 Candidate、L2 Wiki、L3 Resident 契约；DSH 持久化与重启恢复；显式工具；profile/token 校验；安全 Dream/embedding credential；OpenAI-compatible 和 Anthropic-compatible Dream 协议；deterministic/OpenAI-compatible embedding wiring 和 lexical fallback；FILE 解析；标题/正文限制；wikilink 规范化；候选 fingerprint 合并；来源保留；last-valid Resident 回退；持久化 job/cursor；有界结构化 Resident block；带 `index_meta`/`vectors` 元数据、重启恢复、mismatch invalidation、candidate build 后原子切换和失败时保留旧 index 并标记降级的有界持久 vector-index generation；live Agent 的 lexical/RRF query-time recall 以及可选 dense、raw-evidence、graph 通道、canonical-first budget 和 policy-evidence suppression；Temporal validity 与历史召回；当前的保守 Mention Gate；带持久化/重建、认证 listing/resolution 和 live Agent 抑制的 contested conflict overlay；带可选 Dream reflection 的 anchored Observation candidate 和 HTTP 管理；authority-checked 三状态 sensitivity 转换；带 invalidation、历史解析和不改 canonical 的 rebuild 的可撤销 alias；显式同上下文 alias coreference；带 dry-run、confirmation、verification 和中断重试的 raw Session/page/candidate/source/observation journal purge；管理 UI、候选审核和审计路由；真实 Loader 的 SafeUsageProjection 和 conflict 注入断言；带真实 Loader runner 的 Appendix F companion 语料；以及从原始观测结果算出的 Appendix G 聚合指标，详见 [docs/companion-eval.md](docs/companion-eval.md)。
 
-明确延期：provider 之外的持久 vector-index lifecycle；live reranker 接入；sensitivity 假阴率和假阳率；一条实时 Agent 装配断言，用来证明查询时只使用持久化的 SafeUsageProjection，外加投影指标；contested conflict overlay；经过验证的 hedged silent use；超出 anchored Observation candidate 的完整 Reflection/consolidation；revocable alias authority 与 rebuild 语义；超出有界 wikilink graph expansion 的 entity resolution；storageDomain 之外的完整数据擦除；多节点存储；公网多租户运营；敏感内容的生产级自动确认策略；超出三十场景 companion 语料的 200–500 场景生产 benchmark；load/chaos；以及脱离兼容 DSH workspace 的独立 runtime。
+明确延期：生产级后台 vector-index compaction 和多节点 index ownership；live reranker 接入；sensitivity 假阴率和假阳率；完整 projection 和 answer-side outcome 指标；完整 conflict evaluation matrix；经过验证的 hedged silent use；超出 anchored Observation candidate 的完整 Reflection/consolidation；完整 live HTTP/Agent alias authority matrix；超出有界 wikilink graph expansion 的 entity resolution；storageDomain 之外的完整数据擦除；多节点存储；公网多租户运营；敏感内容的生产级自动确认策略；超出三十场景 companion 语料的 200–500 场景生产 benchmark；超出 focused package probe 的生产级 load/chaos 评测；以及脱离兼容 DSH workspace 的独立 runtime。
 
-当前实现是受治理的 Phase 1–5 substrate，不代表所有生产级评测门槛都已完成。现有 package suite 覆盖已实现的状态转换，并已运行 Appendix F 语料和 Appendix G 聚合；其中五个语料场景和四个指标字段仍显式标记为 unsupported；启用 opt-in flags 前仍需补齐 benchmark、coverage、load 和 chaos 数据。
+当前实现是受治理的 Phase 1–5 substrate，不代表所有生产级评测门槛都已完成。现有 package suite 覆盖已实现的状态转换，并已运行 Appendix F 语料和 Appendix G 聚合；没有 answer generator 时仍有四个 answer-side 语料指标显式标记为 unsupported，同时 focused restart、purge-interruption、load 和 keyless chaos probe 已存在。启用 opt-in flags 前仍需补齐 production benchmark、coverage 和生产级 load/chaos 证据。
 
 ## 常见问题
 
@@ -430,6 +434,20 @@ Resident 内容受 `maxResidentChars` 限制，并作为下一次请求的动态
 
 Resident 变化会修改后续请求的动态 system context，并可能让注入点之后的请求前缀缓存失效；读写记忆本身不会在聊天热路径调用 Dream。
 
+### Query-time recall injection
+
+#### What the model sees
+
+启用后，recall 以有界 memory data 注入。canonical 和其他非 evidence 结果是权威候选；raw evidence 支持已选权威结果时标为 `[supplement]`，canonical 文本标为 `[authoritative]`。suppression cue 产生的 policy evidence 会为控制目的保留，但不会进入普通 raw recall。
+
+#### Token effect
+
+`recallAuthoritativeReserve`、`recallRawEvidenceMaxCandidates` 和 `recallMaxContextChars` 共同限制候选组合与序列化上下文。已选非 evidence 文本覆盖其词项时，重复 raw 细节会被省略。
+
+#### KV Cache effect
+
+Recall 上下文变化会修改注入点之后的动态请求上下文，并可能降低后续请求的前缀缓存复用；Recall 不会在聊天热路径调用 Dream。
+
 ## 已知限制与后续工作
 
 <a id="known-limitations-and-deferred-work"></a>
@@ -437,9 +455,10 @@ Resident 变化会修改后续请求的动态 system context，并可能让注�
 - 插件强依赖 DSH workspace API，不是任意 Node、Rust 或 MCP host 的通用库。
 - 稳定 preset 是硬前提；配置缺失时会故意 fail-closed，避免误共享全局记忆。
 - Candidate 审核可能延迟自动记忆；用户明确要求时可用显式工具走快速路径。
-- Deterministic 和 OpenAI-compatible embedding provider 已 live-wired，并在失败时降级到 lexical；持久 vector-index lifecycle 和 rerank 仍是独立能力。
+- Deterministic 和 OpenAI-compatible embedding provider 已 live-wired，并在失败时降级到 lexical；有界 vector-index generation 持久化在 `index_meta` 和 `vectors` 中，重启后恢复匹配状态，rebuild 失败时保留旧 index 并记录降级。生产级后台 compaction、多节点 index ownership 和 rerank 仍是独立能力。
+- 真实 Loader Agent 路径已覆盖只注入 SafeUsageProjection 且不带原文或来源标识、conflict quarantine 和认证 release；两个投影指标已有直接测量，answer-side outcome 指标、完整 conflict evaluation matrix 和完整 live HTTP/Agent alias authority matrix 仍未完成。
 - 普通 Forget 只从未来 Resident 移除派生记忆，不清除 raw Session 证据；显式 purge 独立受 flag 控制，带 journal、dry-run、confirmation 和 verification。
 - Observation candidate 可以来自启用的 Dream reflection。创建 candidate 和更新 evidence 时，candidate 只有在敏感度为 `normal`、没有强矛盾，并满足配置的 evidence、不同 Session 和 confidence 阈值时才会自动激活；需要认证的管理路由也可以显式 activate、invalidate 或 suppress Observation，显式 activation 使用 store 的最少 evidence 检查。两条激活路径都不等于 canonical confirmation，也不授予 explicit mention permission。
 - `storageDomain` 是宿主持久化边界，不是分布式共识；公网多节点部署需要额外设计。
 - Provider 质量仍有波动，严格解析能保护状态机，但不能保证候选一定相关或完整。
-- Appendix F 语料覆盖三十个代表场景，其中五个显式标记为 unsupported，Appendix G 产出十九个字段，其中四个显式标记为 unsupported；storageDomain 之外的完整数据擦除、完整 Reflection/consolidation、敏感内容自动确认、200–500 场景生产 benchmark、load/chaos 评测，以及脱离 DSH 的独立 runtime 均为后续工作。
+- Appendix F 语料覆盖三十个代表场景；没有 answer generator 时有四个 answer-side 指标 unsupported，Appendix G 产出 21 个字段。`safeUsageProjectionRate` 和 `rawTextWithheldRate` 是直接投影测量，answer-side outcome 字段在没有生成答案时仍 unsupported。keyless dense ablation 是 routing 和 selection probe，不是 BGE 质量结果。sensitivity 假阴率和假阳率、经过验证的 hedged silent-use 评测、完整 Reflection/consolidation、超出有界 wikilink graph expansion 的 entity resolution、storageDomain 之外的完整数据擦除、公网多租户运营、敏感内容自动确认、200–500 场景生产 benchmark、生产级 load/chaos 评测，以及脱离 DSH 的独立 runtime 均为后续工作。

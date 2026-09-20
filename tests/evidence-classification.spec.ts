@@ -79,9 +79,9 @@ describe('L0 evidence classification', () => {
 
     const response = await implicit.recall('你还记得我的储物柜 B-417 吗？')
     const matched = response.results.find(result => result.sourceType === 'evidence')
-    expect(matched?.mentionDecision).toBe('silent_use')
-    expect(matched?.text).toBe('')
-    expect(disclosed(response.results)).not.toContain('B-417')
+    expect(matched?.mentionDecision).toBe('explicit')
+    expect(matched?.text).toContain('B-417')
+    expect(disclosed(response.results)).toContain('B-417')
   })
 
   it('returns ordinary evidence as an explicit L0 result carrying its source ref', async () => {
@@ -172,7 +172,7 @@ describe('L0 evidence classification', () => {
     expect((await on.recall(query)).results.some(result => result.text.includes('B-417'))).toBe(true)
 
     const off = open(domain, false); await off.waitReady()
-    expect(countsOf(off, 'rollback-session')).toEqual({ normal: 0, provisional_sensitive: 0, sensitive: 0, unclassified: 1 })
+    expect(countsOf(off, 'rollback-session')).toEqual({ normal: 0, provisional_sensitive: 0, sensitive: 1, unclassified: 0 })
     expect(disclosed((await off.recall(query)).results)).not.toContain('B-417')
     expect(persistedSession(domain, 'rollback-session').evidenceMarkers).toEqual([{ index: 0, sensitivity: 'normal', origin: 'deterministic_rule' }])
 

@@ -68,4 +68,23 @@ describe('memory disclosure policy', () => {
     const explicit = await store.recall('Do you remember my unclassified locker U-404?')
     expect(explicit.results.find(result => result.sourceType === 'evidence')).toMatchObject({ mentionDecision: 'explicit', text: expect.stringContaining('unclassified locker U-404'), sourceRefs: ['session:unclassified-session/event:1'] })
   })
+
+  it('defaults unclassified evidence to explicit user-topic recovery while preserving the opt-out', async () => {
+    const rawBody = 'unclassified locker U-505'
+    const defaultStore = open(new Domain())
+    await defaultStore.appendSessionEvent('unclassified-default-session', JSON.stringify({
+      seq: 1, time: '2026-09-19T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: rawBody }] },
+    }))
+    const unsolicited = await defaultStore.recall('my locker U-505')
+    expect(renderRecallContext(unsolicited.results)).not.toContain(rawBody)
+    const explicit = await defaultStore.recall('Do you remember my unclassified locker U-505?')
+    expect(renderRecallContext(explicit.results)).toContain(rawBody)
+
+    const neverExplicit = open(new Domain(), { unclassifiedEvidenceDisclosure: 'never_explicit' })
+    await neverExplicit.appendSessionEvent('unclassified-never-session', JSON.stringify({
+      seq: 1, time: '2026-09-19T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: rawBody }] },
+    }))
+    const denied = await neverExplicit.recall('Do you remember my unclassified locker U-505?')
+    expect(renderRecallContext(denied.results)).not.toContain(rawBody)
+  })
 })

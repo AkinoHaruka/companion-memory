@@ -9,6 +9,7 @@ import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RecallResult, RecallTrace } from '../../src/recall.ts'
 import { companionCorpus, type CompanionScenario } from './companion-corpus.ts'
+import { answerGeneratorFromEnvironment, type AnswerGenerator } from './answer-evaluation.ts'
 import { startLiveHarness, drainInFlight, evidenceDrainBudgetMs, readPersistedEvidence, testAgent, type LiveHarness } from './live-harness.ts'
 import { fetchLive } from './live-http.ts'
 
@@ -34,6 +35,8 @@ export interface RawOutcome {
   exchanges: Array<{ path: string; status: number; body: unknown }>
   toolResults: Array<{ isError: boolean; value?: unknown }>
   diskMatches?: string[]
+  /** Final assistant answer generated from the same context captured in `injected`. */
+  answer?: string
 }
 
 async function diskMatches(root: string, needle: string): Promise<string[]> {
@@ -90,6 +93,8 @@ export interface CorpusRunOptions {
    * scenario measures degradation, not retrieval quality.
    */
   readonly denseEmbedding?: { readonly endpoint: string; readonly model: string; readonly credentialRef: string }
+  /** Optional final-answer provider; when absent, the environment-selected provider is used. */
+  readonly answerGenerator?: AnswerGenerator
 }
 
 /** One corpus execution set for one side of the dense ablation. */
@@ -135,6 +140,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
   const root = await mkdtemp(join(tmpdir(), 'riko-companion-'))
   let harness: LiveHarness | undefined
   const nativeFetch = globalThis.fetch
+  const answerGenerator = options.answerGenerator ?? answerGeneratorFromEnvironment()
   const kind = scenario.setup.kind
   const sessionId = `eval-${scenario.id.replace('.', '-')}`
   let providerCalls = 0
@@ -277,6 +283,16 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       messages: [createUserMessage({ content: [{ type: 'text', text: scenario.userTurn }], source: { kind: 'user' } })], turn: 1, step: 1, signal: new AbortController().signal,
     }, () => Promise.resolve({ kind: 'enter' as const, messages: [] }))
     raw.injected = kind === 'historical' ? recalled.context : JSON.stringify(step.kind === 'enter' ? step.messages : [])
+    if (answerGenerator !== undefined) {
+      raw.answer = await answerGenerator({
+        scenario,
+        userTurn: scenario.userTurn,
+        injectedContext: raw.injected,
+        resident: raw.resident,
+        results: raw.results,
+        trace: raw.trace,
+      })
+    }
     if (kind === 'dream') raw.checks.authority = raw.snapshot.pages.every(page => !page.description.includes(scenario.setup.text)) && raw.snapshot.candidates.length > 0
     if (kind === 'embedding-failure' && options.denseEnabled === undefined) raw.checks.providerFallback = raw.trace.degradedModes.includes('vector-degraded')
     if (kind === 'overflow') raw.checks.wholeItemBudget = raw.resident.length <= 256 && !raw.resident.includes('oversized whole item')

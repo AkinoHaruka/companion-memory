@@ -6,7 +6,7 @@ Added an opt-in query-time read path in `src/recall.ts`, `MemoryProfileStore.rec
 
 ## Compatibility
 
-- Phase 1 introduced no storage migration; the current Phase 2 reader upgrades the domain to version 2 with `compatibleVersions: [1]`.
+- Phase 1 introduced no storage migration; the current reader uses storage-domain version 5 with `compatibleVersions: [1, 2, 3, 4]`.
 - Existing records are read without backfill.
 - Existing tools and HTTP routes keep their prior semantics.
 - Recall defaults to disabled.

@@ -8,6 +8,7 @@ import {
   fuseRecallChannels,
   lexicalTokens,
   renderRecallContext,
+  termCoverage,
   type RecallDocument,
   type RecallResult,
 } from '../src/recall.ts'
@@ -24,7 +25,8 @@ function page(text: string): WikiPage {
 
 function recallResult(overrides: Partial<RecallResult> = {}): RecallResult {
   return {
-    id: 'result:default', sourceType: 'canonical', text: 'North Pier Cafe', sourceRefs: ['session:session-1/event:1'],
+    id: 'result:default', sourceType: 'canonical', authorityTier: 'canonical', text: 'North Pier Cafe',
+    sourceRefs: ['session:session-1/event:1'],
     epistemicStatus: 'confirmed', temporalStatus: 'current', eligibility: 'eligible', channels: ['lexical'], fusedScore: 1,
     mentionDecision: 'silent_use', ...overrides,
   }
@@ -66,8 +68,12 @@ describe('query-time recall primitives', () => {
     const budgeted = applyRecallBudget(results, analyzeRecallQuery('之前说的 North Pier Cafe'), '之前说的 North Pier Cafe')
     const rendered = renderRecallContext(budgeted.results)
     expect(budgeted.results.map(result => result.sourceType)).toEqual(expect.arrayContaining(['canonical', 'evidence']))
+    expect(budgeted.results.find(result => result.authorityTier === 'canonical')?.role).toBeUndefined()
+    expect(budgeted.results.find(result => result.authorityTier === 'evidence')?.role).toBe('supplement')
     expect(rendered).toContain('&lt;/MEMORY_DATA&gt;')
     expect(rendered).toContain('session:session-1/event:17')
+    expect(rendered).toContain('[authoritative]')
+    expect(rendered).toContain('[supplement]')
   })
 
   it('packs whole serialized items under the bound and keeps delimiters intact', () => {
@@ -151,8 +157,37 @@ describe('query-time recall primitives', () => {
 
     expect(results).toHaveLength(1)
     expect(results[0]?.sourceType).toBe('canonical')
+    expect(results[0]?.authorityTier).toBe('canonical')
     expect(results[0]?.sourceRefs).toEqual(expect.arrayContaining(['session:session-1', 'session:session-1/event:17']))
     expect(results[0]?.channels).toEqual(expect.arrayContaining(['lexical', 'rawEvidence']))
+  })
+
+  it('reserves canonical memory and admits only raw terms that add detail', () => {
+    const query = '你还记得之前的 locker number B-417 吗？'
+    const canonical = documentFromPage(page('The user has a locker'))
+    const detail = documentFromEvidence('session-1', 18, 'The locker number is B-417', undefined, 'normal')
+    const repeated = documentFromEvidence('session-1', 19, 'The user has a locker', undefined, 'normal')
+    const plan = analyzeRecallQuery(query, { maxCandidates: 2, authoritativeReserve: 1, rawEvidenceMaxCandidates: 1 })
+    const fused = fuseRecallChannels({ lexical: [canonical], rawEvidence: [detail, repeated] }, query, { maxCandidates: 2 })
+    const budgeted = applyRecallBudget(fused, plan, query)
+
+    expect(budgeted.results.map(result => result.authorityTier)).toEqual(['canonical', 'evidence'])
+    expect(budgeted.results[1]?.role).toBe('supplement')
+    expect(budgeted.results[1]?.text).toContain('B-417')
+    expect(termCoverage(repeated.text, canonical.text)).toBe(1)
+    expect(budgeted.gateReasons).not.toContain('raw-evidence-repeats-authority')
+  })
+
+  it('rejects raw evidence whose terms are already covered by selected authority', () => {
+    const query = '你还记得之前的 locker 吗？'
+    const canonical = documentFromPage(page('The user has a locker'))
+    const repeated = documentFromEvidence('session-1', 20, 'The user has a locker.', undefined, 'normal')
+    const plan = analyzeRecallQuery(query, { maxCandidates: 2, authoritativeReserve: 1, rawEvidenceMaxCandidates: 1 })
+    const fused = fuseRecallChannels({ lexical: [canonical], rawEvidence: [repeated] }, query, { maxCandidates: 2 })
+    const budgeted = applyRecallBudget(fused, plan, query)
+
+    expect(budgeted.results.map(result => result.authorityTier)).toEqual(['canonical'])
+    expect(budgeted.gateReasons).toContain('raw-evidence-repeats-authority')
   })
 
   it('keeps distinct canonical pages with the same description separate', () => {

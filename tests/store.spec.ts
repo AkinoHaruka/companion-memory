@@ -154,8 +154,8 @@ describe('storage-domain-backed MemoryProfileStore', () => {
     expect(cafe.results.some(result => result.text.includes('North Pier Cafe'))).toBe(true)
     expect(cafe.trace.candidatesByChannel.lexical).toBeGreaterThan(0)
     const number = await store.recall('我之前说过的储物柜编号是什么？')
-    expect(number.results.some(result => result.text.includes('B-417'))).toBe(false)
-    expect(number.results.some(result => result.sourceRefs.includes('session:session-number/event:17'))).toBe(false)
+    expect(number.results.some(result => result.text.includes('B-417'))).toBe(true)
+    expect(number.results.some(result => result.sourceRefs.includes('session:session-number/event:17'))).toBe(true)
     expect(store.renderResident()).not.toContain('B-417')
   })
 

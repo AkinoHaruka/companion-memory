@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { MemoryScope } from './contracts.ts'
 import type { WikiPage, WikiSearchResult } from './wiki.ts'
-import type { MemoryDisclosure, MemorySensitivity, SafeUsageProjection } from './types.ts'
+import type { MemoryDisclosure, MemorySensitivity, RecallAuthorityTier, SafeUsageProjection } from './types.ts'
 import { disclosureForSensitivity } from './sensitivity.ts'
 
 /** Query modes understood by the first recall planner. */
@@ -28,6 +28,10 @@ export interface RecallPlan {
   readonly maxCandidates: number
   readonly lexicalCandidateCap: number
   readonly denseCandidateCap: number
+  /** Minimum number of non-L0 candidates tried before competitive selection. */
+  readonly authoritativeReserve: number
+  /** Maximum raw L0 evidence candidates admitted to one response. */
+  readonly rawEvidenceMaxCandidates: number
   readonly maxContextChars: number
 }
 
@@ -49,6 +53,8 @@ export interface MemoryReranker {
 export interface RecallResult {
   readonly id: string
   readonly sourceType: 'canonical' | 'evidence' | 'observation'
+  /** Layer that supplied this result; `evidence` is raw L0 and the other tiers are non-L0. */
+  readonly authorityTier?: RecallAuthorityTier
   readonly text: string
   readonly sourceRefs: readonly string[]
   readonly epistemicStatus: 'confirmed' | 'inferred'
@@ -63,6 +69,8 @@ export interface RecallResult {
   readonly mentionDecision: 'explicit' | 'silent_use' | 'suppress'
   /** Whether the current query explicitly addresses this result's topic. */
   readonly userInitiatedTopic?: boolean
+  /** Raw L0 evidence selected to add terms absent from the selected non-L0 results. */
+  readonly role?: 'supplement'
 }
 
 /** Per-candidate mention-gate outcome with channel attribution. */
@@ -123,6 +131,10 @@ export interface RecallOptions {
   readonly graphMaxHop?: number
   readonly lexicalCandidateCap?: number
   readonly denseCandidateCap?: number
+  /** Non-L0 seats tried before the remaining candidates compete. */
+  readonly authoritativeReserve?: number
+  /** Maximum raw L0 evidence candidates admitted to one response. */
+  readonly rawEvidenceMaxCandidates?: number
   readonly timeoutMs?: number
   readonly signal?: AbortSignal
 }
@@ -131,6 +143,8 @@ export interface RecallOptions {
 export interface RecallDocument {
   readonly id: string
   readonly sourceType: 'canonical' | 'evidence' | 'observation'
+  /** Layer that supplied this document; graph documents are derived pointers to Wiki pages. */
+  readonly authorityTier?: RecallAuthorityTier
   readonly text: string
   readonly sourceRefs: readonly string[]
   readonly epistemicStatus: 'confirmed' | 'inferred'
@@ -163,6 +177,8 @@ const DEFAULT_MAX_CONTEXT_CHARS = 3_000
 const DEFAULT_RRF_K = 60
 const DEFAULT_LEXICAL_CANDIDATE_CAP = 20
 const DEFAULT_DENSE_CANDIDATE_CAP = 8
+const DEFAULT_AUTHORITATIVE_RESERVE = 4
+const DEFAULT_RAW_EVIDENCE_MAX_CANDIDATES = 2
 const DEFAULT_TIMEOUT_MS = 250
 const EXPLICIT_RECALL_PATTERN = /还记得|记得.*之前|之前|上次|以前|曾经|过去|回忆|我说过|你记得|do you remember|what did i say|earlier|last time|before/i
 const PERSONAL_CONTEXT_PATTERN = /我(?:的(?:号码|编号|名字|地址|咖啡馆|储物柜|偏好|习惯)|现在|目前|住|姐|喜欢|之前|以前|过去|上次|说过|提过)|my (?:number|name|address|cafe|locker|preference|habit|past|previous|earlier|last)/i
@@ -179,7 +195,7 @@ const RECALL_STOPWORDS = new Set([
  * @param options Bounded recall planner options; empty by default.
  * @returns The bounded recall plan.
  */
-export function analyzeRecallQuery(query: string, options: Pick<RecallOptions, 'maxCandidates' | 'maxContextChars' | 'vectorEnabled' | 'atTime' | 'history' | 'observationsEnabled' | 'graphEnabled' | 'graphMaxHop' | 'lexicalCandidateCap' | 'denseCandidateCap'> = {}): RecallPlan {
+export function analyzeRecallQuery(query: string, options: Pick<RecallOptions, 'maxCandidates' | 'maxContextChars' | 'vectorEnabled' | 'atTime' | 'history' | 'observationsEnabled' | 'graphEnabled' | 'graphMaxHop' | 'lexicalCandidateCap' | 'denseCandidateCap' | 'authoritativeReserve' | 'rawEvidenceMaxCandidates'> = {}): RecallPlan {
   const normalized = query.trim()
   const lower = normalized.toLocaleLowerCase()
   const explicitRecall = EXPLICIT_RECALL_PATTERN.test(lower)
@@ -197,6 +213,8 @@ export function analyzeRecallQuery(query: string, options: Pick<RecallOptions, '
   const densePolicy = classifyDensePolicy({ vectorEnabled: options.vectorEnabled === true, nonPersonal: clearlyNonPersonal && !personalContext, explicitRecall, temporal, episodic, detail, entities, keywords })
   const lexicalCandidateCap = boundedInteger(options.lexicalCandidateCap, DEFAULT_LEXICAL_CANDIDATE_CAP, 1, 128)
   const denseCandidateCap = boundedInteger(options.denseCandidateCap, DEFAULT_DENSE_CANDIDATE_CAP, 1, 128)
+  const authoritativeReserve = boundedInteger(options.authoritativeReserve, DEFAULT_AUTHORITATIVE_RESERVE, 0, 32)
+  const rawEvidenceMaxCandidates = boundedInteger(options.rawEvidenceMaxCandidates, DEFAULT_RAW_EVIDENCE_MAX_CANDIDATES, 0, 32)
   if (clearlyNonPersonal && !personalContext) {
     return {
       intent: 'none',
@@ -215,6 +233,8 @@ export function analyzeRecallQuery(query: string, options: Pick<RecallOptions, '
       maxCandidates: boundedInteger(options.maxCandidates, DEFAULT_MAX_CANDIDATES, 1, 32),
       lexicalCandidateCap,
       denseCandidateCap,
+      authoritativeReserve,
+      rawEvidenceMaxCandidates,
       maxContextChars: boundedInteger(options.maxContextChars, DEFAULT_MAX_CONTEXT_CHARS, 256, 16_000),
     }
   }
@@ -237,6 +257,8 @@ export function analyzeRecallQuery(query: string, options: Pick<RecallOptions, '
     maxCandidates: boundedInteger(options.maxCandidates, DEFAULT_MAX_CANDIDATES, 1, 32),
     lexicalCandidateCap,
     denseCandidateCap,
+    authoritativeReserve,
+    rawEvidenceMaxCandidates,
     maxContextChars: boundedInteger(options.maxContextChars, DEFAULT_MAX_CONTEXT_CHARS, 256, 16_000),
   }
 }
@@ -365,12 +387,14 @@ export function fuseRecallChannels(channels: Readonly<Record<string, readonly Re
     current.score += candidate.score
     for (const channel of candidate.channels) current.channels.add(channel)
   }
-  return [...deduped.values()]
+  const sorted = [...deduped.values()]
     .sort((left, right) => right.score - left.score || left.document.id.localeCompare(right.document.id))
-    .slice(0, maxCandidates)
+  const hasRawEvidence = Object.values(channels).some(documents => documents.some(document => authorityTierForDocument(document) === 'evidence'))
+  return (hasRawEvidence ? sorted : sorted.slice(0, maxCandidates))
     .map(item => ({
       id: item.document.id,
       sourceType: item.document.sourceType,
+      authorityTier: authorityTierForDocument(item.document),
       text: item.document.text,
       sourceRefs: [...item.document.sourceRefs],
       epistemicStatus: item.document.epistemicStatus,
@@ -399,13 +423,16 @@ export function applyRecallBudget(results: readonly RecallResult[], plan: Recall
   const observationRequest = OBSERVATION_REQUEST_PATTERN.test(query)
   const counts = { explicit: 0, silentUse: 0, suppress: 0 }
   const selected: RecallResult[] = []
+  const orderedResults = partitionRecallBudget(results, plan)
   const reasons = new Set<string>()
   const gateDecisions: RecallGateDecision[] = []
   let eligibleCandidates = 0
   let rejectedByEligibility = 0
   let rejectedBySensitivity = 0
   let rejectedByTemporal = 0
-  for (const result of results) {
+  let rawEvidenceSelected = 0
+  for (const result of orderedResults) {
+    if (selected.length >= plan.maxCandidates) break
     const topicMatch = recallTopicMatchesResult(query, result)
     const disclosure = recallDisclosure(result)
     const protectedSensitivity = result.sensitivity !== undefined && result.sensitivity !== 'normal'
@@ -443,9 +470,26 @@ export function applyRecallBudget(results: readonly RecallResult[], plan: Recall
     else if ((explicit || observationRequest) && topicMatch && (result.sourceType !== 'observation' || observationRequest)) { decision = 'explicit'; reason = observationRequest && result.sourceType === 'observation' ? 'explicit-observation-recall' : 'explicit-recall'; reasons.add(reason) }
     else if (result.sourceType === 'observation') { reason = 'inferred-observation-silent-use'; reasons.add(reason) }
     const rawAllowed = disclosure === 'normal' || disclosure === 'user_explicit_only' && decision === 'explicit'
+    const authorityTier = authorityTierForResult(result)
+    if (authorityTier === 'evidence') {
+      if (rawEvidenceSelected >= plan.rawEvidenceMaxCandidates) {
+        counts.suppress += 1
+        reasons.add('raw-evidence-budget')
+        if (gateDecisions.length < GATE_DECISION_LIMIT) gateDecisions.push({ id: result.id, channels: result.channels, decision: 'suppress', reason: 'raw-evidence-budget' })
+        continue
+      }
+      const selectedAuthoritative = selected.filter(candidate => authorityTierForResult(candidate) !== 'evidence')
+      if (selectedAuthoritative.length > 0 && termCoverage(result.text, selectedAuthoritative.map(candidate => candidate.text).join('\n')) === 1) {
+        counts.suppress += 1
+        reasons.add('raw-evidence-repeats-authority')
+        if (gateDecisions.length < GATE_DECISION_LIMIT) gateDecisions.push({ id: result.id, channels: result.channels, decision: 'suppress', reason: 'raw-evidence-repeats-authority' })
+        continue
+      }
+    }
+    const role = authorityTier === 'evidence' && selected.some(candidate => authorityTierForResult(candidate) !== 'evidence') ? { role: 'supplement' as const } : {}
     const governed = rawAllowed
-      ? { ...result, ...eligibility, userInitiatedTopic, mentionDecision: decision }
-      : { ...result, text: '', sourceRefs: [], ...eligibility, userInitiatedTopic, mentionDecision: decision }
+      ? { ...result, ...role, ...eligibility, userInitiatedTopic, mentionDecision: decision }
+      : { ...result, ...role, text: '', sourceRefs: [], ...eligibility, userInitiatedTopic, mentionDecision: decision }
     if (serializedRecallContext([...selected, governed]).length > plan.maxContextChars) {
       counts.suppress += 1
       reasons.add('context-budget')
@@ -455,6 +499,7 @@ export function applyRecallBudget(results: readonly RecallResult[], plan: Recall
     counts[decision === 'explicit' ? 'explicit' : 'silentUse'] += 1
     if (gateDecisions.length < GATE_DECISION_LIMIT) gateDecisions.push({ id: result.id, channels: result.channels, decision, ...(reason === undefined ? {} : { reason }) })
     selected.push(governed)
+    if (authorityTier === 'evidence') rawEvidenceSelected += 1
   }
   return {
     results: selected,
@@ -496,6 +541,7 @@ export function documentFromPage(page: WikiPage): RecallDocument {
   return {
     id: `page:${page.id}`,
     sourceType: 'canonical',
+    authorityTier: 'canonical',
     text: `${page.title}\n${page.description}\n${page.body}`,
     sourceRefs: page.sources.map(source => source.startsWith('session:') ? source : `session:${source}`),
     epistemicStatus: 'confirmed',
@@ -512,7 +558,7 @@ export function documentFromPage(page: WikiPage): RecallDocument {
  */
 export function documentFromObservation(observation: { readonly id: string; readonly text: string; readonly sourceRefs: readonly string[]; readonly sensitivity: MemorySensitivity; readonly validTo?: string | null }): RecallDocument {
   const validTo = observation.validTo ?? undefined
-  return { id: `observation:${observation.id}`, sourceType: 'observation', text: observation.text, sourceRefs: [...observation.sourceRefs], epistemicStatus: 'inferred', temporalStatus: validTo !== undefined && Date.parse(validTo) <= Date.now() ? 'historical' : 'current', sensitivity: observation.sensitivity, ...(exactFingerprint(observation.text) === '' ? {} : { factFingerprint: `observation:${observation.id}` }) }
+  return { id: `observation:${observation.id}`, sourceType: 'observation', authorityTier: 'observation', text: observation.text, sourceRefs: [...observation.sourceRefs], epistemicStatus: 'inferred', temporalStatus: validTo !== undefined && Date.parse(validTo) <= Date.now() ? 'historical' : 'current', sensitivity: observation.sensitivity, ...(exactFingerprint(observation.text) === '' ? {} : { factFingerprint: `observation:${observation.id}` }) }
 }
 
 function effectiveValidTo(page: WikiPage): string | undefined { return page.validTo ?? page.validUntil ?? undefined }
@@ -571,7 +617,9 @@ function serializedRecallContext(results: readonly RecallResult[]): string {
       lines.push(...silentUsageGuidance(result))
       continue
     }
-    lines.push(`- [${result.sourceType}; explicit] ${escapeMemoryText(result.text)}`)
+    const role = result.role === 'supplement' ? 'supplement' : result.authorityTier === 'canonical' ? 'authoritative' : result.authorityTier ?? result.sourceType
+    const label = role === 'authoritative' || role === 'supplement' ? role : `${role}; explicit`
+    lines.push(`- [${label}] ${escapeMemoryText(result.text)}`)
     lines.push(`  Source: ${result.sourceRefs.map(escapeMemoryText).join(', ')}`)
   }
   lines.push('[/RECALLED_MEMORY]', '</MEMORY_DATA>')
@@ -640,6 +688,7 @@ export function documentFromEvidence(sessionId: string, eventSeq: number, text: 
   return {
     id,
     sourceType: 'evidence',
+    authorityTier: 'evidence',
     text,
     sourceRefs: [`session:${sessionId}/event:${eventSeq}`],
     epistemicStatus: 'confirmed',
@@ -648,6 +697,36 @@ export function documentFromEvidence(sessionId: string, eventSeq: number, text: 
     projection: { id: `projection:${id}`, memoryId: id, allowedEffects: [], topicTags: [], disclosure, generatedFromVersion: 'evidence', generatedAt: observedAt ?? new Date().toISOString() },
     ...(exactFingerprint(text) === '' ? {} : { factFingerprint: exactFingerprint(text) }),
   }
+}
+
+/**
+ * Return the fraction of candidate terms already present in authoritative text.
+ * @param candidateText Candidate text whose terms are measured.
+ * @param authoritativeText Text selected from non-L0 authority tiers.
+ * @returns The covered-term fraction from 0 through 1.
+ */
+export function termCoverage(candidateText: string, authoritativeText: string): number {
+  const candidateTerms = lexicalTokens(candidateText)
+  if (candidateTerms.length === 0) return 1
+  const authoritativeTerms = new Set(lexicalTokens(authoritativeText))
+  return candidateTerms.filter(term => authoritativeTerms.has(term)).length / candidateTerms.length
+}
+
+function authorityTierForDocument(document: RecallDocument): RecallAuthorityTier {
+  if (document.authorityTier !== undefined) return document.authorityTier
+  return document.sourceType === 'evidence' ? 'evidence' : document.sourceType === 'observation' ? 'observation' : 'canonical'
+}
+
+function authorityTierForResult(result: RecallResult): RecallAuthorityTier {
+  if (result.authorityTier !== undefined) return result.authorityTier
+  return result.sourceType === 'evidence' ? 'evidence' : result.sourceType === 'observation' ? 'observation' : 'canonical'
+}
+
+function partitionRecallBudget(results: readonly RecallResult[], plan: RecallPlan): RecallResult[] {
+  const authoritative = results.filter(result => authorityTierForResult(result) !== 'evidence')
+  const reserve = authoritative.slice(0, Math.min(plan.maxCandidates, plan.authoritativeReserve))
+  const reservedIds = new Set(reserve.map(result => result.id))
+  return [...reserve, ...results.filter(result => !reservedIds.has(result.id))]
 }
 
 /**

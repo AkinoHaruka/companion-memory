@@ -33,7 +33,7 @@ import { classifyMemorySensitivity } from './sensitivity.ts'
 
 export type { EvidenceRef, MemoryCandidate, MemoryScope, WikiPage as MemoryWikiPage, ResidentSnapshot as MemoryResidentSnapshot, DreamJob } from './contracts.ts'
 export type { MemoryObservation, ObservationStatus, ResidentBlock, ResidentBlockKind } from './types.ts'
-export type { DreamSettings, MemoryCategory, MemoryItem, MemoryKind, MemorySnapshot, MemoryStatus } from './types.ts'
+export type { DreamSettings, MemoryCategory, MemoryItem, MemoryKind, MemorySnapshot, MemoryStatus, RecallAuthorityTier } from './types.ts'
 export type { EmbeddingProvider, MemoryReranker, RecallIntent, RecallOptions, RecallPlan, RecallResponse, RecallResult, RecallTrace } from './recall.ts'
 
 /** Runtime configuration. Secrets are never accepted here; only credential references are. */
@@ -82,6 +82,10 @@ export interface Config {
   readonly recallMaxCandidates: number
   /** Maximum rendered recall context length. */
   readonly recallMaxContextChars: number
+  /** Minimum reserved seats for non-L0 authoritative recall candidates; defaults to 4. */
+  readonly recallAuthoritativeReserve: number
+  /** Maximum raw L0 evidence candidates admitted per recall; defaults to 2. */
+  readonly recallRawEvidenceMaxCandidates: number
   /** Enables the structured Resident projection path. */
   readonly residentV2Enabled: boolean
   /** Enables bounded structured Resident blocks. */
@@ -92,7 +96,11 @@ export interface Config {
   readonly temporalEnabled: boolean
   /** Classify user-origin L0 evidence at capture; off leaves every unmarked event fail-closed sensitive. */
   readonly evidenceClassificationEnabled: boolean
-  /** Disclosure policy for unclassified fail-closed L0 evidence; lowering this enables only explicit, topic-matched recovery. */
+  /**
+   * Disclosure policy for unclassified fail-closed L0 evidence.
+   * Defaults to `user_explicit_only`; raw text returns only when the user initiates the turn, explicitly recalls
+   * the topic, and the topic matches.
+   */
   readonly unclassifiedEvidenceDisclosure: UnclassifiedEvidenceDisclosure
   /** Minimum distinct valid anchors for an observation candidate. */
   readonly minObservationEvidence: number
@@ -155,12 +163,14 @@ export class RikoMemoryService extends Service {
     purgeEnabled: z.boolean().default(false),
     recallMaxCandidates: z.number().step(1).min(1).max(32).default(8),
     recallMaxContextChars: z.number().step(1).min(256).max(16_000).default(3_000),
+    recallAuthoritativeReserve: z.number().step(1).min(0).max(32).default(4),
+    recallRawEvidenceMaxCandidates: z.number().step(1).min(0).max(32).default(2),
     residentV2Enabled: z.boolean().default(true),
     residentBlocksEnabled: z.boolean().default(true),
     sensitiveResidentEnabled: z.boolean().default(false),
     temporalEnabled: z.boolean().default(true),
     evidenceClassificationEnabled: z.boolean().default(false),
-    unclassifiedEvidenceDisclosure: z.union(['never_explicit', 'user_explicit_only'] as const).default('never_explicit'),
+    unclassifiedEvidenceDisclosure: z.union(['never_explicit', 'user_explicit_only'] as const).default('user_explicit_only'),
     minObservationEvidence: z.number().step(1).min(1).default(2),
     observationActivationMinEvidence: z.number().step(1).min(1).default(3),
     observationActivationMinSessions: z.number().step(1).min(1).default(2),
@@ -203,6 +213,8 @@ export class RikoMemoryService extends Service {
         const plan = analyzeRecallQuery(query, {
           maxCandidates: this.config.recallMaxCandidates,
           maxContextChars: this.config.recallMaxContextChars,
+          authoritativeReserve: this.config.recallAuthoritativeReserve,
+          rawEvidenceMaxCandidates: this.config.recallRawEvidenceMaxCandidates,
           vectorEnabled: this.config.recallVectorEnabled,
           ...(atTime === undefined && hasHistoricalRecallCue(query) ? { history: true } : {}),
           ...(atTime === undefined ? {} : { atTime }),
@@ -213,6 +225,8 @@ export class RikoMemoryService extends Service {
         const recalled = await store.recall(query, {
           maxCandidates: this.config.recallMaxCandidates,
           maxContextChars: this.config.recallMaxContextChars,
+          authoritativeReserve: this.config.recallAuthoritativeReserve,
+          rawEvidenceMaxCandidates: this.config.recallRawEvidenceMaxCandidates,
           vectorEnabled: this.config.recallVectorEnabled,
           rawEvidenceEnabled: this.config.recallRawEvidenceEnabled,
           observationsEnabled: this.config.recallObservationEnabled,
@@ -592,14 +606,14 @@ export class RikoMemoryService extends Service {
       const requestUrl = new URL(req.url ?? '/', 'http://dsh'); const pathname = requestUrl.pathname; const relative = pathname.slice(this.config.apiPath.length).replace(/^\/+/, ''); const publicUi = req.method === 'GET' && (relative.length === 0 || relative === 'ui'); if (publicUi) { sendHtml(res, memoryUiHtml); return }
       const authentication = this.authenticatedRequest(req); if (authentication === undefined) { sendJson(res, 401, { error: 'unauthorized' }); return }; const profile = authentication.profile
       const parts = relative.length === 0 ? [] : relative.split('/').map(decodeURIComponent); const store = this.storeForProfile(profile); await store.waitReady()
-      if (req.method === 'GET' && ['wiki', 'resident', 'sessions', 'candidates'].includes(parts[0] ?? '')) await Promise.allSettled([...this.inFlight])
+      if (req.method === 'GET' && ['wiki', 'resident', 'sessions', 'candidates', 'conflicts'].includes(parts[0] ?? '')) await Promise.allSettled([...this.inFlight])
       if (req.method === 'GET' && parts[0] === 'config') { sendJson(res, 200, await this.configResponse(profile, store)); return }
       if (req.method === 'POST' && parts[0] === 'recall' && (parts.length === 1 || parts[1] === 'debug')) {
         if (!this.config.recallEnabled) { sendJson(res, 404, { error: 'recall is disabled' }); return }
         const body = await readJsonBody(req); const query = optionalString(body, 'query')?.trim() ?? ''
         if (!query) { sendJson(res, 400, { error: 'recall query is required' }); return }
         const atTime = optionalString(body, 'atTime')?.trim(); const history = body && typeof body === 'object' && (body as Record<string, unknown>).history === true
-        const recalled = await store.recall(query, { maxCandidates: this.config.recallMaxCandidates, maxContextChars: this.config.recallMaxContextChars, vectorEnabled: this.config.recallVectorEnabled, rawEvidenceEnabled: this.config.recallRawEvidenceEnabled, observationsEnabled: this.config.recallObservationEnabled, graphEnabled: this.config.recallGraphEnabled, ...(this.embeddingProvider === undefined ? {} : { embeddingProvider: this.embeddingProvider }), ...(atTime ? { atTime } : {}), ...(history ? { history: true } : {}) })
+        const recalled = await store.recall(query, { maxCandidates: this.config.recallMaxCandidates, maxContextChars: this.config.recallMaxContextChars, authoritativeReserve: this.config.recallAuthoritativeReserve, rawEvidenceMaxCandidates: this.config.recallRawEvidenceMaxCandidates, vectorEnabled: this.config.recallVectorEnabled, rawEvidenceEnabled: this.config.recallRawEvidenceEnabled, observationsEnabled: this.config.recallObservationEnabled, graphEnabled: this.config.recallGraphEnabled, ...(this.embeddingProvider === undefined ? {} : { embeddingProvider: this.embeddingProvider }), ...(atTime ? { atTime } : {}), ...(history ? { history: true } : {}) })
         sendJson(res, 200, parts[1] === 'debug' ? { profileId: profile, plan: sanitizeRecallPlan(recalled.plan), results: recalled.results.map(sanitizeRecallResult), trace: recalled.trace } : { profileId: profile, results: recalled.results, context: renderRecallContext(recalled.results, this.config.recallMaxContextChars) })
         return
       }
@@ -630,8 +644,10 @@ export class RikoMemoryService extends Service {
       if (req.method === 'GET' && parts[0] === 'candidates') { sendJson(res, 200, { profileId: profile, candidates: store.snapshot().candidates.map(projectCandidate) }); return }
       if (req.method === 'GET' && parts[0] === 'observations') { sendJson(res, 200, { profileId: profile, observations: store.listObservations().map(projectObservation) }); return }
       if (req.method === 'GET' && parts[0] === 'purges') { sendJson(res, 200, { profileId: profile, purges: store.listPurges() }); return }
+      if (req.method === 'GET' && parts[0] === 'conflicts' && parts.length === 1) { sendJson(res, 200, { profileId: profile, conflicts: store.listConflicts() }); return }
       if (req.method === 'POST' && parts[0] === 'observations' && parts.length === 1) { const body = await readJsonBody(req); if (!body || typeof body !== 'object') throw new Error('observation body must be an object'); const input = body as Record<string, unknown>; const text = typeof input.text === 'string' ? input.text : ''; const sourceRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs.filter((ref): ref is string => typeof ref === 'string') : []; const observation = await store.upsertObservationCandidate({ text, sourceRefs, ...(typeof input.id === 'string' ? { id: input.id } : {}), ...(typeof input.confidence === 'number' ? { confidence: input.confidence } : {}), sensitivity: input.sensitivity === 'sensitive' ? 'sensitive' : 'normal', ...(typeof input.observedAt === 'string' ? { observedAt: input.observedAt } : {}), ...(typeof input.recordedAt === 'string' ? { recordedAt: input.recordedAt } : {}), ...(input.validFrom === null ? { validFrom: null } : typeof input.validFrom === 'string' ? { validFrom: input.validFrom } : {}), ...(input.validTo === null ? { validTo: null } : typeof input.validTo === 'string' ? { validTo: input.validTo } : {}), ...(Array.isArray(input.derivedFromObservationIds) ? { derivedFromObservationIds: input.derivedFromObservationIds.filter((id): id is string => typeof id === 'string') } : {}) }); sendJson(res, 201, observation); return }
       if (req.method === 'POST' && parts[0] === 'observations' && parts[1] && parts[2]) { const id = parts[1]; const changed = parts[2] === 'activate' ? await store.activateObservation(id) : parts[2] === 'invalidate' ? await store.invalidateObservation(id) : parts[2] === 'suppress' ? await store.suppressObservation(id) : false; sendJson(res, changed ? 200 : 404, { changed }); return }
+      if (req.method === 'POST' && parts[0] === 'conflicts' && parts[1] && parts[2] === 'resolve' && parts.length === 3) { const body = await readJsonBody(req); const resolution = optionalString(body, 'resolution'); if (resolution !== 'correction' && resolution !== 'temporal_transition' && resolution !== 'management') { sendJson(res, 400, { error: 'resolution must be one of correction, temporal_transition or management' }); return } const changed = await store.resolveConflict(parts[1], resolution); sendJson(res, changed ? 200 : 404, { changed }); return }
       if (req.method === 'POST' && parts[0] === 'purge') {
         if (!this.config.purgeEnabled) { sendJson(res, 404, { error: 'purge is disabled' }); return }
         const body = await readJsonBody(req); const sessionId = optionalString(body, 'sessionId')?.trim() ?? ''
@@ -697,6 +713,8 @@ export class RikoMemoryService extends Service {
       purgeEnabled: this.config.purgeEnabled,
       recallMaxCandidates: this.config.recallMaxCandidates,
       recallMaxContextChars: this.config.recallMaxContextChars,
+      recallAuthoritativeReserve: this.config.recallAuthoritativeReserve,
+      recallRawEvidenceMaxCandidates: this.config.recallRawEvidenceMaxCandidates,
       embeddingProvider: this.config.embeddingProvider,
       embeddingEndpoint: this.config.embeddingEndpoint,
       embeddingCredentialRef: this.config.embeddingCredentialRef,
@@ -757,7 +775,9 @@ export function validateConfig(config: Config): void {
   const observationActivationMinEvidence = config.observationActivationMinEvidence ?? 3
   const observationActivationMinSessions = config.observationActivationMinSessions ?? 2
   const observationActivationMinConfidence = config.observationActivationMinConfidence ?? 0.8
-  const unclassifiedEvidenceDisclosure = config.unclassifiedEvidenceDisclosure ?? 'never_explicit'
+  const unclassifiedEvidenceDisclosure = config.unclassifiedEvidenceDisclosure ?? 'user_explicit_only'
+  const authoritativeReserve = config.recallAuthoritativeReserve ?? 4
+  const rawEvidenceMaxCandidates = config.recallRawEvidenceMaxCandidates ?? 2
   if (!config.ownerNamespace.trim()) throw new Error('riko-memory ownerNamespace must not be empty')
   if (!config.apiPath.startsWith('/') || config.apiPath.endsWith('/') || config.apiPath.includes('?')) throw new Error('riko-memory apiPath must be absolute without trailing slash or query')
   if (apiToken && Object.keys(apiTokens).length > 0) throw new Error('riko-memory apiToken and apiTokens are mutually exclusive')
@@ -773,6 +793,8 @@ export function validateConfig(config: Config): void {
   if (!Number.isInteger(observationActivationMinEvidence) || observationActivationMinEvidence < 1) throw new Error('riko-memory observationActivationMinEvidence must be an integer of at least 1')
   if (!Number.isInteger(observationActivationMinSessions) || observationActivationMinSessions < 1) throw new Error('riko-memory observationActivationMinSessions must be an integer of at least 1')
   if (!Number.isFinite(observationActivationMinConfidence) || observationActivationMinConfidence < 0 || observationActivationMinConfidence > 1) throw new Error('riko-memory observationActivationMinConfidence must be between 0 and 1')
+  if (!Number.isInteger(authoritativeReserve) || authoritativeReserve < 0 || authoritativeReserve > 32) throw new Error('riko-memory recallAuthoritativeReserve must be an integer from 0 through 32')
+  if (!Number.isInteger(rawEvidenceMaxCandidates) || rawEvidenceMaxCandidates < 0 || rawEvidenceMaxCandidates > 32) throw new Error('riko-memory recallRawEvidenceMaxCandidates must be an integer from 0 through 32')
   if (unclassifiedEvidenceDisclosure !== 'never_explicit' && unclassifiedEvidenceDisclosure !== 'user_explicit_only') throw new Error('riko-memory unclassifiedEvidenceDisclosure must be never_explicit or user_explicit_only')
   if (!Number.isInteger(embeddingDimension) || embeddingDimension < 8 || embeddingDimension > 4_096) throw new Error('riko-memory embeddingDimension must be an integer from 8 through 4096')
   if (embeddingProvider !== 'off' && embeddingProvider !== 'deterministic' && embeddingProvider !== 'openai-compatible') throw new Error('riko-memory embeddingProvider is invalid')
@@ -810,12 +832,15 @@ function sanitizeRecallPlan(plan: RecallResponse['plan']): Record<string, unknow
     ...(plan.atTime === undefined ? {} : { atTime: plan.atTime }),
     maxCandidates: plan.maxCandidates,
     maxContextChars: plan.maxContextChars,
+    authoritativeReserve: plan.authoritativeReserve,
+    rawEvidenceMaxCandidates: plan.rawEvidenceMaxCandidates,
   }
 }
 function sanitizeRecallResult(result: RecallResponse['results'][number]): Record<string, unknown> {
   return {
     id: result.id,
     sourceType: result.sourceType,
+    authorityTier: result.authorityTier,
     sourceRefs: [...result.sourceRefs],
     epistemicStatus: result.epistemicStatus,
     temporalStatus: result.temporalStatus,
@@ -823,6 +848,7 @@ function sanitizeRecallResult(result: RecallResponse['results'][number]): Record
     channels: [...result.channels],
     fusedScore: result.fusedScore,
     mentionDecision: result.mentionDecision,
+    ...(result.role === undefined ? {} : { role: result.role }),
     eligibility: result.eligibility,
     ...(result.rejectionReason === undefined ? {} : { rejectionReason: result.rejectionReason }),
   }

@@ -114,7 +114,11 @@ export interface MemoryStoreOptions {
   readonly temporal?: boolean
   /** Classify user-origin L0 evidence at capture; false leaves every unmarked event fail-closed. */
   readonly evidenceClassification?: boolean
-  /** Disclosure policy for unclassified fail-closed L0 evidence; the service supplies this from Config. */
+  /**
+   * Disclosure policy for unclassified fail-closed L0 evidence.
+   * Defaults to `user_explicit_only`; raw text returns only when the user initiates the turn, explicitly recalls
+   * the topic, and the topic matches.
+   */
   readonly unclassifiedEvidenceDisclosure?: UnclassifiedEvidenceDisclosure
   /** Minimum distinct evidence anchors required for an observation. */
   readonly minObservationEvidence?: number
@@ -174,6 +178,8 @@ interface MemoryRuntimeSnapshot {
   readonly conflicts: Array<[string, ConflictOverlay]>
   readonly evidenceMarkers: Array<[string, Array<[number, EvidenceMarker]>]>
   readonly correctionInvalidatedEvidenceRefs: string[]
+  readonly policyEvidenceRefs: string[]
+  readonly policyEvidenceBySuppression: Array<[string, string[]]>
   readonly resident: string
   readonly residentBlocks: ResidentBlock[]
   readonly denseIndex?: DenseRuntimeSnapshot
@@ -237,6 +243,7 @@ interface StoreState {
 type StoredMemoryState = MemoryStateRecord & Pick<StoreState, 'residentMaxChars' | 'residentOmittedPageIds' | 'residentDiagnostics'>
 
 type EvidenceSensitivity = MemorySensitivity
+type EvidenceSensitivityState = 'unclassified' | EvidenceSensitivity
 
 /**
  * One persisted L0 evidence classification.
@@ -251,11 +258,10 @@ interface EvidenceMarker {
 }
 
 /**
- * How one session's persisted L0 events divide across the states that can be in force.
+ * How one session's persisted L0 events divide across the states in force.
  *
- * `unclassified` is the absence of a stored value, not a fourth permission: an event nobody classified
- * reads as sensitive, and this counter is what tells that fail-closed default apart from a value a rule
- * or an authority actually wrote.
+ * `unclassified` is only the absence of a stored value. A capture-rule value is counted as `sensitive`
+ * while capture classification is disabled, even though its persisted value remains unchanged.
  */
 export interface EvidenceClassificationCounts {
   readonly normal: number
@@ -298,6 +304,7 @@ interface RecallEligibilitySummary {
 
 const RESIDENT_COMPILER_VERSION = 3
 const EXPLICIT_RECALL_PATTERN = /还记得|记得.*之前|之前|上次|以前|曾经|过去|回忆|我说过|你记得|do you remember|what did i say|earlier|last time|before/i
+const POLICY_SUPPRESSION_CUE = /不要再主动提|别说|别提起|不要再提|don't mention|do not mention|stop mentioning/i
 const DENSE_INDEX_NAME = 'dense'
 const DENSE_INDEX_SCHEMA_VERSION = 3
 const ALIAS_REASSIGNMENT_REASON = 'alias reassigned'
@@ -341,6 +348,8 @@ export class MemoryProfileStore {
   private audits = new Map<string, MemoryAuditRecord>()
   private evidenceMarkers = new Map<string, Map<number, EvidenceMarker>>()
   private correctionInvalidatedEvidenceRefs = new Set<string>()
+  private policyEvidenceRefs = new Set<string>()
+  private policyEvidenceBySuppression = new Map<string, string[]>()
   private suppressions = new Map<string, MemorySuppressionRecord>()
   private activations = new Map<string, MemoryActivationRecord>()
   private indexMeta = new Map<string, DenseIndexLifecycleMetadata>()
@@ -395,7 +404,7 @@ export class MemoryProfileStore {
     this.sensitiveResident = options.sensitiveResident === true
     this.temporalEnabled = options.temporal !== false
     this.evidenceClassification = options.evidenceClassification === true
-    this.unclassifiedEvidenceDisclosure = options.unclassifiedEvidenceDisclosure ?? 'never_explicit'
+    this.unclassifiedEvidenceDisclosure = options.unclassifiedEvidenceDisclosure ?? 'user_explicit_only'
     this.minObservationEvidence = normalizeMinObservationEvidence(options.minObservationEvidence)
     this.observationActivationMinEvidence = normalizeMinObservationEvidence(options.observationActivationMinEvidence, 3)
     this.observationActivationMinSessions = normalizePositiveInteger(options.observationActivationMinSessions, 2)
@@ -565,12 +574,14 @@ export class MemoryProfileStore {
     const degradedModes: string[] = []
     const canonicalCandidates = plan.searchCanonical ? this.temporalPages(plan).map(page => ({ page, document: this.recallDocumentForPage(page) })) : []
     const evidenceCandidates = options.rawEvidenceEnabled === false || !plan.searchEvidence ? [] : this.rawEvidenceCandidates()
+    const policyCandidates = plan.searchEvidence ? this.policyEvidenceCandidates() : []
     const observationCandidates = plan.searchObservation ? this.observations.map(observation => ({ observation, document: this.recallDocumentForObservation(observation) })) : []
     const canonicalEligibility = this.filterRecallCandidates(canonicalCandidates, plan, query)
     const evidenceEligibility = this.filterRecallCandidates(evidenceCandidates, plan, query)
+    const policyEligibility = this.filterRecallCandidates(policyCandidates, plan, query)
     const observationEligibility = this.filterRecallCandidates(observationCandidates, plan, query)
     const decisions = new Map<string, RecallEligibilityDecision>()
-    for (const summary of [canonicalEligibility, evidenceEligibility, observationEligibility]) for (const [id, decision] of summary.decisions) decisions.set(id, decision)
+    for (const summary of [canonicalEligibility, evidenceEligibility, policyEligibility, observationEligibility]) for (const [id, decision] of summary.decisions) decisions.set(id, decision)
     const graphCandidates: RecallCandidate[] = []
     if (plan.searchGraph) {
       try {
@@ -589,17 +600,20 @@ export class MemoryProfileStore {
     for (const [id, decision] of graphEligibility.decisions) decisions.set(id, decision)
     const canonicalDocuments = canonicalEligibility.candidates.map(candidate => candidate.document)
     const evidenceDocuments = evidenceEligibility.candidates.map(candidate => candidate.document)
+    const policyDocuments = policyEligibility.candidates.map(candidate => candidate.document)
     const observationDocuments = observationEligibility.candidates.map(candidate => candidate.document)
     const graphDocuments = graphEligibility.candidates.map(candidate => candidate.document)
-    const allDocuments = [...canonicalDocuments, ...evidenceDocuments, ...observationDocuments, ...graphDocuments]
+    const allDocuments = [...canonicalDocuments, ...evidenceDocuments, ...policyDocuments, ...observationDocuments, ...graphDocuments]
     const lexicalStartedAt = Date.now()
     const lexicalResults = plan.searchCanonical ? rankLexical(query, canonicalDocuments, plan.lexicalCandidateCap) : []
     const evidenceResults = plan.searchEvidence ? rankLexical(query, evidenceDocuments, plan.lexicalCandidateCap) : []
+    const policyResults = plan.searchEvidence ? rankLexical(query, policyDocuments, plan.lexicalCandidateCap) : []
     const observationResults = plan.searchObservation ? rankLexical(query, observationDocuments, plan.lexicalCandidateCap) : []
     const lexicalLatencyMs = Date.now() - lexicalStartedAt
     const channels: Record<string, readonly RecallDocument[]> = {}
     if (plan.searchCanonical) channels.lexical = lexicalResults.map(result => result.document)
     if (plan.searchEvidence && options.rawEvidenceEnabled !== false) channels.rawEvidence = evidenceResults.map(result => result.document)
+    if (plan.searchEvidence) channels.policy = policyResults.map(result => result.document)
     if (plan.searchObservation) channels.observation = observationResults.map(result => result.document)
     if (plan.searchGraph) channels.graph = graphDocuments
     let vectorLatencyMs: number | undefined
@@ -646,6 +660,7 @@ export class MemoryProfileStore {
     const candidatesByChannel: Record<string, number> = {
       ...(plan.searchCanonical ? { lexical: lexicalResults.length } : {}),
       ...(plan.searchEvidence && options.rawEvidenceEnabled !== false ? { rawEvidence: evidenceResults.length } : {}),
+      ...(plan.searchEvidence ? { policy: policyResults.length } : {}),
       ...(plan.searchObservation ? { observation: observationResults.length } : {}),
       ...(plan.searchGraph ? { graph: graphDocuments.length } : {}),
       ...(channels.dense === undefined ? {} : { dense: channels.dense.length }),
@@ -666,13 +681,14 @@ export class MemoryProfileStore {
         injectedMemories: budgeted.results.length,
         gateCounts: budgeted.gateCounts,
         ...(budgeted.eligibleCandidates === undefined ? {} : { eligibleCandidates: budgeted.eligibleCandidates }),
-        rejectedByEligibility: canonicalEligibility.rejected + evidenceEligibility.rejected + observationEligibility.rejected + graphEligibility.rejected + budgeted.rejectedByEligibility,
-        rejectedBySensitivity: canonicalEligibility.sensitiveRejected + evidenceEligibility.sensitiveRejected + observationEligibility.sensitiveRejected + graphEligibility.sensitiveRejected + budgeted.rejectedBySensitivity,
-        rejectedByTemporal: canonicalEligibility.temporalRejected + evidenceEligibility.temporalRejected + observationEligibility.temporalRejected + graphEligibility.temporalRejected + budgeted.rejectedByTemporal,
+        rejectedByEligibility: canonicalEligibility.rejected + evidenceEligibility.rejected + policyEligibility.rejected + observationEligibility.rejected + graphEligibility.rejected + budgeted.rejectedByEligibility,
+        rejectedBySensitivity: canonicalEligibility.sensitiveRejected + evidenceEligibility.sensitiveRejected + policyEligibility.sensitiveRejected + observationEligibility.sensitiveRejected + graphEligibility.sensitiveRejected + budgeted.rejectedBySensitivity,
+        rejectedByTemporal: canonicalEligibility.temporalRejected + evidenceEligibility.temporalRejected + policyEligibility.temporalRejected + observationEligibility.temporalRejected + graphEligibility.temporalRejected + budgeted.rejectedByTemporal,
         contextChars: budgeted.contextChars,
         planChannels: plan.searchCanonical || plan.searchEvidence || plan.searchObservation || plan.searchGraph ? [
           ...(plan.searchCanonical ? ['canonical'] : []),
           ...(plan.searchEvidence ? ['evidence'] : []),
+          ...(plan.searchEvidence ? ['policy'] : []),
           ...(plan.searchObservation ? ['observation'] : []),
           ...(plan.searchGraph ? ['graph'] : []),
           ...(plan.searchVector ? ['vector'] : []),
@@ -680,6 +696,7 @@ export class MemoryProfileStore {
         gateReasons: [...new Set([
           ...canonicalEligibility.reasons,
           ...evidenceEligibility.reasons,
+          ...policyEligibility.reasons,
           ...observationEligibility.reasons,
           ...graphEligibility.reasons,
           ...budgeted.gateReasons,
@@ -1011,21 +1028,26 @@ export class MemoryProfileStore {
   private isSuspendedEvidenceMarker(marker: EvidenceMarker): boolean {
     return marker.origin === 'deterministic_rule' && !this.evidenceClassification
   }
+  /** Return the one sensitivity state currently in force for an L0 evidence line. */
+  private evidenceSensitivityState(sessionId: string, index: number): EvidenceSensitivityState {
+    const marker = this.evidenceMarkers.get(sessionId)?.get(index)
+    if (marker === undefined) return 'unclassified'
+    return this.isSuspendedEvidenceMarker(marker) ? 'sensitive' : marker.sensitivity
+  }
   /** The marker in force for one L0 index.
    *
    * A missing marker is fail-closed sensitive. A capture-rule marker is suspended while capture
    * classification is disabled, so turning the capability off really turns it off without deleting it.
    */
   private effectiveEvidenceMarker(sessionId: string, index: number): EvidenceMarker {
-    const marker = this.evidenceMarkers.get(sessionId)?.get(index)
-    if (marker === undefined || this.isSuspendedEvidenceMarker(marker)) return { sensitivity: 'sensitive' }
-    return marker
+    const state = this.evidenceSensitivityState(sessionId, index)
+    return { sensitivity: state === 'unclassified' ? 'sensitive' : state }
   }
   /** Count one session's L0 events per classification in force, without naming any line's text.
    *
-   * Events that never received a classification — including non-user events, which are not evidence
-   * candidates at all — and capture-rule values the current setting suspends all count as unclassified:
-   * in each case the read path falls back to the fail-closed default rather than to a stored decision.
+   * An event with no stored value counts as unclassified. A capture-rule value the current setting
+   * suspends counts as sensitive, because the read path then treats it as fail-closed sensitive rather
+   * than reading the stored value; non-user events are not evidence candidates and count as unclassified.
    * @param sessionId Session whose persisted evidence stream is counted.
    * @returns One count per state, summing to the session's persisted line count.
    */
@@ -1033,10 +1055,10 @@ export class MemoryProfileStore {
     let normal = 0; let provisional = 0; let sensitive = 0; let unclassified = 0
     const lines = this.sessionLines.get(sessionId) ?? []
     for (let index = 0; index < lines.length; index += 1) {
-      const marker = this.evidenceMarkers.get(sessionId)?.get(index)
-      if (marker === undefined || this.isSuspendedEvidenceMarker(marker)) unclassified += 1
-      else if (marker.sensitivity === 'normal') normal += 1
-      else if (marker.sensitivity === 'provisional_sensitive') provisional += 1
+      const state = this.evidenceSensitivityState(sessionId, index)
+      if (state === 'unclassified') unclassified += 1
+      else if (state === 'normal') normal += 1
+      else if (state === 'provisional_sensitive') provisional += 1
       else sensitive += 1
     }
     return { normal, provisional_sensitive: provisional, sensitive, unclassified }
@@ -1148,7 +1170,9 @@ export class MemoryProfileStore {
       const now = new Date().toISOString(); const next: WikiPage = { ...page, usagePolicy: 'suppressed', suppressedAt: now, suppressionReason: reason.trim() }
       this.pages[this.pages.indexOf(page)] = next
       const suppression: MemorySuppressionRecord = { schemaVersion: 3, scope: this.scope, id: contentHash(`${this.scope.key}\npage\n${page.id}\n${now}`).slice(0, 24), targetKind: 'page', targetId: page.id, reason: reason.trim(), createdAt: now, active: true }
-      this.suppressions.set(suppression.id, suppression); changed = true; this.markSuccess(); await this.persist(); await this.audit('canonical-suppressed', { id: page.id, reason: reason.trim() })
+      const policyEvidenceRefs = this.policyEvidenceReferencesForLatestSuppressionCue()
+      this.suppressions.set(suppression.id, suppression); this.policyEvidenceBySuppression.set(suppression.id, policyEvidenceRefs); for (const ref of policyEvidenceRefs) this.policyEvidenceRefs.add(ref)
+      changed = true; this.markSuccess(); await this.persist(); await this.audit('canonical-suppressed', { id: page.id, reason: reason.trim(), suppressionId: suppression.id, ...(policyEvidenceRefs.length === 0 ? {} : { policyEvidenceRefs }) })
     })
     return changed
   }
@@ -1165,7 +1189,9 @@ export class MemoryProfileStore {
       if (page === undefined || (active.length === 0 && page.usagePolicy !== 'suppressed')) return
       const next: WikiPage = { ...page, usagePolicy: 'normal' }; delete (next as { suppressedAt?: string }).suppressedAt; delete (next as { suppressionReason?: string }).suppressionReason
       this.pages[this.pages.indexOf(page)] = next
-      const restoredAt = new Date().toISOString(); for (const suppression of active) this.suppressions.set(suppression.id, { ...suppression, active: false, restoredAt, restoreReason: reason.trim() })
+      const restoredAt = new Date().toISOString(); const policyEvidenceRefs = active.flatMap(suppression => this.policyEvidenceBySuppression.get(suppression.id) ?? [])
+      for (const suppression of active) { this.suppressions.set(suppression.id, { ...suppression, active: false, restoredAt, restoreReason: reason.trim() }); this.policyEvidenceBySuppression.delete(suppression.id) }
+      for (const ref of policyEvidenceRefs) this.policyEvidenceRefs.delete(ref)
       changed = true; this.markSuccess(); await this.persist(); await this.audit('canonical-restored', { id: page.id, reason: reason.trim() })
     })
     return changed
@@ -1301,7 +1327,7 @@ export class MemoryProfileStore {
    * @param id The id.
    * @returns The resulting value.
    */
-  async forget(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const page = this.pages.find(item => item.id === id || item.path === id || memoryFromPage(item)?.id === id); if (!page) return; found = true; this.pages = this.pages.filter(item => item.id !== page.id); this.candidates = this.candidates.filter(candidate => candidate.page.id !== page.id && candidate.proposedPath !== page.path && candidate.conflictPageId !== page.id); this.observations = this.observations.filter(observation => !observation.sourceRefs.includes(`page:${page.id}`)); this.activations.delete(`page:${page.id}`); this.projections.delete(page.id); for (const [key, suppression] of this.suppressions) if (suppression.targetKind === 'page' && suppression.targetId === page.id) this.suppressions.delete(key); for (const [key, conflict] of this.conflicts) if (conflict.oldCanonicalId === page.id || conflict.newCandidateId === page.id) this.conflicts.delete(key); const now = new Date().toISOString(); for (const [key, alias] of this.aliases) if (alias.entityId === page.id && alias.status !== 'invalidated') this.aliases.set(key, { ...alias, schemaVersion: 5, status: 'invalidated', validTo: now, invalidatedAt: now, invalidatedReason: 'canonical entity forgotten', updatedAt: now }); this.rebuildAliasesInMemory(); this.markSuccess(); await this.persist(); await this.audit('derived-memory-forgotten', { id: page.id, rawSessionRetained: true }) }); return found }
+  async forget(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const page = this.pages.find(item => item.id === id || item.path === id || memoryFromPage(item)?.id === id); if (!page) return; found = true; this.pages = this.pages.filter(item => item.id !== page.id); this.candidates = this.candidates.filter(candidate => candidate.page.id !== page.id && candidate.proposedPath !== page.path && candidate.conflictPageId !== page.id); this.observations = this.observations.filter(observation => !observation.sourceRefs.includes(`page:${page.id}`)); this.activations.delete(`page:${page.id}`); this.projections.delete(page.id); for (const [key, suppression] of this.suppressions) if (suppression.targetKind === 'page' && suppression.targetId === page.id) { for (const ref of this.policyEvidenceBySuppression.get(key) ?? []) this.policyEvidenceRefs.delete(ref); this.policyEvidenceBySuppression.delete(key); this.suppressions.delete(key) }; for (const [key, conflict] of this.conflicts) if (conflict.oldCanonicalId === page.id || conflict.newCandidateId === page.id) this.conflicts.delete(key); const now = new Date().toISOString(); for (const [key, alias] of this.aliases) if (alias.entityId === page.id && alias.status !== 'invalidated') this.aliases.set(key, { ...alias, schemaVersion: 5, status: 'invalidated', validTo: now, invalidatedAt: now, invalidatedReason: 'canonical entity forgotten', updatedAt: now }); this.rebuildAliasesInMemory(); this.markSuccess(); await this.persist(); await this.audit('derived-memory-forgotten', { id: page.id, rawSessionRetained: true }) }); return found }
   /** Preserve the last-valid resident while recording a sanitized failure.
    * @param error The error.
    */
@@ -1394,6 +1420,13 @@ export class MemoryProfileStore {
       if (record.event === 'conflict-resolved' && record.detail?.resolution !== 'correction') continue
       const refs = record.detail?.invalidatedEvidenceRefs
       if (Array.isArray(refs)) for (const ref of refs) if (typeof ref === 'string') this.correctionInvalidatedEvidenceRefs.add(ref)
+    }
+    for (const suppression of this.suppressions.values()) {
+      const records = [...this.audits.values()].filter(record => record.event === 'canonical-suppressed' && record.detail?.suppressionId === suppression.id)
+      const record = records[records.length - 1]
+      const refs = Array.isArray(record?.detail?.policyEvidenceRefs) ? record.detail.policyEvidenceRefs.filter((ref): ref is string => typeof ref === 'string') : []
+      this.policyEvidenceBySuppression.set(suppression.id, refs)
+      if (suppression.active) for (const ref of refs) this.policyEvidenceRefs.add(ref)
     }
     const legacyResident = this.pages.length === 0 && stored?.resident !== undefined && (stored.residentBlocks === undefined || stored.residentBlocks.length === 0) && stored.resident.length > 0
     await withScopeLease(this.scope.key, async () => {
@@ -1546,6 +1579,7 @@ export class MemoryProfileStore {
       suppressions: [...this.suppressions.values()].map(record => ({ id: record.id, targetKind: record.targetKind, targetId: record.targetId })).sort((left, right) => left.id.localeCompare(right.id)),
       markers,
       correctionInvalidatedEvidenceRefs: [...this.correctionInvalidatedEvidenceRefs].sort(),
+      policyEvidenceRefs: [...this.policyEvidenceRefs].sort(),
     })).slice(0, 24)
   }
   private rawEvidenceCandidates(): RecallCandidate[] {
@@ -1555,18 +1589,39 @@ export class MemoryProfileStore {
         const parsed = parseEvidenceLine(line)
         if (parsed === undefined || parsed.text.length === 0 || parsed.sourceKind !== 'user') continue
         const observedAt = normalizeOptionalTemporalInstant(parsed.observedAt)
+        const evidenceRef = `session:${sessionId}/event:${String(parsed.eventSeq ?? index)}`
+        if (this.policyEvidenceRefs.has(evidenceRef)) continue
+        const sensitivityState = this.evidenceSensitivityState(sessionId, index)
         const marker = this.effectiveEvidenceMarker(sessionId, index)
-        const storedMarker = this.evidenceMarkers.get(sessionId)?.get(index)
-        const disclosure = storedMarker === undefined || this.isSuspendedEvidenceMarker(storedMarker) ? this.unclassifiedEvidenceDisclosure : disclosureForSensitivity(marker.sensitivity)
+        const disclosure = sensitivityState === 'unclassified' ? this.unclassifiedEvidenceDisclosure : disclosureForSensitivity(sensitivityState)
         const document = documentFromEvidence(sessionId, parsed.eventSeq ?? index, parsed.text, observedAt, marker.sensitivity, disclosure) as RecallDocument & { readonly observedAt?: string }
         candidates.push({ document, evidence: { sessionId, lineIndex: index, ...(observedAt === undefined ? {} : { observedAt }) } })
       }
     }
     return candidates
   }
+  /** Build guidance-only policy candidates; policy refs never enter the raw evidence channel. */
+  private policyEvidenceCandidates(): RecallCandidate[] {
+    const candidates: RecallCandidate[] = []
+    for (const ref of this.policyEvidenceRefs) {
+      const match = /^session:(.+)\/event:(\d+)$/.exec(ref)
+      if (match === null) continue
+      const sessionId = match[1] as string; const eventSeq = Number(match[2]); const lines = this.sessionLines.get(sessionId)
+      if (!Number.isSafeInteger(eventSeq) || lines === undefined) continue
+      let parsedLine: ParsedEvidenceLine | undefined
+      for (const [index, value] of lines.entries()) {
+        const parsed = parseEvidenceLine(value)
+        if (parsed?.sourceKind === 'user' && (parsed.eventSeq === eventSeq || parsed.eventSeq === undefined && index === eventSeq)) { parsedLine = parsed; break }
+      }
+      if (parsedLine === undefined || parsedLine.text.length === 0) continue
+      const document = documentFromEvidence(sessionId, eventSeq, parsedLine.text, normalizeOptionalTemporalInstant(parsedLine.observedAt), 'sensitive', 'never_explicit')
+      candidates.push({ document })
+    }
+    return candidates
+  }
   private graphRecallDocuments(query: string, pages: readonly WikiPage[], maxHop: number, maxResults: number): RecallDocument[] {
     const pageById = new Map(pages.map(page => [page.id, page])); const roots = rankLexical(query, pages.map(page => this.recallDocumentForPage(page)), Math.max(1, maxResults)).map(result => result.document.id.slice('page:'.length)); const seen = new Set<string>(); const documents: RecallDocument[] = []
-    for (const root of roots) for (const node of this.wikiIndex.graph(root, maxHop).nodes) { if (node.id === root || seen.has(node.id)) continue; const page = pageById.get(node.id); if (!page) continue; seen.add(node.id); documents.push(this.recallDocumentForPage(page)); if (documents.length >= maxResults) return documents }
+    for (const root of roots) for (const node of this.wikiIndex.graph(root, maxHop).nodes) { if (node.id === root || seen.has(node.id)) continue; const page = pageById.get(node.id); if (!page) continue; seen.add(node.id); documents.push({ ...this.recallDocumentForPage(page), authorityTier: 'graph' }); if (documents.length >= maxResults) return documents }
     return documents
   }
   private recallDocumentForPage(page: WikiPage): RecallDocument {
@@ -1718,6 +1773,12 @@ export class MemoryProfileStore {
     for (const [id, conflict] of this.conflicts) if (pageIds.has(conflict.oldCanonicalId) || candidateIds.has(conflict.newCandidateId)) this.conflicts.delete(id)
     const sourceRevision = contentHash(JSON.stringify({ pages: this.pages, sources: this.sources, candidates: this.candidates, observations: this.observations })).slice(0, 24); this.denseIndex = undefined; this.denseGenerationId = undefined; this.densePreviousGenerationId = undefined; for (const [name, record] of this.indexMeta) this.indexMeta.set(name, { ...record, sourceRevision, active: false, validated: false, degradedReason: 'purge-rebuild-required', builtAt: new Date().toISOString() }); for (const [id, job] of this.jobs) { const generation = parseDenseGenerationJob(job); if (generation !== undefined) this.jobs.set(id, { ...job, active: false, validated: false, sourceRevision }) }
     this.correctionInvalidatedEvidenceRefs = new Set([...this.correctionInvalidatedEvidenceRefs].filter(ref => !sourceRefBelongsToSession(ref, sessionId)))
+    this.policyEvidenceRefs = new Set([...this.policyEvidenceRefs].filter(ref => !sourceRefBelongsToSession(ref, sessionId)))
+    for (const [id, refs] of this.policyEvidenceBySuppression) {
+      const retained = refs.filter(ref => !sourceRefBelongsToSession(ref, sessionId))
+      if (retained.length === 0) this.policyEvidenceBySuppression.delete(id)
+      else this.policyEvidenceBySuppression.set(id, retained)
+    }
     this.rebuildAliasesInMemory()
   }
   private async acquirePurgeLease(): Promise<void> {
@@ -1877,11 +1938,11 @@ export class MemoryProfileStore {
   private captureRuntimeState(): MemoryRuntimeSnapshot {
     return {
       settings: { ...this.settings }, state: pickState({ ...this.state, scope: this.scope, schemaVersion: 3, settings: this.settings }),
-      pages: this.pages.map(clonePage), candidates: this.candidates.map(cloneCandidate), sources: this.sources.map(source => ({ ...source })), sessions: [...this.sessions], sessionLines: [...this.sessionLines.entries()].map(([id, lines]) => [id, [...lines]]), jobs: [...this.jobs.entries()].map(([id, job]) => [id, structuredClone(job)]), observations: this.observations.map(cloneObservation), purges: this.purges.map(purge => ({ ...purge })), audits: [...this.audits.entries()].map(([id, audit]) => [id, { ...audit, ...(audit.detail === undefined ? {} : { detail: structuredClone(audit.detail) }) }]), suppressions: [...this.suppressions.entries()].map(([id, record]) => [id, { ...record }]), activations: [...this.activations.entries()].map(([id, record]) => [id, { ...record }]), indexMeta: [...this.indexMeta.entries()].map(([id, record]) => [id, { ...record }]), vectors: [...this.vectors.entries()].map(([id, record]) => [id, { ...record, vector: [...record.vector] }]), aliases: [...this.aliases.entries()].map(([id, record]) => [id, { ...record, sourceRefs: [...record.sourceRefs] }]), projections: [...this.projections.entries()].map(([id, projection]) => [id, cloneProjection(projection)]), conflicts: [...this.conflicts.entries()].map(([id, conflict]) => [id, cloneConflict(conflict)]), evidenceMarkers: [...this.evidenceMarkers.entries()].map(([id, markers]) => [id, [...markers.entries()]]), correctionInvalidatedEvidenceRefs: [...this.correctionInvalidatedEvidenceRefs], resident: this.resident, residentBlocks: this.residentBlocks.map(cloneResidentBlock), ...(this.denseIndex === undefined ? {} : { denseIndex: captureDenseRuntimeSnapshot(this.denseIndex) }), ...(this.denseGenerationId === undefined ? {} : { denseGenerationId: this.denseGenerationId }), ...(this.densePreviousGenerationId === undefined ? {} : { densePreviousGenerationId: this.densePreviousGenerationId }),
+      pages: this.pages.map(clonePage), candidates: this.candidates.map(cloneCandidate), sources: this.sources.map(source => ({ ...source })), sessions: [...this.sessions], sessionLines: [...this.sessionLines.entries()].map(([id, lines]) => [id, [...lines]]), jobs: [...this.jobs.entries()].map(([id, job]) => [id, structuredClone(job)]), observations: this.observations.map(cloneObservation), purges: this.purges.map(purge => ({ ...purge })), audits: [...this.audits.entries()].map(([id, audit]) => [id, { ...audit, ...(audit.detail === undefined ? {} : { detail: structuredClone(audit.detail) }) }]), suppressions: [...this.suppressions.entries()].map(([id, record]) => [id, { ...record }]), activations: [...this.activations.entries()].map(([id, record]) => [id, { ...record }]), indexMeta: [...this.indexMeta.entries()].map(([id, record]) => [id, { ...record }]), vectors: [...this.vectors.entries()].map(([id, record]) => [id, { ...record, vector: [...record.vector] }]), aliases: [...this.aliases.entries()].map(([id, record]) => [id, { ...record, sourceRefs: [...record.sourceRefs] }]), projections: [...this.projections.entries()].map(([id, projection]) => [id, cloneProjection(projection)]), conflicts: [...this.conflicts.entries()].map(([id, conflict]) => [id, cloneConflict(conflict)]), evidenceMarkers: [...this.evidenceMarkers.entries()].map(([id, markers]) => [id, [...markers.entries()]]), correctionInvalidatedEvidenceRefs: [...this.correctionInvalidatedEvidenceRefs], policyEvidenceRefs: [...this.policyEvidenceRefs], policyEvidenceBySuppression: [...this.policyEvidenceBySuppression.entries()].map(([id, refs]) => [id, [...refs]]), resident: this.resident, residentBlocks: this.residentBlocks.map(cloneResidentBlock), ...(this.denseIndex === undefined ? {} : { denseIndex: captureDenseRuntimeSnapshot(this.denseIndex) }), ...(this.denseGenerationId === undefined ? {} : { denseGenerationId: this.denseGenerationId }), ...(this.densePreviousGenerationId === undefined ? {} : { densePreviousGenerationId: this.densePreviousGenerationId }),
     }
   }
   private restoreRuntimeState(snapshot: MemoryRuntimeSnapshot): void {
-    this.settings = { ...snapshot.settings }; this.state = { ...snapshot.state, ...(snapshot.state.residentBlocks === undefined ? {} : { residentBlocks: snapshot.state.residentBlocks.map(cloneResidentBlock) }), ...(snapshot.state.residentOmittedPageIds === undefined ? {} : { residentOmittedPageIds: [...snapshot.state.residentOmittedPageIds] }), ...(snapshot.state.residentDiagnostics === undefined ? {} : { residentDiagnostics: { ...snapshot.state.residentDiagnostics } }) }; this.pages = snapshot.pages.map(clonePage); this.candidates = snapshot.candidates.map(cloneCandidate); this.sources = snapshot.sources.map(source => ({ ...source })); this.sessions = new Set(snapshot.sessions); this.sessionLines = new Map(snapshot.sessionLines.map(([id, lines]) => [id, [...lines]])); this.jobs = new Map(snapshot.jobs.map(([id, job]) => [id, structuredClone(job)])); this.observations = snapshot.observations.map(cloneObservation); this.purges = snapshot.purges.map(purge => ({ ...purge })); this.audits = new Map(snapshot.audits.map(([id, audit]) => [id, { ...audit, ...(audit.detail === undefined ? {} : { detail: structuredClone(audit.detail) }) }])); this.suppressions = new Map(snapshot.suppressions.map(([id, record]) => [id, { ...record }])); this.activations = new Map(snapshot.activations.map(([id, record]) => [id, { ...record }])); this.indexMeta = new Map(snapshot.indexMeta.map(([id, record]) => [id, { ...record }])); this.vectors = new Map(snapshot.vectors.map(([id, record]) => [id, { ...record, vector: [...record.vector] }])); this.aliases = new Map(snapshot.aliases.map(([id, record]) => [id, { ...record, sourceRefs: [...record.sourceRefs] }])); this.projections = new Map(snapshot.projections.map(([id, projection]) => [id, cloneProjection(projection)])); this.conflicts = new Map(snapshot.conflicts.map(([id, conflict]) => [id, cloneConflict(conflict)])); this.evidenceMarkers = new Map(snapshot.evidenceMarkers.map(([id, markers]) => [id, new Map(markers)])); this.correctionInvalidatedEvidenceRefs = new Set(snapshot.correctionInvalidatedEvidenceRefs); this.resident = snapshot.resident; this.residentBlocks = snapshot.residentBlocks.map(cloneResidentBlock); this.denseGenerationId = snapshot.denseGenerationId; this.densePreviousGenerationId = snapshot.densePreviousGenerationId; this.denseIndex = snapshot.denseIndex === undefined ? undefined : restoreDenseRuntimeSnapshot(this.scope, snapshot.denseIndex); this.rebuildIndex()
+    this.settings = { ...snapshot.settings }; this.state = { ...snapshot.state, ...(snapshot.state.residentBlocks === undefined ? {} : { residentBlocks: snapshot.state.residentBlocks.map(cloneResidentBlock) }), ...(snapshot.state.residentOmittedPageIds === undefined ? {} : { residentOmittedPageIds: [...snapshot.state.residentOmittedPageIds] }), ...(snapshot.state.residentDiagnostics === undefined ? {} : { residentDiagnostics: { ...snapshot.state.residentDiagnostics } }) }; this.pages = snapshot.pages.map(clonePage); this.candidates = snapshot.candidates.map(cloneCandidate); this.sources = snapshot.sources.map(source => ({ ...source })); this.sessions = new Set(snapshot.sessions); this.sessionLines = new Map(snapshot.sessionLines.map(([id, lines]) => [id, [...lines]])); this.jobs = new Map(snapshot.jobs.map(([id, job]) => [id, structuredClone(job)])); this.observations = snapshot.observations.map(cloneObservation); this.purges = snapshot.purges.map(purge => ({ ...purge })); this.audits = new Map(snapshot.audits.map(([id, audit]) => [id, { ...audit, ...(audit.detail === undefined ? {} : { detail: structuredClone(audit.detail) }) }])); this.suppressions = new Map(snapshot.suppressions.map(([id, record]) => [id, { ...record }])); this.activations = new Map(snapshot.activations.map(([id, record]) => [id, { ...record }])); this.indexMeta = new Map(snapshot.indexMeta.map(([id, record]) => [id, { ...record }])); this.vectors = new Map(snapshot.vectors.map(([id, record]) => [id, { ...record, vector: [...record.vector] }])); this.aliases = new Map(snapshot.aliases.map(([id, record]) => [id, { ...record, sourceRefs: [...record.sourceRefs] }])); this.projections = new Map(snapshot.projections.map(([id, projection]) => [id, cloneProjection(projection)])); this.conflicts = new Map(snapshot.conflicts.map(([id, conflict]) => [id, cloneConflict(conflict)])); this.evidenceMarkers = new Map(snapshot.evidenceMarkers.map(([id, markers]) => [id, new Map(markers)])); this.correctionInvalidatedEvidenceRefs = new Set(snapshot.correctionInvalidatedEvidenceRefs); this.policyEvidenceRefs = new Set(snapshot.policyEvidenceRefs); this.policyEvidenceBySuppression = new Map(snapshot.policyEvidenceBySuppression.map(([id, refs]) => [id, [...refs]])); this.resident = snapshot.resident; this.residentBlocks = snapshot.residentBlocks.map(cloneResidentBlock); this.denseGenerationId = snapshot.denseGenerationId; this.densePreviousGenerationId = snapshot.densePreviousGenerationId; this.denseIndex = snapshot.denseIndex === undefined ? undefined : restoreDenseRuntimeSnapshot(this.scope, snapshot.denseIndex); this.rebuildIndex()
   }
   private captureDurableState(): DurableSnapshot {
     const tables = new Map<MemoryTableName, Map<string, unknown>>(); for (const name of ['audits', 'profiles', 'pages', 'candidates', 'sources', 'sessions', 'jobs', 'observations', 'purges', 'suppressions', 'activation', 'index_meta', 'vectors', 'aliases', 'projections', 'conflicts'] as const) tables.set(name, new Map([...this.table<unknown>(name).entries()].map(([key, value]) => [key, structuredClone(value)]))); return { tables }
@@ -1955,6 +2016,17 @@ export class MemoryProfileStore {
     this.pages.push(next)
   }
   private markCorrectionInvalidation(page: WikiPage): void { for (const ref of this.evidenceReferencesForPage(page)) this.correctionInvalidatedEvidenceRefs.add(ref) }
+  private policyEvidenceReferencesForLatestSuppressionCue(): string[] {
+    const cues: Array<{ readonly ref: string; readonly observedAt: number; readonly sessionId: string; readonly index: number }> = []
+    for (const [sessionId, lines] of this.sessionLines) for (const [index, line] of lines.entries()) {
+      const parsed = parseEvidenceLine(line)
+      if (parsed?.sourceKind !== 'user' || !POLICY_SUPPRESSION_CUE.test(parsed.text)) continue
+      const observedAt = parsed.observedAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(parsed.observedAt)
+      cues.push({ ref: `session:${sessionId}/event:${String(parsed.eventSeq ?? index)}`, observedAt: Number.isNaN(observedAt) ? Number.NEGATIVE_INFINITY : observedAt, sessionId, index })
+    }
+    const latest = cues.sort((left, right) => left.observedAt - right.observedAt || left.index - right.index || left.sessionId.localeCompare(right.sessionId)).at(-1)
+    return latest === undefined ? [] : [latest.ref]
+  }
   private evidenceReferencesForPage(page: WikiPage): string[] {
     const references = new Set<string>()
     for (const source of page.sources) {

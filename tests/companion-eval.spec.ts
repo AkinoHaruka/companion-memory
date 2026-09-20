@@ -17,13 +17,16 @@ const WRITE_SIDE = ['candidatePrecision', 'authorityViolationRate', 'semanticDri
 const READ_SIDE = ['recallAtK', 'mrr', 'ndcg', 'exactDetailRecovery', 'temporalAccuracy', 'multiHopSuccess', 'negativeRecallPrecision', 'forgetLeakage', 'purgeLeakage'] as const
 /** Product-side Appendix G fields plus the three named prompt-injection proxies. */
 const PRODUCT_SIDE = ['falsePersonalizationRate', 'unwantedMentionRate', 'memoryOveruseRate', 'falsePersonalizationInjectionRate', 'unwantedMentionInjectionRate', 'memoryOveruseInjectionRate'] as const
-const ALL_FIELDS = [...WRITE_SIDE, ...READ_SIDE, ...PRODUCT_SIDE]
+/** Projection-side fields counted over returned RecallResult documents. */
+const PROJECTION_SIDE = ['safeUsageProjectionRate', 'rawTextWithheldRate'] as const
+const ALL_FIELDS = [...WRITE_SIDE, ...READ_SIDE, ...PRODUCT_SIDE, ...PROJECTION_SIDE]
+const LEGACY_FIELD_COUNT = 19
 /** Fields whose subject has no live surface in this Loader fixture, so they stay explicitly unsupported. */
 const UNMEASURABLE = ['semanticDriftRate', 'falsePersonalizationRate', 'unwantedMentionRate', 'memoryOveruseRate'] as const
 /** Supported scenarios carrying one binary relevant target each, in corpus order. */
 const RANKING_SCENARIOS = ['F.04', 'F.05', 'F.06', 'F.07', 'F.08', 'F.18', 'F.19', 'F.20', 'F.26', 'F.29'] as const
 /** The only fields that rank or recover F.05's exact number now that its L0 channel is observable. */
-const F05_FIELDS: readonly string[] = ['recallAtK', 'mrr', 'ndcg', 'exactDetailRecovery']
+const F05_FIELDS: readonly string[] = ['recallAtK', 'mrr', 'ndcg', 'exactDetailRecovery', ...PROJECTION_SIDE]
 
 let outcomes: RawOutcome[]
 let metrics: Record<string, Metric>
@@ -115,7 +118,9 @@ describe('Appendix G aggregate metrics', () => {
   it('produces every Appendix G write-side, read-side and product-side field', () => {
     for (const name of ALL_FIELDS) expect(Object.hasOwn(metrics, name), name).toBe(true)
     expect(Object.keys(metrics).sort()).toEqual([...ALL_FIELDS].sort())
-    expect(WRITE_SIDE.length + READ_SIDE.length + PRODUCT_SIDE.length).toBe(ALL_FIELDS.length)
+    expect(WRITE_SIDE.length + READ_SIDE.length + PRODUCT_SIDE.length + PROJECTION_SIDE.length).toBe(ALL_FIELDS.length)
+    expect(LEGACY_FIELD_COUNT).toBe(19)
+    expect(ALL_FIELDS.length).toBe(21)
   })
 
   it('keeps each measurement arithmetically consistent with its own numerator and denominator', () => {
@@ -239,6 +244,15 @@ describe('Appendix G aggregate metrics', () => {
     for (const name of UNMEASURABLE) expectUnmeasured(metrics[name]!, name)
     const reasons = UNMEASURABLE.map(name => metrics[name]!.reason!)
     expect(new Set(reasons).size).toBe(UNMEASURABLE.length)
+  })
+
+  it('counts persisted projections and disclosure-withheld result text from recalled documents', () => {
+    for (const name of PROJECTION_SIDE) expectMeasured(metrics[name]!, name)
+    const documents = outcomes.filter(outcome => outcome.status === 'executed').flatMap(outcome => outcome.results)
+    expect(metrics.safeUsageProjectionRate!.denominator).toBe(documents.length)
+    expect(metrics.safeUsageProjectionRate!.numerator).toBe(documents.filter(result => result.projection !== undefined).length)
+    expect(metrics.rawTextWithheldRate!.numerator).toBe(documents.filter(result => result.projection !== undefined
+      && result.projection.disclosure !== 'normal' && result.text.length === 0).length)
   })
 
   it('reacts to a violation it is fed, so the reported zeros are computed rather than constant', () => {

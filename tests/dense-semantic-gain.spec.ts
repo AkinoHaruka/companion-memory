@@ -1,4 +1,3 @@
-/* oxlint-disable @stylistic/max-len */
 /**
  * Semantic-gain ablation: paraphrase queries over a 10-page hard-negative pool.
  *

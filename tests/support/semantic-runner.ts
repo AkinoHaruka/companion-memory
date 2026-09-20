@@ -46,7 +46,11 @@ function denseConfig(provider: SemanticProvider, embedding: RealEmbeddingSetting
  * retrieval evidence. No Dream, no session evidence: everything is canonical, so channel
  * attribution in the trace is unambiguous.
  */
-export async function executeSemanticScenario(scenario: SemanticScenario, provider: SemanticProvider, embedding?: RealEmbeddingSettings): Promise<SemanticOutcome> {
+export async function executeSemanticScenario(
+  scenario: SemanticScenario,
+  provider: SemanticProvider,
+  embedding?: RealEmbeddingSettings,
+): Promise<SemanticOutcome> {
   const root = await mkdtemp(join(tmpdir(), 'riko-semantic-'))
   let harness: Awaited<ReturnType<typeof startLiveHarness>> | undefined
   const config = [

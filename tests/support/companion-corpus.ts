@@ -21,9 +21,9 @@ export interface CompanionScenario {
 export const companionCorpus: readonly CompanionScenario[] = [
   { id: 'F.01', category: 'Stable Preference', setup: { kind: 'remember', text: '我喜欢简短回答。' }, userTurn: '你还记得我喜欢怎样回答吗？', expected: { label: 'correct injection', contains: '我喜欢简短回答' } },
   { id: 'F.02', category: 'Explicit Remember', setup: { kind: 'remember', text: '我不喜欢别人叫我小熊。' }, userTurn: '你还记得我的称呼偏好吗？', expected: { label: 'correct injection', contains: '小熊' } },
-  // The L0 anchor is the user's own hedged turn; the derived claim exists only in the derived layer, so
-  // the judgement below is about a candidate the provider proposed, not about anything the user said.
-  { id: 'F.03', category: 'Unconfirmed Candidate', candidateJudgments: [{ text: '用户可能喜欢跑步。', worthKeeping: false }], setup: { kind: 'dream', text: '用户可能喜欢跑步。', source: '我最近想试试跑步，还不知道自己能不能坚持。' }, userTurn: '你还记得用户可能喜欢跑步吗？', expected: { label: 'governed use', excludes: '用户可能喜欢跑步' } },
+  // The user's earlier hedged sentence is unclassified evidence, so the lowered default returns that exact
+  // user wording for an explicit request; the provider's unconfirmed derived claim must still stay excluded.
+  { id: 'F.03', category: 'Unconfirmed Candidate', candidateJudgments: [{ text: '用户可能喜欢跑步。', worthKeeping: false }], setup: { kind: 'dream', text: '用户可能喜欢跑步。', source: '我最近想试试跑步，还不知道自己能不能坚持。' }, userTurn: '你还记得用户可能喜欢跑步吗？', expected: { label: 'correct injection', excludes: '用户可能喜欢跑步' } },
   { id: 'F.04', category: 'Long-Tail Event', setup: { kind: 'long-tail', text: 'North Pier Cafe window seat after 16:00' }, userTurn: '你还记得 North Pier Cafe 吗？', expected: { label: 'correct injection', contains: 'North Pier Cafe' } },
   // The locker number is an ordinary identifier-shaped claim: with capture classification on, the rule set
   // keeps it normal, so the explicit question about it reaches the L0 channel and the literal comes back.
@@ -40,17 +40,13 @@ export const companionCorpus: readonly CompanionScenario[] = [
   { id: 'F.11', category: 'Sensitive Memory', setup: { kind: 'page', text: 'private health marker', sensitivity: 'sensitive' }, userTurn: '解释 TypeScript 泛型', expected: { label: 'correct silence', excludes: 'private health marker' } },
   { id: 'F.12', category: 'Sensitive Unsolicited Mention', setup: { kind: 'page', text: 'private health marker', sensitivity: 'sensitive' }, userTurn: '我喜欢健康的午餐', expected: { label: 'correct silence', excludes: 'private health marker' } },
   { id: 'F.13', category: 'Explicit Sensitive Recall', setup: { kind: 'page', text: 'private health marker', sensitivity: 'sensitive' }, userTurn: '你还记得 private health marker 吗？', expected: { label: 'governed use', contains: '<internal-memory-guidance>', excludes: 'private health marker' } },
-  // The suppression turn's own L0 evidence remains recallable as a protected silent-use projection, so the harness
-  // cannot observe literal silence here; the assertion that matters is that the suppressed content never appears.
-  // The L0 anchor of this trial is the suppression turn itself: `不要再主动提 <text>` is user evidence that
-  // survives the suppression, so the silence here is not L0 silence. It comes from page-level suppression
-  // cascading to L0 — `isEvidenceSuppressed` rejects the evidence whose source ref belongs to a suppressed
-  // page — and the assertion that matters is that the suppressed content never appears.
+  // The suppression cue is policy evidence: it may drive the page suppression, but raw recall skips the cue
+  // itself. The page therefore contributes governed guidance without echoing the topic the user muted.
   { id: 'F.14', category: 'Suppress', setup: { kind: 'suppress', text: 'orchid private hobby' }, userTurn: '你还记得 orchid private hobby 吗？', expected: { label: 'governed use', excludes: 'orchid private hobby' } },
   // The forgotten sentence exists only in the derived layer, as the page the management path creates and the
-  // trial then deletes. L0 holds the user's own turn about the same object, which is retained by design, so
-  // the trial separates "the raw session survives" from "the derived memory left no trace".
-  { id: 'F.15', category: 'Forget-Derived', setup: { kind: 'forget', text: 'forgotten violet marker', source: '我把那支 violet marker 送给表弟了。' }, userTurn: '你还记得 forgotten violet marker 吗？', expected: { label: 'governed use', excludes: 'forgotten violet marker' } },
+  // trial then deletes. The retained user sentence is unclassified evidence, so an explicit request returns
+  // that earlier wording as correct injection while the forgotten derived claim stays excluded.
+  { id: 'F.15', category: 'Forget-Derived', setup: { kind: 'forget', text: 'forgotten violet marker', source: '我把那支 violet marker 送给表弟了。' }, userTurn: '你还记得 forgotten violet marker 吗？', expected: { label: 'correct injection', excludes: 'forgotten violet marker' } },
   { id: 'F.16', category: 'Purge', setup: { kind: 'purge', text: 'purged amber marker' }, userTurn: '你还记得 purged amber marker 吗？', expected: { label: 'correct silence', excludes: 'purged amber marker' } },
   { id: 'F.17', category: 'Scope Isolation', setup: { kind: 'scope', text: 'standard exclusive marker' }, userTurn: '你还记得 standard exclusive marker 吗？', expected: { label: 'correct silence', excludes: 'standard exclusive marker' } },
   { id: 'F.18', category: 'Restart', setup: { kind: 'restart', text: 'durable copper marker' }, userTurn: '你还记得 durable copper marker 吗？', expected: { label: 'correct injection', contains: 'durable copper marker' } },
