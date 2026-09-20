@@ -1,0 +1,88 @@
+# Memory V3 Progress
+
+Scope / owner: Canonical `packages/bundle/riko-memory` runtime declarations, implementation evidence and phase ledger.
+
+Baseline reference: working-tree verification on 2026-09-19; no repository commit identifier is recorded because maintained documentation rejects commit identifiers.
+
+Canonical package: `C:\TRAE\Riko-dsh\deepseek-harness\packages\bundle\riko-memory`.
+
+Current phase: Phase 5 hardening and evaluation remains PARTIAL. V3.1 decision semantics have runtime implementations and focused tests, and the Appendix F corpus and Appendix G aggregation now run in the package suite, but the live acceptance matrix and production evaluation gates are not complete.
+
+PASS means the current package evidence for the row is green. PARTIAL means the implementation exists but one or more named acceptance gates remain open. NOT STARTED means no implementation or evidence exists for the named scope.
+
+## Baseline evidence
+
+- Package typecheck: from the worktree root, `pnpm exec tsc -p packages/bundle/riko-memory/tsconfig.json --noEmit --pretty false` — PASS.
+- V4 baseline package suite: from the worktree root, `pnpm exec vitest run packages/bundle/riko-memory/tests --reporter=dot` — 15 spec files / 147 tests — PASS at task start.
+- Current package suite: the same command now finds 22 spec files / 245 tests — PASS.
+- Current test files: `ambiguous-conflict.spec.ts`, `companion-eval.spec.ts`, `contracts.spec.ts`, `dense-routing.spec.ts`, `dream-protocol.spec.ts`, `entity-alias-resolution.spec.ts`, `evidence-classification.spec.ts`, `evidence-classification-surface.spec.ts`, `evidence-classifier-failure.spec.ts`, `live-flag-matrix.spec.ts`, `persistence-complexity.spec.ts`, `runner-diagnostics.spec.ts`, `live-scenarios.spec.ts`, `loader-composition.spec.ts`, `observation-activation.spec.ts`, `recall.spec.ts`, `recovery.spec.ts`, `sensitivity-provisional.spec.ts`, `silent-use-projection.spec.ts`, `store.spec.ts`, `vector-index.spec.ts` and `wiki.spec.ts`.
+- Documentation suite after this ledger and linked-document refresh: from the worktree root, `pnpm run test:docs` — PASS, 20 passed / 0 failed / 0 skipped.
+- The Appendix F corpus runner covers 30 representative scenarios and the Appendix G aggregation covers 19 fields, both described in [companion-eval.md](companion-eval.md); load-chaos coverage is NOT STARTED.
+
+## Phase ledger
+
+| Phase | Status | Material files | Exact evidence | Gates NOT met |
+|---|---|---|---|---|
+| Phase 0 | PASS | `src/index.ts`, `src/contracts.ts`, `src/memory-domain.ts`, `src/store.ts`, `src/types.ts`, `tests/contracts.spec.ts`, `tests/store.spec.ts`, `tests/loader-composition.spec.ts` | Package typecheck PASS; the V4 baseline package suite PASSed with 15 files / 147 tests; the current package suite PASSes with 22 files / 245 tests; scoped L0 → Dream → Candidate → Wiki → Resident routes and storage-domain records are exercised. | The production-scale benchmark and load-chaos coverage remain tracked under Phase 5. |
+| Phase 1A | PASS | `src/index.ts`, `src/store.ts`, `src/types.ts`, `tests/live-scenarios.spec.ts`, `tests/loader-composition.spec.ts`, `tests/recovery.spec.ts`, `tests/store.spec.ts` | The V4 baseline `live-scenarios.spec.ts` R1A-01 through R1A-12 pass, including bounded whole-item Resident output, sensitivity filtering, last-valid fallback, restart recovery and Agent system-prompt assembly. | A production benchmark and repository-wide coverage evidence are not part of this package run, and load-chaos coverage remains open. |
+| Phase 1B | PARTIAL | `src/index.ts`, `src/recall.ts`, `src/embedding-provider.ts`, `src/vector-index.ts`, `src/store.ts`, `tests/live-scenarios.spec.ts`, `tests/dense-routing.spec.ts`, `tests/vector-index.spec.ts`, `tests/recall.spec.ts` | The Agent pre-step and HTTP recall route pass the configured embedding provider; Q1B-09 and Q1B-10 cover provider degradation and vector-index rebuild, while dense routing and index tests pass. | `MemoryReranker` has no live configuration seam; the complete live Config flag matrix is not met. |
+| Phase 2 | PASS | `src/memory-domain.ts`, `src/types.ts`, `src/store.ts`, `src/wiki.ts`, `src/index.ts`, `tests/live-scenarios.spec.ts`, `tests/ambiguous-conflict.spec.ts`, `tests/recovery.spec.ts`, `tests/wiki.spec.ts` | T2-01 through T2-06 pass for current/history temporal selection, corrections, interval closure, bounded Resident output and contested current reads; `ambiguous-conflict.spec.ts` passes candidate, overlay, persistence and correction behavior. | The complete live Agent conflict-injection acceptance path is not met, and load-chaos coverage remains open. |
+| Phase 3 | PARTIAL | `src/types.ts`, `src/store.ts`, `src/recall.ts`, `src/index.ts`, `tests/live-scenarios.spec.ts`, `tests/observation-activation.spec.ts`, `tests/sensitivity-provisional.spec.ts`, `tests/loader-composition.spec.ts` | M3-01 through M3-08 pass for anchors, distinct evidence, confidence, contradiction weakening, sensitivity, recall status and reflection degradation; Dream calls `reflectObservations()` when `reflectionEnabled` is true. | The reflection-failure scenario is still helper-side rather than a Loader/provider-failure assertion; the complete live flag matrix, sensitivity FN/FP metrics and validated hedged silent-use benchmark are not met. |
+| Phase 4 | PARTIAL | `src/wiki.ts`, `src/store.ts`, `src/recall.ts`, `src/index.ts`, `tests/live-scenarios.spec.ts`, `tests/entity-alias-resolution.spec.ts`, `tests/recall.spec.ts` | G4 graph negatives and Q6 alias tests pass for bounded graph traversal, scope isolation, explicit coreference, contested inference, invalidation and canonical-preserving rebuild; F.29 exercises linked-destination graph retrieval in the Appendix F corpus. | A full live management/Agent alias lifecycle matrix and entity resolution beyond bounded wikilink graph expansion are not met; load-chaos coverage remains open. |
+| Phase 5 | PARTIAL | `src/store.ts`, `src/index.ts`, `src/memory-domain.ts`, `src/vector-index.ts`, `tests/live-scenarios.spec.ts`, `tests/loader-composition.spec.ts`, `tests/recovery.spec.ts`, `tests/silent-use-projection.spec.ts`, `tests/ambiguous-conflict.spec.ts`, `tests/companion-eval.spec.ts`, `tests/persistence-complexity.spec.ts`, `tests/runner-diagnostics.spec.ts` | Purge acceptance, restart recovery, vector metadata, aliases, `SafeUsageProjection` and `ConflictOverlay` load/rebuild/persist paths pass in the package suite; purge supports dry-run, exact confirmation and verified completion; the Appendix F corpus executes 30 representative scenarios and the Appendix G aggregation produces 19 attributed fields from raw observations. | Load-chaos coverage — NOT STARTED; four Appendix F scenarios and four Appendix G fields remain explicitly unsupported with recorded reasons; live reranker wiring and repository-wide release evidence are also not met. |
+
+## V3.1 Decision Semantics
+
+The normative decisions are recorded in [v3.1-decision-semantics.md](v3.1-decision-semantics.md). These rows measure the current runtime and acceptance evidence, not only declarations in types or storage schemas.
+
+| Decision | Status | Material files and exact evidence | Gates NOT met |
+|---|---|---|---|
+| Q1 Sensitivity permission | PARTIAL | `src/types.ts`, `src/store.ts`, `src/recall.ts`, `tests/sensitivity-provisional.spec.ts`, `tests/live-scenarios.spec.ts`; provisional transitions, conservative recall and sensitive observation exclusions pass. | Live authority matrix plus Sensitive False Negative Rate and Sensitive False Positive Rate metrics are not met. |
+| Q2 SafeUsageProjection for `silent_use` | PARTIAL | `src/types.ts`, `src/memory-domain.ts`, `src/store.ts`, `src/recall.ts`, `tests/silent-use-projection.spec.ts`; projections are generated, persisted, reloaded, rebuilt and consumed without the raw body. | A live Agent assembly assertion proving query-time use of only the persisted projection, plus projection metrics, is not met. |
+| Q3 Contested conflict overlay | PARTIAL | `src/types.ts`, `src/memory-domain.ts`, `src/store.ts`, `tests/ambiguous-conflict.spec.ts`, `tests/live-scenarios.spec.ts`; `pending_conflict`, persisted `ConflictOverlay`, contested reads and reviewed resolution pass without unreviewed canonical mutation. | A live Agent injection assertion and the complete conflict evaluation matrix are not met. |
+| Q4 Observation activation | PARTIAL | `src/types.ts`, `src/store.ts`, `src/index.ts`, `tests/observation-activation.spec.ts`, `tests/live-scenarios.spec.ts`; automatic evidence/session/confidence thresholds, authenticated management status changes, sensitivity exclusion, contradiction weakening and optional Dream reflection pass. | Loader-backed reflection failure coverage, full live flag coverage and validated hedged silent-use evaluation are not met. |
+| Q5 Dense recall expansion | PARTIAL | `src/recall.ts`, `src/embedding-provider.ts`, `src/vector-index.ts`, `src/store.ts`, `tests/dense-routing.spec.ts`, `tests/vector-index.spec.ts`, `tests/live-scenarios.spec.ts`; planner gating, separate dense cap, provider degradation and index rebuild pass, and Appendix G reports Recall@8, MRR and NDCG over the ten supported ranking scenarios. | Live reranker wiring and the complete live provider/flag matrix are not met. |
+| Q6 Revocable aliases | PARTIAL | `src/memory-domain.ts`, `src/store.ts`, `src/index.ts`, `tests/entity-alias-resolution.spec.ts`, `tests/live-scenarios.spec.ts`; explicit coreference, contested inference, invalidation and canonical-preserving rebuild pass. | A full live HTTP/Agent authority matrix and entity resolution beyond bounded wikilink graph expansion are not met. |
+
+## Appendix F and Appendix G evaluation
+
+The corpus, runner, aggregation contract, artifact layout and per-field computation are documented in [companion-eval.md](companion-eval.md).
+
+Appendix F is covered by `tests/companion-eval.spec.ts`, which runs the corpus once and asserts all thirty scenarios: twenty-eight reach their expected label and four are asserted as `unsupported` with their recorded reason (F.21, F.22, F.28, F.30). Three of the twenty-eight — F.05, F.09 and F.10 — declare `requiresEvidenceClassification`, so the runner starts their harness with the capture classifier on and reports them as unsupported, with a reason naming the missing capability, in any run that starts with it off.
+
+Appendix G is covered by the same `tests/companion-eval.spec.ts` run, which drives `tests/support/evaluation-metrics.ts` over the raw observations and covers nineteen fields: fifteen carry a measured value with a numerator, denominator and scenario list, and four are reported `unsupported` with a reason (`semanticDriftRate`, `falsePersonalizationRate`, `unwantedMentionRate`, `memoryOveruseRate`).
+
+| Field | Status | Proving test |
+|---|---|---|
+| `candidatePrecision` | measured, 0/1 candidate worth keeping | scores candidate, correction, temporal, exact-detail and multi-hop fields from live checks |
+| `authorityViolationRate` | measured, 0 violations over 3 trials | reports zero authority violations for the dream and rejected remember trials |
+| `semanticDriftRate` | unsupported, no consolidation provider | marks fields with no live surface as unsupported with their own reason |
+| `correctionPropagation` | measured, 2/2 corrections propagated | scores candidate, correction, temporal, exact-detail and multi-hop fields from live checks |
+| `recallAtK` | measured, 9/9 targets inside Recall@8 | scores recall, MRR and NDCG from the returned live results |
+| `mrr` | measured, reciprocal rank 1.0 over 9 trials | scores recall, MRR and NDCG from the returned live results |
+| `ndcg` | measured, binary NDCG@8 of 1.0 over 9 trials | scores recall, MRR and NDCG from the returned live results |
+| `exactDetailRecovery` | measured, 1/1 supported exact-name trial | scores candidate, correction, temporal, exact-detail and multi-hop fields from live checks |
+| `temporalAccuracy` | measured, 2/2 temporal trials | scores candidate, correction, temporal, exact-detail and multi-hop fields from live checks |
+| `multiHopSuccess` | measured, 1/1 graph retrieval | scores candidate, correction, temporal, exact-detail and multi-hop fields from live checks |
+| `negativeRecallPrecision` | measured, 6/6 negative trials clean | reports zero sensitive disclosure for the unsolicited mention trials |
+| `forgetLeakage` | measured, 0 leakage over 1 trial | reports zero forget leakage for the derived-forget trial |
+| `purgeLeakage` | measured, 0 leakage over 1 trial | reports zero purge leakage across live state and storage-domain files |
+| `falsePersonalizationRate` | unsupported, no generated answers | marks fields with no live surface as unsupported with their own reason |
+| `unwantedMentionRate` | unsupported, no generated answers | marks fields with no live surface as unsupported with their own reason |
+| `memoryOveruseRate` | unsupported, no generated answers | marks fields with no live surface as unsupported with their own reason |
+| `falsePersonalizationInjectionRate` | measured, 0/3 injection-side | reports zero authority violations for the dream and rejected remember trials |
+| `unwantedMentionInjectionRate` | measured, 0/2 injection-side | reports zero sensitive disclosure for the unsolicited mention trials |
+| `memoryOveruseInjectionRate` | measured, 0/1 injection-side | reports zero memory-overuse injection on the utility trial |
+
+## Still NOT met
+
+- The Appendix F corpus is thirty representative scenarios rather than the 200–500-scenario production benchmark, so scenario-count coverage is not met.
+- F.21, F.22, F.28 and F.30 remain unsupported because no supported live path can execute them; each carries its reason in `tests/support/companion-corpus.ts`.
+- F.05 is no longer among them: with `evidenceClassificationEnabled` the locker number classifies as `normal` at capture, so an explicit question reaches the L0 channel. F.05, F.09 and F.10 declare `requiresEvidenceClassification` and are reported unsupported only in a run that starts with the capability off.
+- `semanticDriftRate` and the three answer-side product rates remain unsupported because this fixture never generates a final assistant answer.
+- Load-chaos coverage is NOT STARTED.
+- Live reranker wiring, the complete Loader-backed Config flag matrix and the missing reflection-provider failure assertion remain open.
+
+## Known local limitation
+
+- A fork worker is occasionally terminated on Windows under Node 24.15.0 — 5 of 32 runs at default parallelism, once with two workers in one run — which drops a spec file's results and makes Vitest report `Worker exited unexpectedly`. No assertion fails. The worker fails fast: Windows reports exit code `3221226505` (`0xC0000409`, `__fastfail`), no JavaScript handler runs, no stderr text is written, and no Windows Error Reporting entry or dump appears, so Vitest cannot show the cause. Every run of this 22-file suite passes under Node 24.21.0 (45 runs, 20 of them with pnpm 11.7.0), Node 22.19.0 (25 runs) and Node 26.9.0 (30 runs), so the plugin is not the source; a second host also did not reproduce it (0 of 78 runs). Run the suite on Node 24.21.0 or newer, which is the release the CI `PRIMARY_NODE_VERSION: '24'` installs. On an affected runtime, treat a lost file as runtime loss and re-run before reading a red count.

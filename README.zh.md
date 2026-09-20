@@ -169,7 +169,7 @@ Provider 返回的 `status: confirmed`、`consent: true`、`locked: true`，或�
 
 ## Query-Time Recall v1
 
-可选的 `recallEnabled` 会在 Resident 之外按当前用户 query 召回长尾细节，默认关闭。第一阶段使用 scope 内 canonical lexical search，并以原始用户证据作 secondary recall；结果受 `recallMaxCandidates` 和 `recallMaxContextChars` 限制。`embeddingProvider` 可启用 deterministic-local 或 OpenAI-compatible dense recall；provider 失败会降级到 lexical/RRF，不阻断聊天。live hook 也不会提供 `MemoryReranker`，rerank 只可由直接 helper/store 调用和测试触达。Recall 还支持调用方提供明确的 `atTime` 或 `history` 来读取保留的时间线。详见 [docs/recall-v1.md](docs/recall-v1.md) 与 [docs/migration-phase-2-temporal-resident.md](docs/migration-phase-2-temporal-resident.md)。
+可选的 `recallEnabled` 会在 Resident 之外按当前用户 query 召回长尾细节，默认关闭。第一阶段使用 scope 内 canonical lexical search，并以原始用户证据作 secondary recall；结果受 `recallMaxCandidates` 和 `recallMaxContextChars` 限制。`embeddingProvider` 可启用 deterministic-local 或 OpenAI-compatible dense recall；provider 失败会降级到 lexical/RRF，不阻断聊天。可选的语义增益消融（`tests/dense-semantic-gain.spec.ts`，由 `DSH_MEMORY_BGE_ENDPOINT` 门控）度量词法排序结构性够不着的释义召回：在 10 页硬干扰语料上，纯词法命中 0/5，deterministic hash 命中 2/5，BGE-small-zh-v1.5 向量命中 5/5。live hook 也不会提供 `MemoryReranker`，rerank 只可由直接 helper/store 调用和测试触达。Recall 还支持调用方提供明确的 `atTime` 或 `history` 来读取保留的时间线。详见 [docs/recall-v1.md](docs/recall-v1.md) 与 [docs/migration-phase-2-temporal-resident.md](docs/migration-phase-2-temporal-resident.md)。
 
 Observation 管理、图谱扩展和 raw Session purge 分别由 `recallObservationEnabled`、`recallGraphEnabled`、`purgeEnabled` 控制，默认全部关闭。启用的 Dream reflection 可以创建带 anchor 的 Observation candidate；创建 candidate 或更新 evidence 时，只要记录仍是 candidate、敏感度为 `normal`、没有强矛盾，并满足配置的 evidence、不同 Session 和 confidence 下限，runtime 就可以自动激活它。另一个路径是经过认证的 `POST /memory/v1/observations/:id/activate` 管理操作；它在通过 store 的最少 evidence 检查后显式激活记录，匹配的路由可以让记录 invalidated 或 suppressed。两条激活路径都不会确认 fact 或授予 explicit mention permission。Observation 必须有 raw/confirmed evidence anchor，始终与 Wiki fact 分开。普通 `memory_forget` 仍会保留 raw Session 证据。
 
@@ -272,7 +272,7 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 
 插件使用 DSH workspace 依赖和 `0.1.6-alpha.2` 基线。GitHub 镜像是源码/包镜像，实际运行仍应安装到兼容的 DSH Harness worktree。
 
-配置 owner namespace 和稳定 Agent preset。两者缺一时长期记忆读写都会 fail-closed。下表完整列出 40 个 live `Config` 字段。`configResponse()` 只返回安全的运行状态；`ownerNamespace`、`apiToken` 和 `apiTokens` 因为会暴露 scope 或凭据而特意不返回，`maxSessionChars` 是内部边界，也不通过该响应返回。OpenAI-compatible embedding 必须配置非空 model、HTTPS endpoint 和 credential reference；deterministic embedding 使用配置的 dimension。OpenRouter 临时验收只把变量注入当前进程：
+配置 owner namespace 和稳定 Agent preset。两者缺一时长期记忆读写都会 fail-closed。下表完整列出 40 个 live `Config` 字段。`configResponse()` 只返回安全的运行状态；`ownerNamespace`、`apiToken` 和 `apiTokens` 因为会暴露 scope 或凭据而特意不返回，`maxSessionChars` 是内部边界，也不通过该响应返回。OpenAI-compatible embedding 必须配置非空 model、credential reference 和 HTTPS endpoint（仅环回主机接受明文 HTTP）；deterministic embedding 使用配置的 dimension。OpenRouter 临时验收只把变量注入当前进程：
 
 | 配置字段 | 默认值 | 说明 | `configResponse()` |
 |---|---:|---|---|
