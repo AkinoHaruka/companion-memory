@@ -8,7 +8,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { memoryScopeForPreset } from '../src/contracts.ts'
-import { scopedRecordKey, type MemorySessionRecord } from '../src/memory-domain.ts'
+import type { MemorySessionRecord } from '../src/memory-domain.ts'
 import { MemoryProfileStore, type EvidenceClassificationCounts } from '../src/store.ts'
 
 class Table<V> {
@@ -51,11 +51,6 @@ function persistedSession(domain: Domain, sessionId: string): MemorySessionRecor
   const record = domain.records('sessions').find(value => (value as MemorySessionRecord).sessionId === sessionId)
   if (record === undefined) throw new Error(`no persisted session record for ${sessionId}`)
   return record as MemorySessionRecord
-}
-
-/** Seed a session record directly, standing in for events captured before the capability existed. */
-async function seedUnclassifiedSession(domain: Domain, sessionId: string, lines: readonly string[]): Promise<void> {
-  await domain.table('sessions').put(scopedRecordKey(scope, sessionId), { schemaVersion: 2, scope, sessionId, lines: [...lines] })
 }
 
 const countsOf = (store: MemoryProfileStore, sessionId: string): EvidenceClassificationCounts => store.evidenceClassificationCounts(sessionId)
@@ -129,40 +124,6 @@ describe('L0 evidence classification', () => {
     expect(countsOf(restored, 'restart-classified')).toEqual({ normal: 1, provisional_sensitive: 0, sensitive: 0, unclassified: 0 })
     const response = await restored.recall('你还记得我的储物柜 B-417 吗？')
     expect(response.results.some(result => result.mentionDecision === 'explicit' && result.text.includes('B-417'))).toBe(true)
-  })
-
-  it('refuses a proposal that would publish an unclassified event, and one that would relax a stored value', async () => {
-    const domain = new Domain()
-    // Seeded before the store opens, so the record is part of the scope the store loads rather than a
-    // write racing the load.
-    await seedUnclassifiedSession(domain, 'unclassified-session', [userLine(1, '我的储物柜编号是 B-417')])
-    const store = open(domain, true)
-    await store.waitReady()
-    expect(countsOf(store, 'unclassified-session')).toEqual({ normal: 0, provisional_sensitive: 0, sensitive: 0, unclassified: 1 })
-
-    expect(await store.proposeEvidenceSensitivity('unclassified-session', 0, 'normal')).toBe(false)
-    expect(countsOf(store, 'unclassified-session').unclassified).toBe(1)
-    const refusal = store.listAudits().filter(audit => audit.event === 'evidence-sensitivity-rejected')
-    expect(refusal).toHaveLength(1)
-    expect(refusal[0]?.detail).toMatchObject({ from: 'unclassified', to: 'normal', authority: 'model_proposal', reason: 'unclassified-target' })
-
-    expect(await store.proposeEvidenceSensitivity('unclassified-session', 0, 'provisional_sensitive')).toBe(true)
-    expect(countsOf(store, 'unclassified-session')).toEqual({ normal: 0, provisional_sensitive: 1, sensitive: 0, unclassified: 0 })
-    expect(await store.proposeEvidenceSensitivity('unclassified-session', 0, 'provisional_sensitive')).toBe(false)
-    expect(await store.proposeEvidenceSensitivity('unclassified-session', 0, 'normal')).toBe(false)
-    expect(countsOf(store, 'unclassified-session').provisional_sensitive).toBe(1)
-    expect(store.listAudits().filter(audit => audit.event === 'evidence-sensitivity-rejected')).toHaveLength(2)
-  })
-
-  it('lets a proposal tighten an explicitly sensitive value but never loosen it', async () => {
-    const store = open(new Domain(), true)
-    await store.appendSessionEvent('explicit-sensitive', userLine(1, '我的私密病历编号是 S-200'))
-    expect(countsOf(store, 'explicit-sensitive').sensitive).toBe(1)
-    expect(await store.proposeEvidenceSensitivity('explicit-sensitive', 0, 'provisional_sensitive')).toBe(false)
-    expect(countsOf(store, 'explicit-sensitive').sensitive).toBe(1)
-    const refusal = store.listAudits().filter(audit => audit.event === 'evidence-sensitivity-rejected')
-    expect(refusal).toHaveLength(1)
-    expect(refusal[0]?.detail).toMatchObject({ from: 'sensitive', to: 'provisional_sensitive', authority: 'model_proposal', reason: 'proposal-loosens-explicit-value' })
   })
 
   it('suspends a capture-rule value while the capability is off and restores it without deleting the record', async () => {

@@ -7,6 +7,8 @@ import { expect, vi } from 'vitest'
 import { agentEvents } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
+import { memoryScopeForPreset } from '../../src/contracts.ts'
+import { scopedRecordKey } from '../../src/memory-domain.ts'
 import type { RecallResult, RecallTrace } from '../../src/recall.ts'
 import { companionCorpus, type CompanionScenario } from './companion-corpus.ts'
 import {
@@ -29,6 +31,8 @@ const FIXTURE_DREAM_API_URL = 'https://api.test/api/v1/chat/completions'
 interface Snapshot {
   pages: Array<{ id: string; description: string; title: string; status: string }>
   candidates: Array<{ status: string; page: { body: string } }>
+  observations?: Array<{ text: string }>
+  sessions: string[]
   resident: string
   lastError?: string
 }
@@ -185,6 +189,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
     `    dreamApiUrl: ${JSON.stringify(dreamApiUrl)}`,
     ...(options.dreamModel === undefined ? [] : [`    dreamModel: ${JSON.stringify(options.dreamModel)}`]),
     ...(scenario.requiresEvidenceClassification === true ? ['    evidenceClassificationEnabled: true'] : []),
+    ...(kind === 'purge-crash-recovery' ? ['    minObservationEvidence: 1'] : []),
     ...(kind === 'overflow' || kind === 'long-tail' ? ['    maxResidentChars: 256'] : []),
     ...denseConfig,
   ]
@@ -197,6 +202,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       // The degradation trial injects its own provider failure. A live endpoint would answer it, so the
       // fault stays in the fixture; the call is counted once because the plugin did make one.
       if (kind === 'dream-failure') { providerCalls += 1; return Promise.resolve(new Response('{}', { status: 503 })) }
+      if (kind === 'purge-crash-recovery') return Promise.resolve(new Response('{"choices":[]}', { status: 200 }))
       return fetchWithProviderRetry(input, init, { gate: providerGate, fetchImpl: nativeFetch, onAttempt: () => { providerCalls += 1 } })
     })
     : ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -204,6 +210,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       if (String(input) !== FIXTURE_DREAM_API_URL) return nativeFetch(input, init)
       providerCalls += 1
       if (kind === 'dream-failure') return Promise.resolve(new Response('{}', { status: 503 }))
+      if (kind === 'purge-crash-recovery') return Promise.resolve(new Response('{"choices":[]}', { status: 200 }))
       return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: `<<<FILE path="wiki/concepts/candidate.md">>>\n${markdown(scenario.setup.text)}<<<END>>>` } }] })))
     })
   try {
@@ -293,7 +300,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       raw.checks.observationInvalidated = updated.status === 'invalidated'
         && updated.contradictingRefs?.length === contradictionAgents.length
     }
-    if (['remember', 'authority', 'dream', 'evidence', 'purge', 'forget'].includes(kind)) {
+    if (['remember', 'authority', 'dream', 'evidence', 'purge', 'forget', 'purge-crash-recovery'].includes(kind)) {
       append(scenario.setup.source ?? scenario.setup.text)
       await evidence()
     }
@@ -302,9 +309,37 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       raw.checks.authority = kind === 'authority' ? raw.toolResults[0]!.isError : !raw.toolResults[0]!.isError
     } else if (kind !== 'dream' && kind !== 'evidence' && kind !== 'observation-weakening') {
       const text = scenario.setup.text
-      const page = await request<{ id: string }>('/wiki/pages', { path: 'wiki/concepts/target.md', ...(kind === 'purge' || kind === 'forget' ? { markdown: markdown(text) } : { type: 'concept', title: kind === 'graph' ? 'Orion' : text.slice(0, 60), content: text }) })
+      const page = await request<{ id: string }>('/wiki/pages', { path: 'wiki/concepts/target.md', ...(kind === 'purge' || kind === 'forget' || kind === 'purge-crash-recovery' ? { markdown: markdown(text) } : { type: 'concept', title: kind === 'graph' ? 'Orion' : text.slice(0, 60), content: text }) })
       pageId = page.id
       if (scenario.setup.sensitivity) await request(`/wiki/pages/${pageId}`, { sensitivity: scenario.setup.sensitivity }, 'PUT')
+    }
+    if (kind === 'purge-crash-recovery') {
+      const domain = harness?.context.storageDomain.get('riko_memory')
+      if (domain === undefined) throw new Error('riko_memory storage domain is not registered by the live harness')
+      const scope = memoryScopeForPreset('test-owner', 'standard')
+      await request('/observations', {
+        text: scenario.setup.text,
+        sourceRefs: [`session:${sessionId}/event:0`],
+      })
+      await domain.table('sessions').put(scopedRecordKey(scope, sessionId), {
+        schemaVersion: 2,
+        scope,
+        sessionId,
+        lines: [JSON.stringify({ seq: 0, type: 'user/message', data: scenario.setup.text })],
+      })
+      const jobId = `${sessionId}-purge-job`
+      await domain.table('jobs').put(scopedRecordKey(scope, jobId), {
+        schemaVersion: 2,
+        scope,
+        job: { id: jobId, sessionId, status: 'pending' },
+      })
+      const plan = await request<{ confirmation: string }>('/purge', { sessionId, dryRun: true })
+      const operationId = `purge-${plan.confirmation}`
+      await domain.table('purges').put(scopedRecordKey(scope, operationId), {
+        schemaVersion: 2,
+        scope,
+        purge: { operationId, sessionId, status: 'started', startedAt: new Date().toISOString() },
+      })
     }
     if (kind === 'long-tail') {
       for (let index = 0; index < 300; index += 1) append(`unrelated intervening turn ${index}`)
@@ -340,7 +375,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
         else expect(state.lastError).toBeTruthy()
       }, { timeout: 15_000 })
     }
-    if (kind === 'restart' || kind === 'purge' || kind === 'evidence') {
+    if (kind === 'restart' || kind === 'purge' || kind === 'evidence' || kind === 'purge-crash-recovery') {
       // The evidence trial restarts for the same reason the others do — to read state back from durable
       // records rather than from the process that wrote it. Its classification is not patched on the way:
       // the value the capture rule wrote is what the restarted service has to reload and honour.
@@ -354,6 +389,31 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
     if (kind === 'scope') agent = agentFor(`${sessionId}-other`, profile)
     raw.snapshot = await request<Snapshot>('/wiki', undefined, 'GET', profile)
     raw.resident = raw.snapshot.resident
+    if (kind === 'purge-crash-recovery') {
+      const domain = harness?.context.storageDomain.get('riko_memory')
+      if (domain === undefined) throw new Error('riko_memory storage domain is not registered by the live harness')
+      const scope = memoryScopeForPreset('test-owner', 'standard')
+      const purges = await request<{ purges: Array<{ operationId: string; sessionId: string; status: string }> }>('/purges')
+      const journal = [...domain.table('purges').entries()]
+        .map(([, value]) => (value as { purge?: { operationId?: string; sessionId?: string; status?: string } }).purge)
+        .find(value => value?.sessionId === sessionId)
+      const completed = purges.purges.some(purge => purge.sessionId === sessionId && purge.status === 'completed')
+      const cascadeTables = [
+        'profiles', 'pages', 'candidates', 'sources', 'sessions', 'jobs', 'observations', 'audits',
+        'suppressions', 'activation', 'index_meta', 'vectors', 'aliases', 'projections', 'conflicts',
+      ]
+      const residue = cascadeTables.flatMap(tableName => [...domain.table(tableName).entries()].filter(([, value]) => {
+        const text = JSON.stringify(value)
+        return text.includes(sessionId) || text.includes(scenario.setup.text)
+      }))
+      raw.checks.purgeCrashRecovery = completed
+        && journal !== undefined
+        && domain.table('purges').get(scopedRecordKey(scope, journal.operationId!)) !== undefined
+        && !raw.snapshot.sessions.includes(sessionId)
+        && !JSON.stringify(raw.snapshot.pages).includes(scenario.setup.text)
+        && !(raw.snapshot.observations ?? []).some(observation => observation.text.includes(scenario.setup.text))
+        && residue.length === 0
+    }
     const recalled = await request<{ results: RecallResult[]; context: string }>('/recall', { query: scenario.userTurn, ...(kind === 'historical' ? { history: true } : {}) }, 'POST', profile)
     raw.results = recalled.results
     const debug = await request<{ trace: RecallTrace }>('/recall/debug', { query: scenario.userTurn, ...(kind === 'historical' ? { history: true } : {}) }, 'POST', profile)
@@ -377,7 +437,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
     if (kind === 'overflow') raw.checks.wholeItemBudget = raw.resident.length <= 256 && !raw.resident.includes('oversized whole item')
     if (kind === 'evidence') raw.checks.rawRecovery = raw.results.some(result => result.sourceType === 'evidence' && result.text.includes('B-417'))
     if (kind === 'correct') raw.checks.correction = !JSON.stringify([raw.snapshot.pages, raw.resident, raw.results]).includes(scenario.setup.text) && raw.snapshot.pages.some(page => page.description.includes(scenario.setup.replacement!))
-    if (kind === 'forget' || kind === 'purge') raw.checks.derivedLeakage = !JSON.stringify([raw.snapshot.pages, raw.snapshot.candidates, raw.resident, raw.results, raw.injected]).includes(scenario.setup.text)
+    if (kind === 'forget' || kind === 'purge' || kind === 'purge-crash-recovery') raw.checks.derivedLeakage = !JSON.stringify([raw.snapshot.pages, raw.snapshot.candidates, raw.resident, raw.results, raw.injected]).includes(scenario.setup.text)
     if (kind === 'purge') { raw.diskMatches = await diskMatches(join(root, 'storages'), scenario.setup.text); raw.checks.diskLeakage = raw.diskMatches.length === 0 }
     const output = scenario.id === 'F.27' || scenario.id === 'F.24' ? raw.injected : raw.injected + raw.resident
     if (scenario.expected.excludes !== undefined) raw.checks.exclusion = !output.includes(scenario.expected.excludes)

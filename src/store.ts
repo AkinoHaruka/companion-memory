@@ -1113,43 +1113,13 @@ export class MemoryProfileStore {
       const lines = this.sessionLines.get(sessionId)
       if (lines === undefined || eventIndex >= lines.length) return
       if (this.explicitEvidenceSensitivity(sessionId, eventIndex) === sensitivity) return
-      const refusal = this.evidenceLooseningRefusal(sessionId, eventIndex, sensitivity, 'authority')
+      const refusal = this.evidenceLooseningRefusal(sessionId, eventIndex, sensitivity)
       if (refusal !== undefined && authority !== 'user' && authority !== 'management') {
         await this.audit('evidence-sensitivity-rejected', { sessionId, eventIndex, ...this.evidenceRefusalDetail(sessionId, eventIndex, sensitivity, authority), reason: refusal })
         return
       }
       this.setEvidenceMarker(sessionId, eventIndex, sensitivity, authority)
       changed = true; this.markSuccess(); await this.persist(); await this.audit('evidence-sensitivity-marked', { sessionId, eventIndex, sensitivity, ...(authority === undefined ? {} : { authority }) })
-    })
-    return changed
-  }
-  /** Record a model-proposed classification for one index-aligned L0 event.
-   *
-   * The authority is fixed to `model_proposal` and is never taken from the caller: a proposal tightens,
-   * it never relaxes. An unclassified event may be proposed `provisional_sensitive` or `sensitive`,
-   * because both keep it out of ordinary use, but never `normal`, because no rule has cleared it. A
-   * value already stored explicitly is only ever raised; equal proposals are no-ops.
-   * @param sessionId Session owning the event.
-   * @param eventIndex Zero-based index in the persisted session lines.
-   * @param sensitivity The proposed classification.
-   * @returns Whether the marker changed; a refused proposal writes an audit row and changes nothing.
-   */
-  async proposeEvidenceSensitivity(sessionId: string, eventIndex: number, sensitivity: MemorySensitivity): Promise<boolean> {
-    await this.waitReady()
-    if (!Number.isInteger(eventIndex) || eventIndex < 0) throw new Error('evidence eventIndex must be a non-negative integer')
-    if (sensitivity !== 'normal' && sensitivity !== 'provisional_sensitive' && sensitivity !== 'sensitive') throw new Error('evidence sensitivity must be normal, provisional_sensitive or sensitive')
-    let changed = false
-    await this.mutate(async () => {
-      const lines = this.sessionLines.get(sessionId)
-      if (lines === undefined || eventIndex >= lines.length) return
-      if (this.explicitEvidenceSensitivity(sessionId, eventIndex) === sensitivity) return
-      const refusal = this.evidenceLooseningRefusal(sessionId, eventIndex, sensitivity, 'proposal')
-      if (refusal !== undefined) {
-        await this.audit('evidence-sensitivity-rejected', { sessionId, eventIndex, ...this.evidenceRefusalDetail(sessionId, eventIndex, sensitivity, 'model_proposal'), reason: refusal })
-        return
-      }
-      this.setEvidenceMarker(sessionId, eventIndex, sensitivity, 'model_proposal')
-      changed = true; this.markSuccess(); await this.persist(); await this.audit('evidence-sensitivity-marked', { sessionId, eventIndex, sensitivity, authority: 'model_proposal' })
     })
     return changed
   }
@@ -1161,13 +1131,12 @@ export class MemoryProfileStore {
    * @param sessionId Session owning the event.
    * @param eventIndex Zero-based index in the persisted session lines.
    * @param sensitivity The value the caller wants to store.
-   * @param caller Which write path is asking, since only a proposal is barred from relaxing outright.
    * @returns A short reason for the refusal, or undefined when the write may proceed.
    */
-  private evidenceLooseningRefusal(sessionId: string, eventIndex: number, sensitivity: MemorySensitivity, caller: 'authority' | 'proposal'): string | undefined {
+  private evidenceLooseningRefusal(sessionId: string, eventIndex: number, sensitivity: MemorySensitivity): string | undefined {
     const explicit = this.explicitEvidenceSensitivity(sessionId, eventIndex)
     if (explicit === undefined) return sensitivity === 'normal' ? 'unclassified-target' : undefined
-    if (sensitivityRank(sensitivity) < sensitivityRank(explicit)) return caller === 'proposal' ? 'proposal-loosens-explicit-value' : 'loosening-requires-authority'
+    if (sensitivityRank(sensitivity) < sensitivityRank(explicit)) return 'loosening-requires-authority'
     return undefined
   }
   /** The audit detail of one refused write, naming the state the refusal was judged against. */

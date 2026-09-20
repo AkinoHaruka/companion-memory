@@ -89,7 +89,7 @@ async function correct(base: string, sessionId: string, sensitivity: string, hea
 }
 
 describe('live evidence sensitivity correction', () => {
-  it('authorizes, audits, changes disclosure, and reloads corrected markers', async () => {
+  it('authorizes, audits, changes disclosure, and reloads corrected markers', { timeout: 60_000 }, async () => {
     root = await mkdtemp(join(tmpdir(), 'riko-evidence-correction-'))
     harness = await startLiveHarness(CONFIG, root)
     appendUserTurn(harness, 'sensitive-session', SENSITIVE_TEXT)

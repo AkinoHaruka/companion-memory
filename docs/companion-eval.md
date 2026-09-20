@@ -44,7 +44,7 @@ Each entry names a `setup.kind`, the text used to create or mutate durable state
 
 Judgments describe fixture facts only: `contains`, `excludes` and `candidateJudgments` are authored against the scenario, never against runner output, so an assertion cannot be satisfied by feeding a recorded result back into the expectation.
 
-Twenty-nine scenarios execute. Three carry an `unsupported` reason instead and are asserted as unsupported: F.21 (reranker failure), F.22 (graph failure) and F.30 (deletion crash). F.28 creates an active observation through the authenticated observations route, submits supporting and contradicting evidence through its evidence route, and expects silence after contradictions outnumber supports and invalidate the observation.
+Twenty-eight scenarios execute. Two carry an `unsupported` reason instead and are asserted as unsupported: F.21 (reranker failure) and F.22 (graph failure). F.28 creates an active observation through the authenticated observations route, submits supporting and contradicting evidence through its evidence route, and expects silence after contradictions outnumber supports and invalidate the observation. F.30 seeds a started purge journal through the real Loader storage domain, restarts the Loader and checks completion with no cascade residue.
 
 Three execute only when the capability they measure is switched on: F.05 marks an exact number recallable, and F.09 and F.10 require the user's hedged original to come back verbatim instead of being reduced to a non-disclosing projection. They declare `requiresEvidenceClassification`, so the runner starts their harness with `evidenceClassificationEnabled: true`, and a run with the capability off reports them as unsupported with a reason that says which capability was missing, rather than scoring them against a channel the run could not open.
 
@@ -130,7 +130,7 @@ The keyless focused suite runs with no answer provider and therefore checks the 
 
 ## Real-provider campaign
 
-The campaign spec runs all thirty Appendix F scenarios with the real Dream endpoint and the real final-answer endpoint. It uses the same `dreamApiUrl` value for each scenario, passes the Dream credential through the disposable `DSH_MEMORY_DREAM_API_KEY` credential reference, and proxies only that Dream URL while preserving the fixture handlers for other URLs. It keeps the corpus rules unchanged: F.05, F.09 and F.10 start with evidence classification enabled, and the three declared unsupported scenarios remain unsupported with their recorded reasons.
+The campaign spec runs all thirty Appendix F scenarios with the real Dream endpoint and the real final-answer endpoint. It uses the same `dreamApiUrl` value for each scenario, passes the Dream credential through the disposable `DSH_MEMORY_DREAM_API_KEY` credential reference, and proxies only that Dream URL while preserving the fixture handlers for other URLs. It keeps the corpus rules unchanged: F.05, F.09 and F.10 start with evidence classification enabled, and the two declared unsupported scenarios remain unsupported with their recorded reasons.
 
 Set these process variables before the run:
 

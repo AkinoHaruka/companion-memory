@@ -39,10 +39,11 @@ describe.skipIf(endpoint === undefined)('real dense recall ablation (BGE-small-z
   }
 
   it('runs the same corpus scenarios in both trials without execution errors', () => {
+    const executableCorpusLength = companionCorpus.filter(scenario => scenario.unsupported === undefined).length
     expect(ablation.denseOff.outcomes).toHaveLength(companionCorpus.length)
     expect(ablation.denseOn.outcomes).toHaveLength(companionCorpus.length)
-    expect(executed(ablation.denseOff.outcomes)).toHaveLength(26)
-    expect(executed(ablation.denseOn.outcomes)).toHaveLength(26)
+    expect(executed(ablation.denseOff.outcomes)).toHaveLength(executableCorpusLength)
+    expect(executed(ablation.denseOn.outcomes)).toHaveLength(executableCorpusLength)
     expect(ablation.denseOff.outcomes.some(outcome => outcome.status === 'error')).toBe(false)
     expect(ablation.denseOn.outcomes.some(outcome => outcome.status === 'error')).toBe(false)
   })
