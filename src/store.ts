@@ -517,7 +517,7 @@ export class MemoryProfileStore {
     return {
       profileId: this.profileId,
       records,
-      candidates: this.candidates.map(cloneCandidate),
+      candidates: this.candidates.filter(candidate => candidate.status !== 'rejected').map(cloneCandidate),
       aliases: this.listAliases(),
       observations: this.observations.map(cloneObservation),
       pages,
@@ -935,6 +935,8 @@ export class MemoryProfileStore {
     return { sessionId: normalized, impact, confirmation }
   }
   /** Execute a dry-run or explicitly authorized, resumable session purge.
+   * A process interruption leaves a `started` journal for automatic resume; a caught operation error rolls back
+   * the purge and records `failed`, which restart recovery leaves untouched for explicit retry.
    * @param sessionId The session id.
    * @param options The options.
    * @returns The resulting value.
@@ -959,7 +961,21 @@ export class MemoryProfileStore {
             this.verifyPurge(normalized, purgeContent)
             const completed: MemoryPurgeRecord = { ...started, status: 'completed', completedAt: new Date().toISOString() }; this.replacePurge(completed); await this.audit('raw-session-purged', { operationId, sessionIdHash: contentHash(normalized).slice(0, 24) }); await this.persist(); changed = true
           } catch (error) {
-            try { await this.restoreDurableState(journalDurable ?? beforeDurable) } finally { this.restoreRuntimeState(beforeJournal) }
+            let rollbackFailed = false
+            let rollbackError: unknown
+            try { await this.restoreDurableState(journalDurable ?? beforeDurable) } catch (error) { rollbackFailed = true; rollbackError = error }
+            this.restoreRuntimeState(beforeJournal)
+            const failed: MemoryPurgeRecord = { ...started, status: 'failed', error: sanitizeProviderError(error instanceof Error ? error.message : String(error)) }
+            try {
+              await this.table<MemoryPurgeRow>('purges').put(
+                scopedRecordKey(this.scope, operationId),
+                { schemaVersion: 2, scope: this.scope, purge: failed },
+              )
+              this.replacePurge(failed)
+            } catch (journalError) {
+              throw new AggregateError([error, ...(rollbackFailed ? [rollbackError] : []), journalError], 'purge failed and its failure journal could not be recorded')
+            }
+            if (rollbackFailed) throw new AggregateError([error, rollbackError], 'purge failed and rollback failed')
             throw error
           }
         } finally {
@@ -1325,20 +1341,34 @@ export class MemoryProfileStore {
    * @returns The resulting value.
    */
   async confirm(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const candidate = this.candidates.find(item => item.id === id && item.status === 'candidate'); if (!candidate) return; const conflict = candidate.conflictPageId === undefined ? this.pages.find(page => page.path === candidate.proposedPath) : this.pages.find(page => page.id === candidate.conflictPageId); if (conflict?.locked) return; found = true; this.commitPage(this.normalizeIncomingPage({ ...candidate.page, status: 'confirmed', consent: true, locked: true }, true)); this.candidates = this.candidates.filter(item => item.id !== id); this.markSuccess(); await this.persist(); await this.audit('candidate-confirmed', { id }) }); return found }
-  /** Reject one candidate while retaining a durable audit record.
+  /** Reject one candidate while retaining its durable rejected state and audit record.
    * @param id The id.
    * @returns The resulting value.
    */
-  async reject(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { if (!this.candidates.some(item => item.id === id && item.status === 'candidate')) return; found = true; this.candidates = this.candidates.filter(item => item.id !== id); this.markSuccess(); await this.persist(); await this.audit('candidate-rejected', { id }) }); return found }
+  async reject(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const candidate = this.candidates.find(item => item.id === id && item.status === 'candidate'); if (candidate === undefined) return; found = true; this.candidates[this.candidates.indexOf(candidate)] = { ...candidate, status: 'rejected' }; this.markSuccess(); await this.persist(); await this.audit('candidate-rejected', { id }) }); return found }
   /** Remove derived Wiki data and disclose that raw L0 session evidence remains.
    * @param id The id.
    * @returns The resulting value.
    */
   async forget(id: string): Promise<boolean> { await this.waitReady(); let found = false; await this.mutate(async () => { const page = this.pages.find(item => item.id === id || item.path === id || memoryFromPage(item)?.id === id); if (!page) return; found = true; this.pages = this.pages.filter(item => item.id !== page.id); this.candidates = this.candidates.filter(candidate => candidate.page.id !== page.id && candidate.proposedPath !== page.path && candidate.conflictPageId !== page.id); this.observations = this.observations.filter(observation => !observation.sourceRefs.includes(`page:${page.id}`)); this.activations.delete(`page:${page.id}`); this.projections.delete(page.id); for (const [key, suppression] of this.suppressions) if (suppression.targetKind === 'page' && suppression.targetId === page.id) { for (const ref of this.policyEvidenceBySuppression.get(key) ?? []) this.policyEvidenceRefs.delete(ref); this.policyEvidenceBySuppression.delete(key); this.suppressions.delete(key) }; for (const [key, conflict] of this.conflicts) if (conflict.oldCanonicalId === page.id || conflict.newCandidateId === page.id) this.conflicts.delete(key); const now = new Date().toISOString(); for (const [key, alias] of this.aliases) if (alias.entityId === page.id && alias.status !== 'invalidated') this.aliases.set(key, { ...alias, schemaVersion: 5, status: 'invalidated', validTo: now, invalidatedAt: now, invalidatedReason: 'canonical entity forgotten', updatedAt: now }); this.rebuildAliasesInMemory(); this.markSuccess(); await this.persist(); await this.audit('derived-memory-forgotten', { id: page.id, rawSessionRetained: true }) }); return found }
-  /** Preserve the last-valid resident while recording a sanitized failure.
+  /** Preserve the last-valid resident while recording a sanitized failure and failing its running Dream source.
    * @param error The error.
    */
-  async markDreamFailure(error: unknown): Promise<void> { await this.waitReady(); await this.mutate(async () => { const message = error instanceof Error ? error.message : String(error); this.state = { ...this.state, lastError: sanitizeProviderError(message) }; await this.persist(); await this.audit('dream-failed', { error: this.state.lastError }) }) }
+  async markDreamFailure(error: unknown): Promise<void> {
+    await this.waitReady()
+    await this.mutate(async () => {
+      const message = sanitizeProviderError(error instanceof Error ? error.message : String(error))
+      this.state = { ...this.state, lastError: message }
+      const failedSessions = new Set([...this.jobs.values()]
+        .filter(job => job.status === 'running' && typeof job.sessionId === 'string')
+        .map(job => job.sessionId as string))
+      this.sources = this.sources.map(source => source.status === 'uploaded' && failedSessions.has(source.ref)
+        ? { ...source, status: 'failed', error: message }
+        : source)
+      await this.persist()
+      await this.audit('dream-failed', { error: this.state.lastError })
+    })
+  }
 
   /** Persist a durable Dream job/cursor record for restart recovery.
    * @param job The job.
@@ -1405,6 +1435,7 @@ export class MemoryProfileStore {
     await this.waitReady(); await this.mutate(async () => { this.rebuildAliasesInMemory(); await this.persist(); await this.audit('aliases-rebuilt') }); return this.listAliases()
   }
 
+  /** Load durable state and resume only an interrupted `started` purge journal; `failed` journals are terminal until an explicit retry. */
   private async load(): Promise<void> {
     const stored = this.table<StoredMemoryState>('profiles').get(storageScopeKey(this.scope)); if (stored && belongsToScope(stored, this.scope)) { this.state = pickState(stored); this.settings = { ...stored.settings } }
     for (const [, record] of this.table<MemoryPageRecord>('pages').entries()) if (belongsToScope(record, this.scope)) this.pages.push(clonePage(record.page))
@@ -1437,7 +1468,7 @@ export class MemoryProfileStore {
     }
     const legacyResident = this.pages.length === 0 && stored?.resident !== undefined && (stored.residentBlocks === undefined || stored.residentBlocks.length === 0) && stored.resident.length > 0
     await withScopeLease(this.scope.key, async () => {
-      for (const purge of this.purges.filter(item => item.status === 'started' || item.status === 'failed')) {
+      for (const purge of this.purges.filter(item => item.status === 'started')) {
         this.applyPurge(purge.sessionId)
         const { error: _error, ...withoutError } = purge; this.replacePurge({ ...withoutError, status: 'completed', completedAt: new Date().toISOString() })
       }

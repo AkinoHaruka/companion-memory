@@ -413,8 +413,8 @@ export interface MemoryConflictRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 
 /** The one versioned durable domain owned by this plugin. */
 export const MEMORY_DOMAIN = defineDomain({
   name: 'riko_memory',
-  version: 5,
-  compatibleVersions: [1, 2, 3, 4],
+  version: 6,
+  compatibleVersions: [1, 2, 3, 4, 5],
   layout: 'per-record',
   tables: {
     profiles: domainTable<string, MemoryStateRecord>(stateSchema as unknown as z.ZodType<MemoryStateRecord>),

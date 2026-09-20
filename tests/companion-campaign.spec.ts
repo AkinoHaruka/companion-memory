@@ -29,10 +29,12 @@ let metrics: Record<string, Metric> = {}
 
 describe.skipIf(missing.length > 0)('Appendix G real-provider companion campaign', () => {
   beforeAll(async () => {
+    if (dreamEndpoint === undefined || dreamKey === undefined) throw new Error('campaign requires a Dream endpoint and key')
+    const dreamModel = process.env.DSH_MEMORY_DREAM_MODEL?.trim()
     const run = await runCompanionCorpus({
       dreamApiUrl: dreamEndpoint,
       dreamApiKey: dreamKey,
-      dreamModel: process.env.DSH_MEMORY_DREAM_MODEL?.trim() || undefined,
+      ...(dreamModel === undefined ? {} : { dreamModel }),
     })
     outcomes = run.outcomes
     console.log(`Appendix G campaign raw results: ${run.path}`)

@@ -12,7 +12,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { memoryScopeForPreset, type MemoryScope } from '../src/contracts.ts'
-import { scopedRecordKey, storageScopeKey } from '../src/memory-domain.ts'
+import { MEMORY_DOMAIN, scopedRecordKey, storageScopeKey } from '../src/memory-domain.ts'
 import { MemoryProfileStore } from '../src/store.ts'
 
 interface DurableWrite {
@@ -104,6 +104,11 @@ async function seedFatScope(store: MemoryProfileStore): Promise<void> {
 }
 
 describe('L0 append write-set complexity', () => {
+  it('uses the version-named domain while accepting every prior domain version', () => {
+    expect(MEMORY_DOMAIN.version).toBe(6)
+    expect(MEMORY_DOMAIN.compatibleVersions).toEqual([1, 2, 3, 4, 5])
+  })
+
   it('writes exactly one record per appended line and never rewrites the scope snapshot', async () => {
     const domain = new CountingDomain(); const store = open(domain); await store.waitReady()
     const burst = await appendBurst(store, domain, 120)

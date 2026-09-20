@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { memoryScopeForPreset } from '../src/contracts.ts'
+import { scopedRecordKey } from '../src/memory-domain.ts'
 import type { EmbeddingProvider } from '../src/recall.ts'
 import { MemoryProfileStore } from '../src/store.ts'
 import type { WikiPage } from '../src/wiki.ts'
@@ -35,9 +36,9 @@ class StorageTable<V> implements Table<V> {
 class TestStorageDomain {
   private readonly tables = new Map<string, StorageTable<unknown>>()
   private failWrites = 0
-  private purgeInterruptionArmed = false
+  private purgeFailureArmed = false
   private journalCommitted = false
-  private interruptionInjected = false
+  private purgeFailureInjected = false
 
   table(name: string): StorageTable<unknown> {
     let table = this.tables.get(name)
@@ -50,10 +51,10 @@ class TestStorageDomain {
 
   failNextWrite(): void { this.failWrites = 1 }
 
-  interruptAfterPurgeJournal(): void {
-    this.purgeInterruptionArmed = true
+  failAfterPurgeJournal(): void {
+    this.purgeFailureArmed = true
     this.journalCommitted = false
-    this.interruptionInjected = false
+    this.purgeFailureInjected = false
   }
 
   afterWrite(name: string): void {
@@ -63,9 +64,9 @@ class TestStorageDomain {
       this.journalCommitted = true
       return
     }
-    if (this.purgeInterruptionArmed && this.journalCommitted && !this.interruptionInjected) {
-      this.interruptionInjected = true
-      throw new Error('injected purge interruption')
+    if (this.purgeFailureArmed && this.journalCommitted && !this.purgeFailureInjected) {
+      this.purgeFailureInjected = true
+      throw new Error('injected purge failure')
     }
     if (this.failWrites > 0) {
       this.failWrites -= 1
@@ -152,6 +153,25 @@ function closeStore(store: MemoryProfileStore): Promise<void> {
   return store.close()
 }
 
+async function seedPurgeData(store: MemoryProfileStore, sessionId: string, phrase: string, jobId: string): Promise<void> {
+  await store.appendSessionEvent(sessionId, JSON.stringify({
+    seq: 1,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: phrase }] },
+  }))
+  await store.appendSessionEvent(sessionId, JSON.stringify({
+    seq: 2,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: `${phrase} repeated` }] },
+  }))
+  await store.upsertManualPage(page('purge-target', phrase, [sessionId]))
+  await store.upsertObservationCandidate({
+    text: `derived ${phrase}`,
+    sourceRefs: [`session:${sessionId}/event:1`, `session:${sessionId}/event:2`],
+  })
+  await store.upsertJob({ id: jobId, sessionId, status: 'pending' })
+}
+
 describe('durable dense-index resilience', () => {
   it('keeps the prior generation and records degraded metadata after a failed rebuild', async () => {
     let failDocuments = false
@@ -223,31 +243,23 @@ describe('durable dense-index resilience', () => {
 })
 
 describe('purge interruption recovery', () => {
-  it('leaves a started durable journal on interruption and resumes with no cascade residue', async () => {
+  it('resumes a started durable journal after interruption with no cascade residue', async () => {
     const domain = new TestStorageDomain()
     const store = open(domain)
     const sessionId = 'session-purge-interruption'
     const phrase = 'purge interruption private phrase'
-    await store.appendSessionEvent(sessionId, JSON.stringify({
-      seq: 1,
-      type: 'user/message',
-      data: { source: { kind: 'user' }, content: [{ type: 'text', text: phrase }] },
-    }))
-    await store.appendSessionEvent(sessionId, JSON.stringify({
-      seq: 2,
-      type: 'user/message',
-      data: { source: { kind: 'user' }, content: [{ type: 'text', text: `${phrase} repeated` }] },
-    }))
-    await store.upsertManualPage(page('purge-target', phrase, [sessionId]))
-    await store.upsertObservationCandidate({
-      text: `derived ${phrase}`,
-      sourceRefs: [`session:${sessionId}/event:1`, `session:${sessionId}/event:2`],
-    })
-    await store.upsertJob({ id: 'purge-interruption-job', sessionId, status: 'pending' })
+    await seedPurgeData(store, sessionId, phrase, 'purge-interruption-job')
     const plan = store.purgePlan(sessionId)
-    domain.interruptAfterPurgeJournal()
-
-    await expect(store.purgeSession(sessionId, { confirmation: plan.confirmation })).rejects.toThrow('injected purge interruption')
+    await domain.table('purges').put(scopedRecordKey(scope, `purge-${plan.confirmation}`), {
+      schemaVersion: 2,
+      scope,
+      purge: {
+        operationId: `purge-${plan.confirmation}`,
+        sessionId,
+        status: 'started',
+        startedAt: new Date().toISOString(),
+      },
+    })
     const journal = [...domain.table('purges').entries()]
       .map(([, record]) => record as { purge?: { operationId?: string; sessionId?: string; status?: string } })
       .find(record => record.purge?.operationId === `purge-${plan.confirmation}`)
@@ -273,6 +285,86 @@ describe('purge interruption recovery', () => {
       })
       expect(retained, tableName).toEqual([])
     }
+  })
+
+  it('records a failed purge and does not resume it after restart', async () => {
+    const domain = new TestStorageDomain()
+    const store = open(domain)
+    const sessionId = 'session-purge-failure'
+    const phrase = 'purge failure private phrase'
+    await seedPurgeData(store, sessionId, phrase, 'purge-failure-job')
+    const plan = store.purgePlan(sessionId)
+    domain.failAfterPurgeJournal()
+
+    await expect(store.purgeSession(sessionId, { confirmation: plan.confirmation })).rejects.toThrow('injected purge failure')
+    const journal = [...domain.table('purges').entries()]
+      .map(([, record]) => record as { purge?: { operationId?: string; sessionId?: string; status?: string; error?: string } })
+      .find(record => record.purge?.operationId === `purge-${plan.confirmation}`)
+    expect(journal?.purge).toEqual(expect.objectContaining({ sessionId, status: 'failed', error: 'injected purge failure' }))
+    expect(await store.sessionEvidence(sessionId)).toContain(phrase)
+    expect(store.listPages().some(item => item.body.includes(phrase))).toBe(true)
+
+    await closeStore(store)
+    const reopened = open(domain)
+    await reopened.waitReady()
+    expect(reopened.listPurges().find(purge => purge.operationId === `purge-${plan.confirmation}`)?.status).toBe('failed')
+    expect(await reopened.sessionEvidence(sessionId)).toContain(phrase)
+    expect(reopened.listPages().some(item => item.body.includes(phrase))).toBe(true)
+  })
+
+  it('keeps a completed purge completed across restart', async () => {
+    const domain = new TestStorageDomain()
+    const store = open(domain)
+    const sessionId = 'session-purge-completed'
+    const phrase = 'purge completed private phrase'
+    await seedPurgeData(store, sessionId, phrase, 'purge-completed-job')
+    const plan = store.purgePlan(sessionId)
+
+    await expect(store.purgeSession(sessionId, { confirmation: plan.confirmation })).resolves.toBe(true)
+    expect(store.listPurges().find(purge => purge.operationId === `purge-${plan.confirmation}`)?.status).toBe('completed')
+    await closeStore(store)
+
+    const reopened = open(domain)
+    await reopened.waitReady()
+    expect(reopened.listPurges().find(purge => purge.operationId === `purge-${plan.confirmation}`)?.status).toBe('completed')
+    expect(await reopened.sessionEvidence(sessionId)).toBeUndefined()
+    await expect(reopened.purgeSession(sessionId, { confirmation: plan.confirmation })).resolves.toBe(false)
+  })
+})
+
+describe('declared lifecycle state producers', () => {
+  it('retains a rejected candidate as a durable candidate state', async () => {
+    const domain = new TestStorageDomain()
+    const store = open(domain)
+    const candidatePage = page('rejected-candidate', 'rejected candidate', ['rejected-source'])
+    await store.ingestPages([{ ...candidatePage, status: 'candidate', consent: false, locked: false }], new Date().toISOString())
+    const candidate = store.snapshot().candidates[0]
+    if (candidate === undefined) throw new Error('expected candidate')
+
+    await expect(store.reject(candidate.id)).resolves.toBe(true)
+    expect(store.snapshot().candidates).toEqual([])
+    const durable = [...domain.table('candidates').entries()]
+      .map(([, record]) => record as { candidate?: { id?: string; status?: string } })
+      .find(record => record.candidate?.id === candidate.id)
+    expect(durable?.candidate?.status).toBe('rejected')
+  })
+
+  it('records a failed source for the running Dream job', async () => {
+    const domain = new TestStorageDomain()
+    const store = open(domain)
+    const sessionId = 'source-failure-session'
+    await store.appendSessionEvent(sessionId, 'source failure evidence')
+    await store.upsertJob({ id: 'source-failure-job', sessionId, status: 'running' })
+
+    await store.markDreamFailure(new Error('dream provider failed'))
+    expect(store.listSources().find(source => source.ref === sessionId)).toEqual(expect.objectContaining({
+      status: 'failed',
+      error: 'dream provider failed',
+    }))
+    const durable = [...domain.table('sources').entries()]
+      .map(([, record]) => record as { source?: { ref?: string; status?: string; error?: string } })
+      .find(record => record.source?.ref === sessionId)
+    expect(durable?.source).toEqual(expect.objectContaining({ status: 'failed', error: 'dream provider failed' }))
   })
 })
 

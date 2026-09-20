@@ -641,6 +641,20 @@ export class RikoMemoryService extends Service {
       if (req.method === 'GET' && parts[0] === 'wiki') { sendJson(res, 200, managementSnapshot(store.snapshot(), store)); return }
       if (req.method === 'GET' && parts[0] === 'resident') { sendJson(res, 200, { profileId: profile, resident: store.renderResident(), rawSessionRetention: 'raw Session evidence is retained unless separately purged by a future capability' }); return }
       if (req.method === 'GET' && parts[0] === 'sessions') { if (parts[1]) { const evidence = await store.sessionEvidence(parts[1]); if (evidence === undefined) { sendJson(res, 404, { error: 'session not found' }); return } const reveal = requestUrl.searchParams.get('reveal') === 'sensitive'; if (reveal && !authentication.ownerAdmin) { await this.auditSensitiveRevealRejected(store, 'session', parts[1]); sendJson(res, 403, { error: 'owner-admin capability required for sensitive reveal' }); return } if (reveal) await this.auditSensitiveReveal(store, 'session', parts[1]); sendJson(res, 200, reveal ? { profileId: profile, sessionId: parts[1], evidence, redacted: false } : { profileId: profile, sessionId: parts[1], evidence: { lineCount: evidence.trimEnd().split('\n').length, sha256: contentHash(evidence), bytes: Buffer.byteLength(evidence), classificationCounts: store.evidenceClassificationCounts(parts[1]) }, redacted: true }); return } sendJson(res, 200, { profileId: profile, sessions: store.snapshot().sessions }); return }
+      if (req.method === 'PUT' && parts[0] === 'sessions' && parts[1] && parts[2] === 'evidence' && parts[3] && parts[4] === 'sensitivity' && parts.length === 5) {
+        const input = await readJsonBody(req)
+        if (!input || typeof input !== 'object') throw new Error('evidence sensitivity correction body must be an object')
+        const body = input as Record<string, unknown>
+        const sensitivity = parseMemorySensitivity(body.sensitivity)
+        if (sensitivity === undefined) { sendJson(res, 400, { error: 'sensitivity must be normal, provisional_sensitive or sensitive' }); return }
+        const eventIndex = Number(parts[3])
+        if (!Number.isInteger(eventIndex) || eventIndex < 0) { sendJson(res, 400, { error: 'evidence eventIndex must be a non-negative integer' }); return }
+        const evidence = await store.sessionEvidence(parts[1])
+        if (evidence === undefined || eventIndex >= evidence.trimEnd().split('\n').length) { sendJson(res, 404, { error: 'evidence event not found' }); return }
+        const authority = authentication.ownerAdmin ? 'management' : 'user'
+        const changed = await store.markEvidenceSensitivity(parts[1], eventIndex, sensitivity, authority)
+        sendJson(res, 200, { profileId: profile, sessionId: parts[1], eventIndex, sensitivity, authority, changed }); return
+      }
       if (req.method === 'GET' && parts[0] === 'candidates') { sendJson(res, 200, { profileId: profile, candidates: store.snapshot().candidates.map(projectCandidate) }); return }
       if (req.method === 'GET' && parts[0] === 'observations') { sendJson(res, 200, { profileId: profile, observations: store.listObservations().map(projectObservation) }); return }
       if (req.method === 'GET' && parts[0] === 'purges') { sendJson(res, 200, { profileId: profile, purges: store.listPurges() }); return }
