@@ -9,9 +9,22 @@ import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RecallResult, RecallTrace } from '../../src/recall.ts'
 import { companionCorpus, type CompanionScenario } from './companion-corpus.ts'
-import { answerGeneratorFromEnvironment, type AnswerGenerator } from './answer-evaluation.ts'
+import {
+  answerGeneratorFromEnvironment,
+  createProviderRequestGate,
+  fetchWithProviderRetry,
+  type AnswerGenerator,
+  type ProviderRequestGate,
+} from './answer-evaluation.ts'
 import { startLiveHarness, drainInFlight, evidenceDrainBudgetMs, readPersistedEvidence, testAgent, type LiveHarness } from './live-harness.ts'
 import { fetchLive } from './live-http.ts'
+
+/** Environment variable selecting the real Dream chat-completions endpoint for a campaign. */
+export const DREAM_ENDPOINT_ENV = 'DSH_MEMORY_DREAM_ENDPOINT'
+/** Environment variable supplying the credential written to the campaign's disposable credentials file. */
+export const DREAM_KEY_ENV = 'DSH_MEMORY_DREAM_KEY'
+
+const FIXTURE_DREAM_API_URL = 'https://api.test/api/v1/chat/completions'
 
 interface Snapshot {
   pages: Array<{ id: string; description: string; title: string; status: string }>
@@ -95,6 +108,14 @@ export interface CorpusRunOptions {
   readonly denseEmbedding?: { readonly endpoint: string; readonly model: string; readonly credentialRef: string }
   /** Optional final-answer provider; when absent, the environment-selected provider is used. */
   readonly answerGenerator?: AnswerGenerator
+  /** Dream endpoint override; defaults to `DSH_MEMORY_DREAM_ENDPOINT` or the fixture endpoint. */
+  readonly dreamApiUrl?: string
+  /** Credential passed to `startLiveHarness`; defaults to `DSH_MEMORY_DREAM_KEY` when configured. */
+  readonly dreamApiKey?: string
+  /** Optional Dream model override for a real-provider run. */
+  readonly dreamModel?: string
+  /** Shared provider pacing state for one corpus run. */
+  readonly providerGate?: ProviderRequestGate
 }
 
 /** One corpus execution set for one side of the dense ablation. */
@@ -140,7 +161,8 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
   const root = await mkdtemp(join(tmpdir(), 'riko-companion-'))
   let harness: LiveHarness | undefined
   const nativeFetch = globalThis.fetch
-  const answerGenerator = options.answerGenerator ?? answerGeneratorFromEnvironment()
+  const providerGate = options.providerGate ?? createProviderRequestGate()
+  const answerGenerator = options.answerGenerator ?? answerGeneratorFromEnvironment(providerGate, nativeFetch)
   const kind = scenario.setup.kind
   const sessionId = `eval-${scenario.id.replace('.', '-')}`
   let providerCalls = 0
@@ -151,17 +173,41 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
     : options.denseEmbedding
       ? ['    recallVectorEnabled: true', '    embeddingProvider: openai-compatible', `    embeddingEndpoint: ${options.denseEmbedding.endpoint}`, `    embeddingModel: ${options.denseEmbedding.model}`, `    embeddingCredentialRef: ${options.denseEmbedding.credentialRef}`]
       : [`    recallVectorEnabled: ${String(options.denseEnabled)}`, '    embeddingProvider: deterministic']
-  const config = ['    recallEnabled: true', '    purgeEnabled: true', '    recallGraphEnabled: true', '    temporalEnabled: true', '    dreamApiUrl: https://api.test/api/v1/chat/completions', ...(scenario.requiresEvidenceClassification === true ? ['    evidenceClassificationEnabled: true'] : []), ...(kind === 'overflow' || kind === 'long-tail' ? ['    maxResidentChars: 256'] : []), ...denseConfig]
+  const configuredDreamApiUrl = options.dreamApiUrl?.trim() || process.env[DREAM_ENDPOINT_ENV]?.trim()
+  const campaignMode = configuredDreamApiUrl !== undefined && configuredDreamApiUrl !== FIXTURE_DREAM_API_URL
+  const dreamApiUrl = configuredDreamApiUrl || FIXTURE_DREAM_API_URL
+  const dreamApiKey = options.dreamApiKey ?? process.env[DREAM_KEY_ENV]
+  const config = [
+    '    recallEnabled: true',
+    '    purgeEnabled: true',
+    '    recallGraphEnabled: true',
+    '    temporalEnabled: true',
+    `    dreamApiUrl: ${JSON.stringify(dreamApiUrl)}`,
+    ...(options.dreamModel === undefined ? [] : [`    dreamModel: ${JSON.stringify(options.dreamModel)}`]),
+    ...(scenario.requiresEvidenceClassification === true ? ['    evidenceClassificationEnabled: true'] : []),
+    ...(kind === 'overflow' || kind === 'long-tail' ? ['    maxResidentChars: 256'] : []),
+    ...denseConfig,
+  ]
   const markdown = (text: string): string => `---\ntype: concept\ntitle: ${text}\ndescription: ${text}\nsources:\n  - ${sessionId}\ntimestamp: 2026-09-19T00:00:00.000Z\nconfidence: 0.9\nstatus: confirmed\nconsent: true\nlocked: true\n---\n${text}\n`
-  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input).startsWith('https://api.test/embeddings')) return Promise.resolve(new Response('{}', { status: 503 }))
-    if (String(input) !== 'https://api.test/api/v1/chat/completions') return nativeFetch(input, init)
-    providerCalls += 1
-    if (kind === 'dream-failure') return Promise.resolve(new Response('{}', { status: 503 }))
-    return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: `<<<FILE path="wiki/concepts/candidate.md">>>\n${markdown(scenario.setup.text)}<<<END>>>` } }] })))
-  }) as typeof fetch
+  globalThis.fetch = campaignMode
+    ? ((input: RequestInfo | URL, init?: RequestInit) => {
+      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (inputUrl.startsWith('https://api.test/embeddings')) return Promise.resolve(new Response('{}', { status: 503 }))
+      if (inputUrl !== dreamApiUrl) return nativeFetch(input, init)
+      // The degradation trial injects its own provider failure. A live endpoint would answer it, so the
+      // fault stays in the fixture; the call is counted once because the plugin did make one.
+      if (kind === 'dream-failure') { providerCalls += 1; return Promise.resolve(new Response('{}', { status: 503 })) }
+      return fetchWithProviderRetry(input, init, { gate: providerGate, fetchImpl: nativeFetch, onAttempt: () => { providerCalls += 1 } })
+    })
+    : ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith('https://api.test/embeddings')) return Promise.resolve(new Response('{}', { status: 503 }))
+      if (String(input) !== FIXTURE_DREAM_API_URL) return nativeFetch(input, init)
+      providerCalls += 1
+      if (kind === 'dream-failure') return Promise.resolve(new Response('{}', { status: 503 }))
+      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: `<<<FILE path="wiki/concepts/candidate.md">>>\n${markdown(scenario.setup.text)}<<<END>>>` } }] })))
+    })
   try {
-    harness = await startLiveHarness(config, root)
+    harness = await startLiveHarness(config, root, dreamApiKey)
     await vi.waitFor(() => { expect(harness?.context.webServer.port).toBeGreaterThan(0) }, { timeout: 15_000 })
     const request = async <T>(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST', profile = 'standard'): Promise<T> => {
       let response: Response
@@ -267,7 +313,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       // the value the capture rule wrote is what the restarted service has to reload and honour.
       await harness.dispose()
       harness = undefined
-      harness = await startLiveHarness(config, root)
+      harness = await startLiveHarness(config, root, dreamApiKey)
       await vi.waitFor(() => { expect(harness?.context.webServer.port).toBeGreaterThan(0) }, { timeout: 15_000 })
       agent = agentFor(`${sessionId}-restart`)
     }
@@ -404,8 +450,9 @@ export async function runCompanionCorpus(options: CorpusRunOptions = {}): Promis
   await writeFile(join(run, RUN_OWNER_FILE), JSON.stringify({ pid: process.pid }))
   const path = join(run, 'raw-results.json')
   const outcomes: RawOutcome[] = []
+  const providerGate = options.providerGate ?? createProviderRequestGate()
   for (const scenario of companionCorpus) {
-    outcomes.push(await executeCompanion(scenario, options))
+    outcomes.push(await executeCompanion(scenario, { ...options, providerGate }))
     await writeFile(path, JSON.stringify({ schemaVersion: 1, outcomes }, null, 2) + '\n')
   }
   return { path, outcomes }

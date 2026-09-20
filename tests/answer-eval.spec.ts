@@ -1,8 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RecallResult } from '../src/recall.ts'
 import { companionCorpus } from './support/companion-corpus.ts'
 import { executeCompanion, type RawOutcome } from './support/companion-runner.ts'
+import {
+  answerGeneratorFromEnvironment,
+  createProviderRequestGate,
+  fetchWithProviderRetry,
+} from './support/answer-evaluation.ts'
 import { aggregateMetrics } from './support/evaluation-metrics.ts'
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.restoreAllMocks()
+})
 
 function scenario(id: string) {
   const found = companionCorpus.find(value => value.id === id)
@@ -93,6 +103,76 @@ describe('companion answer-side metrics', () => {
     expect(metrics.semanticDriftRate?.reason).toBe(
       'No multi-round semantic consolidation provider or human equivalence judgments in the deterministic Loader fixture.',
     )
+  })
+
+  it('maps the model-selected answer provider to OpenAI-compatible messages without requiring a key', async () => {
+    vi.stubEnv('DSH_MEMORY_ANSWER_ENDPOINT', 'https://answer.example/v1/chat/completions')
+    vi.stubEnv('DSH_MEMORY_ANSWER_MODEL', 'answer-model')
+    vi.stubEnv('DSH_MEMORY_ANSWER_KEY', '')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'generated answer' } }] })),
+    )
+    const generator = answerGeneratorFromEnvironment()
+    if (generator === undefined) throw new Error('expected answer generator')
+    const request = {
+      scenario: scenario('F.27'),
+      userTurn: 'What should I do?', injectedContext: '<memory>safe context</memory>', resident: '', results: [],
+    }
+    await expect(generator(request)).resolves.toBe('generated answer')
+    const [input, init] = fetchMock.mock.calls[0]!
+    expect(input).toBe(
+      'https://answer.example/v1/chat/completions',
+    )
+    expect(init?.headers).toEqual({ 'content-type': 'application/json' })
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: 'answer-model',
+      messages: [
+        { role: 'system', content: '<memory>safe context</memory>' },
+        { role: 'user', content: 'What should I do?' },
+      ],
+    })
+  })
+
+  it('retries provider throttling and server failures with bounded, header-aware backoff', async () => {
+    const successfulResponses = [new Response('{}', { status: 429 }), new Response('{}', { status: 200 })]
+    const successfulFetch = vi.fn(async () => successfulResponses.shift()!)
+    const success = await fetchWithProviderRetry('https://provider.example/chat', undefined, {
+      gate: createProviderRequestGate({ minIntervalMs: 0, maxRetries: 1 }),
+      fetchImpl: successfulFetch,
+      sleep: async () => {},
+    })
+    expect(success.status).toBe(200)
+    expect(successfulFetch).toHaveBeenCalledTimes(2)
+
+    const badRequestFetch = vi.fn(async () => new Response('{}', { status: 400 }))
+    const badRequest = await fetchWithProviderRetry('https://provider.example/chat', undefined, {
+      gate: createProviderRequestGate({ minIntervalMs: 0, maxRetries: 3 }),
+      fetchImpl: badRequestFetch,
+      sleep: async () => {},
+    })
+    expect(badRequest.status).toBe(400)
+    expect(badRequestFetch).toHaveBeenCalledTimes(1)
+
+    const failureDelays: number[] = []
+    const failingFetch = vi.fn(async () => new Response('{}', { status: 503 }))
+    const finalFailure = await fetchWithProviderRetry('https://provider.example/chat', undefined, {
+      gate: createProviderRequestGate({ minIntervalMs: 0, maxRetries: 2 }),
+      fetchImpl: failingFetch,
+      sleep: async (milliseconds) => { failureDelays.push(milliseconds) },
+    })
+    expect(finalFailure.status).toBe(503)
+    expect(failingFetch).toHaveBeenCalledTimes(3)
+    expect(failureDelays).toEqual([1_000, 2_000])
+
+    const delays: number[] = []
+    const retryAfterResponses = [new Response('{}', { status: 429, headers: { 'retry-after': '7' } }), new Response('{}', { status: 200 })]
+    const retryAfterFetch = vi.fn(async () => retryAfterResponses.shift()!)
+    await fetchWithProviderRetry('https://provider.example/chat', undefined, {
+      gate: createProviderRequestGate({ minIntervalMs: 0, maxRetries: 1 }),
+      fetchImpl: retryAfterFetch,
+      sleep: async (milliseconds) => { delays.push(milliseconds) },
+    })
+    expect(delays).toEqual([7_000])
   })
 
   it('counts projection presence and disclosure-withheld text per recalled document', () => {

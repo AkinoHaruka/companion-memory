@@ -21,6 +21,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
 import RikoMemoryService from '../../src/index.ts'
 
+const DEFAULT_DREAM_API_KEY = 'fixture-secret'
+
 /**
  * Budget for the L0 persistence chain behind one drain, derived from its measured cost.
  *
@@ -109,9 +111,12 @@ export async function awaitLiveReady(context: Context): Promise<void> {
  * Start one isolated Loader composition with deterministic local storage.
  * @param config - Memory plugin YAML fields.
  * @param rootOverride - Caller-owned storage root for sequential restart tests.
+ * @param dreamApiKey - Credential written to `DSH_MEMORY_DREAM_API_KEY`; defaults to the fixture value.
  * @returns A ready composition; disposal removes only a harness-owned root.
  */
-export async function startLiveHarness(config: readonly string[] = [], rootOverride?: string): Promise<LiveHarness> {
+export async function startLiveHarness(
+  config: readonly string[] = [], rootOverride?: string, dreamApiKey = DEFAULT_DREAM_API_KEY,
+): Promise<LiveHarness> {
   const root = rootOverride ?? await mkdtemp(join(tmpdir(), 'dsh-riko-memory-live-'))
   const context = new Context()
   async function dispose(): Promise<void> {
@@ -122,7 +127,14 @@ export async function startLiveHarness(config: readonly string[] = [], rootOverr
     }
   }
   try {
-    await writeFile(join(root, 'credentials.yaml'), 'version: 1\nrefs:\n  DSH_MEMORY_DREAM_API_KEY: fixture-secret\n  DSH_MEMORY_BGE_KEY: bge-local\n')
+    const credentials = [
+      'version: 1',
+      'refs:',
+      `  DSH_MEMORY_DREAM_API_KEY: ${dreamApiKey === DEFAULT_DREAM_API_KEY ? dreamApiKey : JSON.stringify(dreamApiKey)}`,
+      '  DSH_MEMORY_BGE_KEY: bge-local',
+      '',
+    ].join('\n')
+    await writeFile(join(root, 'credentials.yaml'), credentials)
     const configPath = join(root, `cordis-${String(Date.now())}-${String(Math.random()).slice(2)}.yml`)
     await writeFile(configPath, [
       '- name: fixture-dependencies',

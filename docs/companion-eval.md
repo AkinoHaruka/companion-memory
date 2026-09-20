@@ -32,7 +32,7 @@ Three execute only when the capability they measure is switched on: F.05 marks a
 
 `runCompanionCorpus()` walks the corpus in order and returns the artifact path plus the raw observations the metrics aggregation consumes.
 
-Each supported scenario gets its own temporary storage root, a real Loader composition built from `startLiveHarness`, and a stubbed provider endpoint that answers Dream and embedding requests deterministically.
+Each supported scenario gets its own temporary storage root, a real Loader composition built from `startLiveHarness`, and the deterministic fixture endpoint by default; the campaign switch routes Dream and answer calls to operator-supplied providers.
 
 The runner then drives real seams: session event appends, `memory_remember`, `memory_suppress`, the `/memory/v1` control routes for wiki pages, temporal replacement, supersession, deletion and purge, the `agent/pre-step` waterfall, and `/recall` with `/recall/debug`.
 
@@ -40,7 +40,7 @@ For every scenario it records the raw injected prompt, the Resident snapshot, th
 
 The answer seam receives `scenario`, `userTurn`, `injectedContext`, `resident`, `results` and `trace`. `injectedContext` is the exact serialized context captured after the live `agent/pre-step` waterfall, so the answer provider does not receive a separately reconstructed memory prompt.
 
-The seam is opt-in. `CorpusRunOptions.answerGenerator` accepts a synchronous or asynchronous function in tests. A real campaign can set `DSH_MEMORY_ANSWER_ENDPOINT` to an HTTP endpoint that accepts a JSON POST containing `scenarioId`, `userTurn`, `injectedContext`, `resident`, `results` and `trace`, and returns `{"answer":"..."}`. Without the option or environment variable, no answer is generated and the four answer-side fields retain their existing `unsupported` reasons.
+The seam is opt-in. `CorpusRunOptions.answerGenerator` accepts a synchronous or asynchronous function in tests. With only `DSH_MEMORY_ANSWER_ENDPOINT`, the adapter keeps the existing JSON request containing `scenarioId`, `userTurn`, `injectedContext`, `resident`, `results` and `trace`, and requires `{"answer":"..."}`. When `DSH_MEMORY_ANSWER_MODEL` is non-empty, the same endpoint receives OpenAI-compatible chat-completions JSON with the captured `injectedContext` as the system message and the scenario turn as the user message; the adapter reads `choices[0].message.content`. `DSH_MEMORY_ANSWER_KEY` is optional and adds `Authorization: Bearer` only when non-empty. Without the option or environment variables, no answer is generated and the four answer-side fields retain their existing `unsupported` reasons.
 
 A scenario that throws is recorded with status `error`, its stack and its whole cause chain instead of being dropped, so a broken environment cannot silently shrink a denominator and a transport failure keeps the `fetch failed` cause that classifies it.
 
@@ -108,7 +108,54 @@ Without a final-answer generator, four answer-side fields have no observable sub
 
 The keyless focused suite runs with no answer provider and therefore checks the four unsupported states plus the projection arithmetic. Run it with `pnpm exec vitest run packages/bundle/riko-memory/tests/companion-eval.spec.ts packages/bundle/riko-memory/tests/answer-eval.spec.ts --reporter=dot`.
 
-For an opt-in provider campaign, set `DSH_MEMORY_ANSWER_ENDPOINT` to an endpoint that returns the documented JSON answer response, then run the same command. The endpoint must be able to answer one POST per supported scenario; provider failures are recorded as execution errors and are not scored as successful answers. This workspace does not contain a provider key, so no real answer campaign can be verified here.
+## Real-provider campaign
+
+The campaign spec runs all thirty Appendix F scenarios with the real Dream endpoint and the real final-answer endpoint. It uses the same `dreamApiUrl` value for each scenario, passes the Dream credential through the disposable `DSH_MEMORY_DREAM_API_KEY` credential reference, and proxies only that Dream URL while preserving the fixture handlers for other URLs. It keeps the corpus rules unchanged: F.05, F.09 and F.10 start with evidence classification enabled, and the four declared unsupported scenarios remain unsupported with their recorded reasons.
+
+Set these process variables before the run:
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `DSH_MEMORY_DREAM_ENDPOINT` | Yes | None | HTTPS Dream chat-completions endpoint assigned to `dreamApiUrl`; the fixture endpoint is used only when this variable is absent. |
+| `DSH_MEMORY_DREAM_KEY` | Yes | None | Dream credential written to the disposable `DSH_MEMORY_DREAM_API_KEY` reference for each harness. |
+| `DSH_MEMORY_DREAM_MODEL` | No | Harness default `deepseek-chat` | Dream model override. |
+| `DSH_MEMORY_ANSWER_ENDPOINT` | Yes | None | OpenAI-compatible final-answer chat-completions endpoint. |
+| `DSH_MEMORY_ANSWER_MODEL` | Yes | None | Model name that selects the OpenAI-compatible answer request mode. |
+| `DSH_MEMORY_ANSWER_KEY` | No | No authorization header | Optional bearer credential for the final-answer endpoint. |
+| `DSH_MEMORY_PROVIDER_MIN_INTERVAL_MS` | No | `2000` | Minimum delay in milliseconds between calls to either provider; Dream and answer calls share one queue. |
+| `DSH_MEMORY_PROVIDER_MAX_RETRIES` | No | `3` | Maximum additional attempts after a `429` or `5xx` response; values from `0` through `8` are accepted. |
+
+The provider proxy counts each network attempt. It waits for the configured minimum interval before every attempt, retries only `429` and `5xx` responses, and stops after the configured retry count. Retry delays use the provider's `Retry-After` seconds or HTTP-date value when present; otherwise they use 1000 ms, 2000 ms, 4000 ms and so on. Responses such as `400`, `401` and `403` return immediately. The default interval and retry count are applied only to configured provider calls; the unconfigured fixture path does not throttle or retry.
+
+Run the campaign with:
+
+```powershell
+pnpm exec vitest run packages/bundle/riko-memory/tests/companion-campaign.spec.ts --reporter=dot
+```
+
+The process environment supplies every provider value; no credential belongs in this repository. A configured run prints the artifact path and the complete 21-field Appendix G metric object as JSON. The four answer-side fields — `semanticDriftRate`, `falsePersonalizationRate`, `unwantedMentionRate` and `memoryOveruseRate` — are measured from generated answers in this mode. The default fixture run keeps those four fields `unsupported`, because it generates no final answers. If a provider call fails, the runner records the error and the campaign fails its execution assertion instead of treating the call as a successful measurement.
+
+## Recorded campaign
+
+One campaign ran on 2026-09-20 against an OpenAI-compatible endpoint serving `gemini-3.5-flash-lite` for both Dream and final answers, with `DSH_MEMORY_PROVIDER_MIN_INTERVAL_MS=6000` and `DSH_MEMORY_PROVIDER_MAX_RETRIES=6` to stay inside the provider's fifteen-requests-per-minute limit. All thirty scenarios ran: twenty-six executed and the four declared `unsupported` cases kept their recorded reasons. Every value is provider- and prompt-dependent, and the answer-side denominators are one to three trials, so this is one observation rather than a rate.
+
+| Field | Value | Field | Value |
+|---|---|---|---|
+| `candidatePrecision` | 0/2 | `correctionPropagation` | 2/2 |
+| `authorityViolationRate` | 0/3 | `forgetLeakage` | 0/1 |
+| `semanticDriftRate` | 4/6 | `purgeLeakage` | 0/1 |
+| `recallAtK` | 10/10 | `falsePersonalizationInjectionRate` | 0/3 |
+| `mrr` | 10/10 | `unwantedMentionInjectionRate` | 0/2 |
+| `ndcg` | 10/10 | `memoryOveruseInjectionRate` | 0/1 |
+| `exactDetailRecovery` | 2/2 | `safeUsageProjectionRate` | 19/19 |
+| `temporalAccuracy` | 2/2 | `rawTextWithheldRate` | 2/19 |
+| `multiHopSuccess` | 1/1 | `falsePersonalizationRate` | 0/3 |
+| `negativeRecallPrecision` | 6/6 | `unwantedMentionRate` | 0/2 |
+|  |  | `memoryOveruseRate` | 0/1 |
+
+The four answer-side fields stopped being unsupported: with a real model answering from the live context, no answer asserted an unsupplied personal claim, mentioned protected memory it was not authorised to mention, or used memory the scenario marks irrelevant. Retrieval and correction targets were all reached and no leakage field fired.
+
+`semanticDriftRate` is the weakest value in the table. It is the lexical-overlap proxy described above, and the model restates memory in its own words, so a faithful paraphrase is counted as drift. Treat 4/6 as evidence that the proxy needs a model or human judgment before it can carry a product claim.
 
 ## F.05 exact number
 

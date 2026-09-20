@@ -14,7 +14,14 @@ export interface CompanionScenario {
    */
   readonly requiresEvidenceClassification?: boolean
   readonly unsupported?: string
-  readonly candidateJudgments?: readonly { readonly text: string; readonly worthKeeping: boolean }[]
+  /**
+   * Human relevance judgments for the candidates this scenario is expected to extract.
+   *
+   * `text` pins the fixture's exact candidate body. `contains` is the fallback rule a real provider
+   * needs, because it phrases the same claim differently; a candidate is judged by the first entry
+   * whose `contains` substring it carries when no entry matches its text exactly.
+   */
+  readonly candidateJudgments?: readonly { readonly text: string; readonly contains?: string; readonly worthKeeping: boolean }[]
 }
 
 /** Thirty category representatives; unsupported live operations remain explicit gaps. */
@@ -23,7 +30,7 @@ export const companionCorpus: readonly CompanionScenario[] = [
   { id: 'F.02', category: 'Explicit Remember', setup: { kind: 'remember', text: '我不喜欢别人叫我小熊。' }, userTurn: '你还记得我的称呼偏好吗？', expected: { label: 'correct injection', contains: '小熊' } },
   // The user's earlier hedged sentence is unclassified evidence, so the lowered default returns that exact
   // user wording for an explicit request; the provider's unconfirmed derived claim must still stay excluded.
-  { id: 'F.03', category: 'Unconfirmed Candidate', candidateJudgments: [{ text: '用户可能喜欢跑步。', worthKeeping: false }], setup: { kind: 'dream', text: '用户可能喜欢跑步。', source: '我最近想试试跑步，还不知道自己能不能坚持。' }, userTurn: '你还记得用户可能喜欢跑步吗？', expected: { label: 'correct injection', excludes: '用户可能喜欢跑步' } },
+  { id: 'F.03', category: 'Unconfirmed Candidate', candidateJudgments: [{ text: '用户可能喜欢跑步。', contains: '跑步', worthKeeping: false }], setup: { kind: 'dream', text: '用户可能喜欢跑步。', source: '我最近想试试跑步，还不知道自己能不能坚持。' }, userTurn: '你还记得用户可能喜欢跑步吗？', expected: { label: 'correct injection', excludes: '用户可能喜欢跑步' } },
   { id: 'F.04', category: 'Long-Tail Event', setup: { kind: 'long-tail', text: 'North Pier Cafe window seat after 16:00' }, userTurn: '你还记得 North Pier Cafe 吗？', expected: { label: 'correct injection', contains: 'North Pier Cafe' } },
   // The locker number is an ordinary identifier-shaped claim: with capture classification on, the rule set
   // keeps it normal, so the explicit question about it reaches the L0 channel and the literal comes back.

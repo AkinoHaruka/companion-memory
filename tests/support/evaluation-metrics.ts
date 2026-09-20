@@ -137,15 +137,19 @@ export function aggregateMetrics(outcomes: readonly RawOutcome[], k = 8): Record
   }
   const leak = (row: RawOutcome): number => Number(row.checks.derivedLeakage !== true || (row.scenario.id === 'F.16' && row.checks.diskLeakage !== true))
   const candidates = select('F.03').flatMap(row => (row.snapshot?.candidates ?? []).map(candidate => ({ row, candidate })))
-  const worthy = candidates.filter(({ row, candidate }) => {
-    const judgment = row.scenario.candidateJudgments?.find(item => item.text === candidate.page.body)
-    if (judgment === undefined) throw new Error(`Unjudged candidate in ${row.scenario.id}`)
-    return judgment.worthKeeping
-  }).length
-  const precision: Metric = candidates.length === 0 ? unsupported('No extracted candidates.') : {
-    status: 'measured', value: worthy / candidates.length,
-    numerator: worthy, denominator: candidates.length,
-    scenarios: candidates.map(({ row }) => row.scenario.id), scope: 'F.03 inferred running preference; human relevance judgment: not worth durable factual storage',
+  const judged = candidates.flatMap(({ row, candidate }) => {
+    const judgments = row.scenario.candidateJudgments
+    const judgment = judgments?.find(item => item.text === candidate.page.body)
+      ?? judgments?.find(item => item.contains !== undefined && candidate.page.body.includes(item.contains))
+    return judgment === undefined ? [] : [{ row, judgment }]
+  })
+  const unjudged = candidates.length - judged.length
+  const worthy = judged.filter(({ judgment }) => judgment.worthKeeping).length
+  const precision: Metric = judged.length === 0 ? unsupported('No extracted candidate matched a declared relevance judgment.') : {
+    status: 'measured', value: worthy / judged.length,
+    numerator: worthy, denominator: judged.length,
+    scenarios: judged.map(({ row }) => row.scenario.id),
+    scope: `F.03 inferred running preference; human relevance judgment: not worth durable factual storage${unjudged === 0 ? '' : `; ${String(unjudged)} candidate(s) matched no declared judgment and were excluded`}`,
   }
   return {
     candidatePrecision: precision,
