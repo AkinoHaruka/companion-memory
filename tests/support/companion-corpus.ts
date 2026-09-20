@@ -66,7 +66,10 @@ export const companionCorpus: readonly CompanionScenario[] = [
   { id: 'F.25', category: 'Superseded Exact Hit', setup: { kind: 'supersede', text: 'obsolete exact marker' }, userTurn: '你还记得 obsolete exact marker 吗？', expected: { label: 'correct silence', excludes: 'obsolete exact marker' } },
   { id: 'F.26', category: 'Historical Query', setup: { kind: 'historical', text: '我现在住上海', replacement: '我现在住杭州' }, userTurn: '你还记得我过去住上海吗？', expected: { label: 'correct injection', contains: '上海' } },
   { id: 'F.27', category: 'Memory Overuse', setup: { kind: 'page', text: 'personal TypeScript hobby' }, userTurn: '解释 TypeScript 泛型代码', expected: { label: 'correct silence', excludes: 'personal TypeScript hobby' } },
-  { id: 'F.28', category: 'Observation Weakening', setup: { kind: 'unsupported', text: 'counter-evidence' }, userTurn: '你还记得我的工作习惯吗？', expected: { label: 'correct silence' }, unsupported: 'Contradicting observation evidence has no live HTTP/tool write operation; existing store acceptance covers it.' },
+  {
+    id: 'F.28', category: 'Observation Weakening', setup: { kind: 'observation-weakening', text: '我偏好先计划、再编码，并用清单复核。' },
+    userTurn: '你还记得我的工作习惯吗？', expected: { label: 'correct silence' },
+  },
   { id: 'F.29', category: 'Multi-Hop', setup: { kind: 'graph', text: 'Orion links [[Vega]]', replacement: 'Vega moved to Kyoto' }, userTurn: '你还记得 Orion 后来相关的人怎样？', expected: { label: 'correct injection', contains: 'Kyoto' } },
   { id: 'F.30', category: 'Deletion Crash', setup: { kind: 'unsupported', text: 'interrupted purge' }, userTurn: '你还记得 interrupted purge 吗？', expected: { label: 'correct silence' }, unsupported: 'The in-process Loader harness cannot kill and resume a purge worker at a durable checkpoint; no live crash seam exists.' },
 ]

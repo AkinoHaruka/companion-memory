@@ -24,7 +24,7 @@ Each entry names a `setup.kind`, the text used to create or mutate durable state
 
 Judgments describe fixture facts only: `contains`, `excludes` and `candidateJudgments` are authored against the scenario, never against runner output, so an assertion cannot be satisfied by feeding a recorded result back into the expectation.
 
-Twenty-eight scenarios execute. Four carry an `unsupported` reason instead and are asserted as unsupported: F.21 (reranker failure), F.22 (graph failure), F.28 (observation weakening) and F.30 (deletion crash).
+Twenty-nine scenarios execute. Three carry an `unsupported` reason instead and are asserted as unsupported: F.21 (reranker failure), F.22 (graph failure) and F.30 (deletion crash). F.28 creates an active observation through the authenticated observations route, submits supporting and contradicting evidence through its evidence route, and expects silence after contradictions outnumber supports and invalidate the observation.
 
 Three execute only when the capability they measure is switched on: F.05 marks an exact number recallable, and F.09 and F.10 require the user's hedged original to come back verbatim instead of being reduced to a non-disclosing projection. They declare `requiresEvidenceClassification`, so the runner starts their harness with `evidenceClassificationEnabled: true`, and a run with the capability off reports them as unsupported with a reason that says which capability was missing, rather than scoring them against a channel the run could not open.
 
@@ -34,7 +34,7 @@ Three execute only when the capability they measure is switched on: F.05 marks a
 
 Each supported scenario gets its own temporary storage root, a real Loader composition built from `startLiveHarness`, and the deterministic fixture endpoint by default; the campaign switch routes Dream and answer calls to operator-supplied providers.
 
-The runner then drives real seams: session event appends, `memory_remember`, `memory_suppress`, the `/memory/v1` control routes for wiki pages, temporal replacement, supersession, deletion and purge, the `agent/pre-step` waterfall, and `/recall` with `/recall/debug`.
+The runner then drives real seams: session event appends, `memory_remember`, `memory_suppress`, the `/memory/v1` control routes for observations, wiki pages, temporal replacement, supersession, deletion and purge, the `agent/pre-step` waterfall, and `/recall` with `/recall/debug`.
 
 For every scenario it records the raw injected prompt, the Resident snapshot, the returned recall results, the recall trace, the wiki snapshot, the per-scenario boolean checks, every HTTP exchange, every tool result and, when configured, the generated final answer.
 
@@ -110,7 +110,7 @@ The keyless focused suite runs with no answer provider and therefore checks the 
 
 ## Real-provider campaign
 
-The campaign spec runs all thirty Appendix F scenarios with the real Dream endpoint and the real final-answer endpoint. It uses the same `dreamApiUrl` value for each scenario, passes the Dream credential through the disposable `DSH_MEMORY_DREAM_API_KEY` credential reference, and proxies only that Dream URL while preserving the fixture handlers for other URLs. It keeps the corpus rules unchanged: F.05, F.09 and F.10 start with evidence classification enabled, and the four declared unsupported scenarios remain unsupported with their recorded reasons.
+The campaign spec runs all thirty Appendix F scenarios with the real Dream endpoint and the real final-answer endpoint. It uses the same `dreamApiUrl` value for each scenario, passes the Dream credential through the disposable `DSH_MEMORY_DREAM_API_KEY` credential reference, and proxies only that Dream URL while preserving the fixture handlers for other URLs. It keeps the corpus rules unchanged: F.05, F.09 and F.10 start with evidence classification enabled, and the three declared unsupported scenarios remain unsupported with their recorded reasons.
 
 Set these process variables before the run:
 
@@ -137,7 +137,7 @@ The process environment supplies every provider value; no credential belongs in 
 
 ## Recorded campaign
 
-One campaign ran on 2026-09-20 against an OpenAI-compatible endpoint serving `gemini-3.5-flash-lite` for both Dream and final answers, with `DSH_MEMORY_PROVIDER_MIN_INTERVAL_MS=6000` and `DSH_MEMORY_PROVIDER_MAX_RETRIES=6` to stay inside the provider's fifteen-requests-per-minute limit. All thirty scenarios ran: twenty-six executed and the four declared `unsupported` cases kept their recorded reasons. Every value is provider- and prompt-dependent, and the answer-side denominators are one to three trials, so this is one observation rather than a rate.
+One campaign ran on 2026-09-20 against an OpenAI-compatible endpoint serving `gemini-3.5-flash-lite` for both Dream and final answers, with `DSH_MEMORY_PROVIDER_MIN_INTERVAL_MS=6000` and `DSH_MEMORY_PROVIDER_MAX_RETRIES=6` to stay inside the provider's fifteen-requests-per-minute limit. All thirty scenarios ran: twenty-seven executed and the three declared `unsupported` cases kept their recorded reasons. Every value is provider- and prompt-dependent, and the answer-side denominators are one to three trials, so this is one observation rather than a rate.
 
 | Field | Value | Field | Value |
 |---|---|---|---|

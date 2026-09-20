@@ -306,7 +306,7 @@ const RESIDENT_COMPILER_VERSION = 3
 const EXPLICIT_RECALL_PATTERN = /还记得|记得.*之前|之前|上次|以前|曾经|过去|回忆|我说过|你记得|do you remember|what did i say|earlier|last time|before/i
 const POLICY_SUPPRESSION_CUE = /不要再主动提|别说|别提起|不要再提|don't mention|do not mention|stop mentioning/i
 const DENSE_INDEX_NAME = 'dense'
-const DENSE_INDEX_SCHEMA_VERSION = 3
+const DENSE_INDEX_SCHEMA_VERSION = 6
 const ALIAS_REASSIGNMENT_REASON = 'alias reassigned'
 /**
  * Write-behind window for the records an L0 append derives: the session's source
@@ -561,7 +561,7 @@ export class MemoryProfileStore {
     const maxResults = options.maxResults ?? 20
     return pages.map(clonePage).map(page => ({ page, score: lexicalScoreForPage(query, page), hop: 0 })).filter(result => result.score > 0).sort((left, right) => right.score - left.score || right.page.updatedAt.localeCompare(left.page.updatedAt)).slice(0, Math.max(1, maxResults))
   }
-  /** Run bounded query-time recall over confirmed Wiki pages and raw user evidence.
+  /** Run bounded query-time recall over confirmed Wiki pages, active current aliases and raw user evidence.
    * @param query The query.
    * @param options The options.
    * @returns The resulting value.
@@ -573,15 +573,17 @@ export class MemoryProfileStore {
     const identity = recallTraceIdentity(this.scope, query)
     const degradedModes: string[] = []
     const canonicalCandidates = plan.searchCanonical ? this.temporalPages(plan).map(page => ({ page, document: this.recallDocumentForPage(page) })) : []
+    const aliasCandidates = plan.searchCanonical ? this.aliasRecallCandidates(query, plan) : []
     const evidenceCandidates = options.rawEvidenceEnabled === false || !plan.searchEvidence ? [] : this.rawEvidenceCandidates()
     const policyCandidates = plan.searchEvidence ? this.policyEvidenceCandidates() : []
     const observationCandidates = plan.searchObservation ? this.observations.map(observation => ({ observation, document: this.recallDocumentForObservation(observation) })) : []
     const canonicalEligibility = this.filterRecallCandidates(canonicalCandidates, plan, query)
+    const aliasEligibility = this.filterRecallCandidates(aliasCandidates, plan, query)
     const evidenceEligibility = this.filterRecallCandidates(evidenceCandidates, plan, query)
     const policyEligibility = this.filterRecallCandidates(policyCandidates, plan, query)
     const observationEligibility = this.filterRecallCandidates(observationCandidates, plan, query)
     const decisions = new Map<string, RecallEligibilityDecision>()
-    for (const summary of [canonicalEligibility, evidenceEligibility, policyEligibility, observationEligibility]) for (const [id, decision] of summary.decisions) decisions.set(id, decision)
+    for (const summary of [canonicalEligibility, aliasEligibility, evidenceEligibility, policyEligibility, observationEligibility]) for (const [id, decision] of summary.decisions) decisions.set(id, decision)
     const graphCandidates: RecallCandidate[] = []
     if (plan.searchGraph) {
       try {
@@ -599,11 +601,12 @@ export class MemoryProfileStore {
     const graphEligibility = this.filterRecallCandidates(graphCandidates, plan, query)
     for (const [id, decision] of graphEligibility.decisions) decisions.set(id, decision)
     const canonicalDocuments = canonicalEligibility.candidates.map(candidate => candidate.document)
+    const aliasDocuments = aliasEligibility.candidates.map(candidate => candidate.document)
     const evidenceDocuments = evidenceEligibility.candidates.map(candidate => candidate.document)
     const policyDocuments = policyEligibility.candidates.map(candidate => candidate.document)
     const observationDocuments = observationEligibility.candidates.map(candidate => candidate.document)
     const graphDocuments = graphEligibility.candidates.map(candidate => candidate.document)
-    const allDocuments = [...canonicalDocuments, ...evidenceDocuments, ...policyDocuments, ...observationDocuments, ...graphDocuments]
+    const allDocuments = [...canonicalDocuments, ...aliasDocuments, ...evidenceDocuments, ...policyDocuments, ...observationDocuments, ...graphDocuments]
     const lexicalStartedAt = Date.now()
     const lexicalResults = plan.searchCanonical ? rankLexical(query, canonicalDocuments, plan.lexicalCandidateCap) : []
     const evidenceResults = plan.searchEvidence ? rankLexical(query, evidenceDocuments, plan.lexicalCandidateCap) : []
@@ -612,6 +615,7 @@ export class MemoryProfileStore {
     const lexicalLatencyMs = Date.now() - lexicalStartedAt
     const channels: Record<string, readonly RecallDocument[]> = {}
     if (plan.searchCanonical) channels.lexical = lexicalResults.map(result => result.document)
+    if (aliasDocuments.length > 0) channels.entity = aliasDocuments
     if (plan.searchEvidence && options.rawEvidenceEnabled !== false) channels.rawEvidence = evidenceResults.map(result => result.document)
     if (plan.searchEvidence) channels.policy = policyResults.map(result => result.document)
     if (plan.searchObservation) channels.observation = observationResults.map(result => result.document)
@@ -659,6 +663,7 @@ export class MemoryProfileStore {
     }
     const candidatesByChannel: Record<string, number> = {
       ...(plan.searchCanonical ? { lexical: lexicalResults.length } : {}),
+      ...(aliasDocuments.length > 0 ? { entity: aliasDocuments.length } : {}),
       ...(plan.searchEvidence && options.rawEvidenceEnabled !== false ? { rawEvidence: evidenceResults.length } : {}),
       ...(plan.searchEvidence ? { policy: policyResults.length } : {}),
       ...(plan.searchObservation ? { observation: observationResults.length } : {}),
@@ -681,12 +686,13 @@ export class MemoryProfileStore {
         injectedMemories: budgeted.results.length,
         gateCounts: budgeted.gateCounts,
         ...(budgeted.eligibleCandidates === undefined ? {} : { eligibleCandidates: budgeted.eligibleCandidates }),
-        rejectedByEligibility: canonicalEligibility.rejected + evidenceEligibility.rejected + policyEligibility.rejected + observationEligibility.rejected + graphEligibility.rejected + budgeted.rejectedByEligibility,
-        rejectedBySensitivity: canonicalEligibility.sensitiveRejected + evidenceEligibility.sensitiveRejected + policyEligibility.sensitiveRejected + observationEligibility.sensitiveRejected + graphEligibility.sensitiveRejected + budgeted.rejectedBySensitivity,
-        rejectedByTemporal: canonicalEligibility.temporalRejected + evidenceEligibility.temporalRejected + policyEligibility.temporalRejected + observationEligibility.temporalRejected + graphEligibility.temporalRejected + budgeted.rejectedByTemporal,
+        rejectedByEligibility: canonicalEligibility.rejected + aliasEligibility.rejected + evidenceEligibility.rejected + policyEligibility.rejected + observationEligibility.rejected + graphEligibility.rejected + budgeted.rejectedByEligibility,
+        rejectedBySensitivity: canonicalEligibility.sensitiveRejected + aliasEligibility.sensitiveRejected + evidenceEligibility.sensitiveRejected + policyEligibility.sensitiveRejected + observationEligibility.sensitiveRejected + graphEligibility.sensitiveRejected + budgeted.rejectedBySensitivity,
+        rejectedByTemporal: canonicalEligibility.temporalRejected + aliasEligibility.temporalRejected + evidenceEligibility.temporalRejected + policyEligibility.temporalRejected + observationEligibility.temporalRejected + graphEligibility.temporalRejected + budgeted.rejectedByTemporal,
         contextChars: budgeted.contextChars,
         planChannels: plan.searchCanonical || plan.searchEvidence || plan.searchObservation || plan.searchGraph ? [
           ...(plan.searchCanonical ? ['canonical'] : []),
+          ...(aliasDocuments.length > 0 ? ['entity'] : []),
           ...(plan.searchEvidence ? ['evidence'] : []),
           ...(plan.searchEvidence ? ['policy'] : []),
           ...(plan.searchObservation ? ['observation'] : []),
@@ -695,6 +701,7 @@ export class MemoryProfileStore {
         ] : [],
         gateReasons: [...new Set([
           ...canonicalEligibility.reasons,
+          ...aliasEligibility.reasons,
           ...evidenceEligibility.reasons,
           ...policyEligibility.reasons,
           ...observationEligibility.reasons,
@@ -1623,6 +1630,23 @@ export class MemoryProfileStore {
     const pageById = new Map(pages.map(page => [page.id, page])); const roots = rankLexical(query, pages.map(page => this.recallDocumentForPage(page)), Math.max(1, maxResults)).map(result => result.document.id.slice('page:'.length)); const seen = new Set<string>(); const documents: RecallDocument[] = []
     for (const root of roots) for (const node of this.wikiIndex.graph(root, maxHop).nodes) { if (node.id === root || seen.has(node.id)) continue; const page = pageById.get(node.id); if (!page) continue; seen.add(node.id); documents.push({ ...this.recallDocumentForPage(page), authorityTier: 'graph' }); if (documents.length >= maxResults) return documents }
     return documents
+  }
+  /** Add only currently active alias targets; historical resolver modes remain management-only. */
+  private aliasRecallCandidates(query: string, plan: Pick<RecallPlan, 'temporalMode'>): RecallCandidate[] {
+    if (plan.temporalMode !== 'current') return []
+    const normalizedQuery = normalizeAlias(query)
+    const selected = new Map<string, { readonly candidate: RecallCandidate; readonly confidence: number }>()
+    for (const alias of this.listAliases()) {
+      if (!normalizedQuery.includes(alias.normalizedAlias)) continue
+      const resolution = this.resolveAlias(alias.alias)[0]
+      if (resolution === undefined) continue
+      const page = this.pages.find(item => item.id === resolution.entityId)
+      if (page === undefined) continue
+      const candidate = { page, document: this.recallDocumentForPage(page) }
+      const previous = selected.get(page.id)
+      if (previous === undefined || resolution.confidence > previous.confidence) selected.set(page.id, { candidate, confidence: resolution.confidence })
+    }
+    return [...selected.values()].sort((left, right) => right.confidence - left.confidence || left.candidate.document.id.localeCompare(right.candidate.document.id)).map(item => item.candidate)
   }
   private recallDocumentForPage(page: WikiPage): RecallDocument {
     const projection = this.projectionFor(page.id)

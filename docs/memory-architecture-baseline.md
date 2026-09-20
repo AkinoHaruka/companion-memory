@@ -57,7 +57,7 @@ Current user message with recallEnabled
 
 The plugin owns one `storageDomain` named `riko_memory`, version 5 (compatible with versions 1, 2, 3 and 4), with per-record tables:
 
-- `profiles`: scoped Dream settings, last-valid Resident metadata/content and optional structured Resident blocks;
+- `profiles`: scoped Dream settings, last-valid Resident metadata/content, optional structured Resident blocks and compiler diagnostics;
 - `pages`: canonical Wiki pages, including status, consent, sources and version;
 - `candidates`: pending/rejected/accepted Dream proposals;
 - `sources`: session/manual source metadata and ingest status;
@@ -73,6 +73,8 @@ The plugin owns one `storageDomain` named `riko_memory`, version 5 (compatible w
 - `conflicts`: persisted contested or resolved `ConflictOverlay` records.
 
 Lexical and graph views are derived in process memory and rebuilt from durable records; dense vectors persist in the storage-domain `vectors` table with `index_meta` lifecycle metadata. No parallel SQLite, vector database or fixed file path is used.
+
+Dense lifecycle records use record schema version 6 and include generation lineage and validation state. Readers accept record versions 1 through 6, so existing records remain readable; the storage-domain format remains version 5 with compatible versions 1 through 4. An older build rejects a version 6 dense record during schema validation instead of accepting it while dropping lifecycle fields.
 
 ## Authoritative invariants confirmed by the baseline
 

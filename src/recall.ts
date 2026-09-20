@@ -64,6 +64,7 @@ export interface RecallResult {
   readonly projection?: SafeUsageProjection
   readonly eligibility: 'eligible' | 'silent_only' | 'rejected'
   readonly rejectionReason?: string
+  /** Channels that supplied this result; `entity` is the current active-alias expansion channel. */
   readonly channels: readonly string[]
   readonly fusedScore: number
   readonly mentionDecision: 'explicit' | 'silent_use' | 'suppress'
@@ -92,6 +93,7 @@ export interface RecallTrace {
   readonly lexicalLatencyMs: number
   readonly vectorLatencyMs?: number
   readonly rerankLatencyMs?: number
+  /** Candidate counts by channel; current active aliases use the existing `entity` channel. */
   readonly candidatesByChannel: Readonly<Record<string, number>>
   readonly fusedCandidates: number
   readonly injectedMemories: number

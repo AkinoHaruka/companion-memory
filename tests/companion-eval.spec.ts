@@ -148,7 +148,7 @@ describe('Appendix G aggregate metrics', () => {
 
   it('keeps unsupported cases out of every denominator and a newly supported case only in the fields that score it', () => {
     const unsupported = companionCorpus.filter(scenario => scenario.unsupported !== undefined).map(scenario => scenario.id)
-    expect(unsupported).toEqual(['F.21', 'F.22', 'F.28', 'F.30'])
+    expect(unsupported).toEqual(['F.21', 'F.22', 'F.30'])
     for (const scenario of companionCorpus.filter(value => value.unsupported !== undefined)) expect(row(scenario.id).reason, scenario.id).toBe(scenario.unsupported)
     const exactNumber = row('F.05')
     expect(exactNumber.status).toBe('executed')

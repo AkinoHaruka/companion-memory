@@ -199,6 +199,7 @@ export interface MemorySnapshot {
   readonly records: readonly MemoryItem[]
   /** Unconfirmed Wiki page proposals waiting for client confirmation or rejection. */
   readonly candidates: readonly WikiCandidate[]
+  /** Scope-local alias records exposed to management views and current recall's entity channel. */
   readonly aliases: readonly MemoryAliasRecord[]
   readonly observations?: readonly MemoryObservation[]
   /** Canonical Wiki page summaries used by the graph UI. */

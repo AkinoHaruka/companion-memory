@@ -235,7 +235,12 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       return agent
     }
     let agent = agentFor(sessionId)
-    const append = (text: string): void => { agent.session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' }) }
+    const appendTo = (target: ReturnType<typeof testAgent>, text: string): void => {
+      target.session.append('user/message', createUserMessage({
+        content: [{ type: 'text', text }], source: { kind: 'user' },
+      }), { surfaceOp: 'append' })
+    }
+    const append = (text: string): void => { appendTo(agent, text) }
     const tool = async (name: string, args: Record<string, unknown>): Promise<void> => {
       const result = await harness!.context.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`eval-${raw.toolResults.length}`), name, arguments: args, agent })
       raw.toolResults.push(result)
@@ -260,6 +265,34 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       }, { timeout: evidenceDrainBudgetMs(expected), interval: 50 })
     }
     let pageId = ''
+    if (kind === 'observation-weakening') {
+      const supportAgents = [
+        agent, agentFor(`${sessionId}-support`), agentFor(`${sessionId}-third-support`),
+      ]
+      supportAgents.forEach((supportAgent, index) => appendTo(
+        supportAgent, `supporting work-routine evidence ${String(index + 1)}`,
+      ))
+      const contradictionAgents = ['one', 'two', 'three', 'four'].map(name => agentFor(`${sessionId}-contradiction-${name}`))
+      contradictionAgents.forEach((contradictionAgent, index) => appendTo(
+        contradictionAgent, `contradicting work-routine evidence ${String(index + 1)}`,
+      ))
+      await drainInFlight(base(), supportAgents.length + contradictionAgents.length)
+      const created = await request<{ id: string; status: string }>('/observations', {
+        text: scenario.setup.text,
+        sourceRefs: supportAgents.map(supportAgent => `session:${String(supportAgent.session.id)}/event:0`),
+      })
+      raw.checks.observationActivated = created.status === 'active'
+      const updated = await request<{
+        status: string
+        contradictingRefs?: readonly string[]
+      }>(`/observations/${created.id}/evidence`, {
+        contradictingRefs: contradictionAgents.map(contradictionAgent => (
+          `session:${String(contradictionAgent.session.id)}/event:0`
+        )),
+      })
+      raw.checks.observationInvalidated = updated.status === 'invalidated'
+        && updated.contradictingRefs?.length === contradictionAgents.length
+    }
     if (['remember', 'authority', 'dream', 'evidence', 'purge', 'forget'].includes(kind)) {
       append(scenario.setup.source ?? scenario.setup.text)
       await evidence()
@@ -267,7 +300,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
     if (kind === 'remember' || kind === 'authority') {
       await tool('memory_remember', { content: scenario.setup.text })
       raw.checks.authority = kind === 'authority' ? raw.toolResults[0]!.isError : !raw.toolResults[0]!.isError
-    } else if (kind !== 'dream' && kind !== 'evidence') {
+    } else if (kind !== 'dream' && kind !== 'evidence' && kind !== 'observation-weakening') {
       const text = scenario.setup.text
       const page = await request<{ id: string }>('/wiki/pages', { path: 'wiki/concepts/target.md', ...(kind === 'purge' || kind === 'forget' ? { markdown: markdown(text) } : { type: 'concept', title: kind === 'graph' ? 'Orion' : text.slice(0, 60), content: text }) })
       pageId = page.id

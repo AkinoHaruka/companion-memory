@@ -33,8 +33,8 @@ describe('deterministic dense recall ablation', () => {
   it('runs the same corpus scenarios in both trials without execution errors', () => {
     expect(ablation.denseOff.outcomes).toHaveLength(companionCorpus.length)
     expect(ablation.denseOn.outcomes).toHaveLength(companionCorpus.length)
-    expect(executed(ablation.denseOff.outcomes)).toHaveLength(26)
-    expect(executed(ablation.denseOn.outcomes)).toHaveLength(26)
+    expect(executed(ablation.denseOff.outcomes)).toHaveLength(27)
+    expect(executed(ablation.denseOn.outcomes)).toHaveLength(27)
     expect(ablation.denseOff.outcomes.some(outcome => outcome.status === 'error')).toBe(false)
     expect(ablation.denseOn.outcomes.some(outcome => outcome.status === 'error')).toBe(false)
   })

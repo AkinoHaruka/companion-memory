@@ -4,7 +4,7 @@
 import { defineDomain, domainTable, type Domain } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
 import type { MemoryScope } from './contracts.ts'
-import type { ConflictOverlay, DreamSettings, MemoryObservation, MemorySensitivity, MemoryPurgeRecord as PurgeState, ResidentBlock, SafeUsageProjection, SensitivityAuthority } from './types.ts'
+import type { ConflictOverlay, DreamSettings, MemoryObservation, MemorySensitivity, MemoryPurgeRecord as PurgeState, ResidentBlock, ResidentSnapshot, SafeUsageProjection, SensitivityAuthority } from './types.ts'
 import type { WikiCandidate, WikiPage, WikiSource } from './wiki.ts'
 
 const scopeSchema = z.object({
@@ -14,7 +14,7 @@ const scopeSchema = z.object({
   key: z.string().min(3),
 })
 
-const recordSchemaVersion = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)])
+const recordSchemaVersion = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)])
 const sensitivitySchema = z.enum(['normal', 'provisional_sensitive', 'sensitive'])
 const sensitivityAuthoritySchema = z.enum(['deterministic_rule', 'model_proposal', 'user', 'management'])
 const sensitivityChangeSchema = z.object({
@@ -29,6 +29,14 @@ const residentBlockSchema = z.object({
   entries: z.array(z.string()),
   sourcePageIds: z.array(z.string()),
   charBudget: z.number().int().nonnegative(),
+})
+const residentDiagnosticsSchema = z.object({
+  eligibleCount: z.number().int().nonnegative(),
+  includedCount: z.number().int().nonnegative(),
+  omittedCount: z.number().int().nonnegative(),
+  charBudget: z.number().int().nonnegative(),
+  actualChars: z.number().int().nonnegative(),
+  compilerVersion: z.number().int().nonnegative(),
 })
 const observationSchema = z.object({
   id: z.string().min(1),
@@ -62,6 +70,9 @@ const stateSchema = z.object({
   residentVersion: z.string().optional(),
   resident: z.string().optional(),
   residentBlocks: z.array(residentBlockSchema).optional(),
+  residentMaxChars: z.number().int().nonnegative().optional(),
+  residentOmittedPageIds: z.array(z.string()).optional(),
+  residentDiagnostics: residentDiagnosticsSchema.optional(),
   settings: z.object({
     apiUrl: z.string().min(1),
     credentialRef: z.string().min(1),
@@ -212,6 +223,9 @@ const indexMetaSchema = z.object({
   dimension: z.number().int().nonnegative().optional(),
   vectorCount: z.number().int().nonnegative().optional(),
   degradedReason: z.string().optional(),
+  generationId: z.string().min(1).optional(),
+  previousGenerationId: z.string().min(1).optional(),
+  validated: z.boolean().optional(),
 })
 const vectorSchema = z.object({
   schemaVersion: recordSchemaVersion,
@@ -279,7 +293,7 @@ const conflictSchema = z.object({
 
 /** One storage-domain record containing state for a profile scope. */
 export interface MemoryStateRecord {
-  readonly schemaVersion: 1 | 2 | 3 | 4 | 5
+  readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6
   readonly scope: MemoryScope
   readonly updatedAt?: string
   readonly lastDreamAt?: string
@@ -288,29 +302,32 @@ export interface MemoryStateRecord {
   readonly residentVersion?: string
   readonly resident?: string
   readonly residentBlocks?: readonly ResidentBlock[]
+  readonly residentMaxChars?: number
+  readonly residentOmittedPageIds?: readonly string[]
+  readonly residentDiagnostics?: ResidentSnapshot['diagnostics']
   readonly settings: DreamSettings
 }
 
 /** Durable Wiki page record bound to one profile scope. */
-export interface MemoryPageRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly page: WikiPage }
+export interface MemoryPageRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly page: WikiPage }
 /** Durable Wiki candidate record bound to one profile scope. */
-export interface MemoryCandidateRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly candidate: WikiCandidate }
+export interface MemoryCandidateRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly candidate: WikiCandidate }
 /** Durable Wiki source record bound to one profile scope. */
-export interface MemorySourceRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly source: WikiSource }
+export interface MemorySourceRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly source: WikiSource }
 /** Durable session transcript record bound to one profile scope. */
-export interface MemorySessionRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly sessionId: string; readonly lines: readonly string[]; readonly evidenceMarkers?: readonly { readonly index: number; readonly sensitivity: MemorySensitivity; readonly origin?: SensitivityAuthority }[] }
+export interface MemorySessionRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly sessionId: string; readonly lines: readonly string[]; readonly evidenceMarkers?: readonly { readonly index: number; readonly sensitivity: MemorySensitivity; readonly origin?: SensitivityAuthority }[] }
 /** Durable Dream job record bound to one profile scope. */
-export interface MemoryJobRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly job: Record<string, unknown> }
+export interface MemoryJobRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly job: Record<string, unknown> }
 /** Durable audit event record bound to one profile scope. */
-export interface MemoryAuditRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly at: string; readonly event: string; readonly detail?: Record<string, unknown> }
+export interface MemoryAuditRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly at: string; readonly event: string; readonly detail?: Record<string, unknown> }
 /** Durable observation record bound to one profile scope. */
-export interface MemoryObservationRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly observation: MemoryObservation }
+export interface MemoryObservationRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly observation: MemoryObservation }
 /** Durable purge lifecycle record bound to one profile scope. */
-export interface MemoryPurgeRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly purge: PurgeState }
+export interface MemoryPurgeRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly purge: PurgeState }
 
 /** Durable reversible suppression of a canonical page or observation. */
 export interface MemorySuppressionRecord {
-  readonly schemaVersion: 1 | 2 | 3 | 4 | 5
+  readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6
   readonly scope: MemoryScope
   readonly id: string
   readonly targetKind: 'page' | 'observation'
@@ -324,7 +341,7 @@ export interface MemorySuppressionRecord {
 
 /** Durable recall and resident-priority state; it never changes truth. */
 export interface MemoryActivationRecord {
-  readonly schemaVersion: 1 | 2 | 3 | 4 | 5
+  readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6
   readonly scope: MemoryScope
   readonly recordId: string
   readonly lastRecalledAt?: string
@@ -336,7 +353,7 @@ export interface MemoryActivationRecord {
 
 /** Durable lifecycle metadata for one rebuildable derived index. */
 export interface MemoryIndexMetaRecord {
-  readonly schemaVersion: 1 | 2 | 3 | 4 | 5
+  readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6
   readonly scope: MemoryScope
   readonly indexName: string
   readonly sourceRevision: string
@@ -346,11 +363,14 @@ export interface MemoryIndexMetaRecord {
   readonly dimension?: number
   readonly vectorCount?: number
   readonly degradedReason?: string
+  readonly generationId?: string
+  readonly previousGenerationId?: string
+  readonly validated?: boolean
 }
 
 /** Durable provider-neutral vector associated with one source record. */
 export interface MemoryVectorRecord {
-  readonly schemaVersion: 1 | 2 | 3 | 4 | 5
+  readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6
   readonly scope: MemoryScope
   readonly id: string
   readonly indexName: string
@@ -365,7 +385,7 @@ export interface MemoryVectorRecord {
 
 /** Durable alias record for entity resolution without graph ranking. */
 export interface MemoryAliasRecord {
-  readonly schemaVersion: 1 | 2 | 3 | 4 | 5
+  readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6
   readonly scope: MemoryScope
   readonly id: string
   readonly entityId: string
@@ -385,10 +405,10 @@ export interface MemoryAliasRecord {
 }
 
 /** Durable record containing one safe-use projection. */
-export interface MemoryProjectionRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly projection: SafeUsageProjection }
+export interface MemoryProjectionRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly projection: SafeUsageProjection }
 
 /** Durable record containing one read-time conflict overlay. */
-export interface MemoryConflictRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5; readonly scope: MemoryScope; readonly conflict: ConflictOverlay }
+export interface MemoryConflictRecord { readonly schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; readonly scope: MemoryScope; readonly conflict: ConflictOverlay }
 
 /** The one versioned durable domain owned by this plugin. */
 export const MEMORY_DOMAIN = defineDomain({
