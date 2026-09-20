@@ -2,8 +2,10 @@ import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { fetchLive } from './support/live-http.ts'
-import { startLiveHarness, type LiveHarness } from './support/live-harness.ts'
+import { drainInFlight, startLiveHarness, type LiveHarness } from './support/live-harness.ts'
 
 interface RecallDebugBody {
   readonly results: readonly Record<string, unknown>[]
@@ -123,6 +125,91 @@ describe('real JSON storage degradation', () => {
       expect(recoveredTrace.degradedModes).not.toContain('activation-degraded')
     } finally {
       await harness?.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the last Resident when Dream ingest loses its durable pages write', { timeout: 60_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-riko-memory-degradation-dream-'))
+    const nativeFetch = globalThis.fetch
+    const dreamEndpoint = 'https://api.test/api/v1/chat/completions'
+    const failedText = 'dream page must not survive a failed ingest write'
+    const baseline = 'dream durable baseline'
+    const recovered = 'dream durable recovery'
+    let harness: LiveHarness | undefined
+    let restorePages: (() => Promise<void>) | undefined
+    let resolveProviderEntered: (() => void) | undefined
+    const providerEntered = new Promise<void>((resolve) => { resolveProviderEntered = resolve })
+    try {
+      const providerFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        if (String(input) !== dreamEndpoint) return nativeFetch(input, init)
+        restorePages = await blockTableDirectory(root, 'pages')
+        resolveProviderEntered?.()
+        const content = [
+          '<<<FILE path="wiki/concepts/failed-dream.md">>>',
+          '---',
+          'type: concept',
+          'title: Failed Dream page',
+          `description: ${failedText}`,
+          'sources:',
+          '  - dream-storage-failure',
+          'timestamp: 2026-09-19T00:00:00.000Z',
+          'confidence: 0.9',
+          'status: candidate',
+          'consent: false',
+          'locked: false',
+          '---',
+          '',
+          failedText,
+          '<<<END>>>',
+        ].join('\n')
+        return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'content-type': 'application/json' } })
+      }
+      globalThis.fetch = providerFetch as typeof fetch
+      harness = await startLiveHarness([`    dreamApiUrl: ${dreamEndpoint}`], root)
+
+      expect((await postMemory(harness, baseline)).status).toBe(201)
+      expect(await readResident(harness)).toContain(baseline)
+      const session = harness.context.sessions.create(SessionId('dream-storage-failure'), { meta: { agentPreset: 'standard' } })
+      session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'Dream durable failure evidence' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+      await drainInFlight(harness.base, 1)
+
+      const dream = await fetchLive(`${harness.base}/dream`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-dsh-memory-profile': 'standard' },
+        body: JSON.stringify({ sessionId: 'dream-storage-failure' }),
+      })
+      expect(dream.status).toBe(202)
+      await providerEntered
+      await drainInFlight(harness.base)
+      expect(restorePages).toBeDefined()
+      await restorePages?.()
+      restorePages = undefined
+
+      const failedWiki = await fetchLive(`${harness.base}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const failedWikiBody = await failedWiki.json() as {
+        readonly lastError?: string
+        readonly records: readonly Record<string, unknown>[]
+        readonly candidates: readonly Record<string, unknown>[]
+        readonly resident: string
+      }
+      expect(failedWikiBody.lastError).toBeDefined()
+      expect(failedWikiBody.resident).toContain(baseline)
+      expect(failedWikiBody.resident).not.toContain(failedText)
+      expect(failedWikiBody.records).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: expect.stringContaining(failedText) }),
+      ]))
+      expect(failedWikiBody.candidates).toHaveLength(0)
+
+      expect((await postMemory(harness, recovered)).status).toBe(201)
+      const recoveredResident = await readResident(harness)
+      expect(recoveredResident).toContain(baseline)
+      expect(recoveredResident).toContain(recovered)
+      expect(recoveredResident).not.toContain(failedText)
+    } finally {
+      await restorePages?.()
+      await harness?.dispose()
+      globalThis.fetch = nativeFetch
       await rm(root, { recursive: true, force: true })
     }
   })
