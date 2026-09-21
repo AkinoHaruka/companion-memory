@@ -1,0 +1,186 @@
+{
+  "$comment": "Spec execution registry for this package. Every spec file under the spec directory appears here exactly once. A spec that does not run by default must record why, which environment variables gate it, and which job covers it. tests/spec-registry.spec.ts fails when this file and the tests directory disagree, so a spec cannot be skipped without a recorded reason and a named owner.",
+  "package": "@deepseek-ai/dsh-riko-memory",
+  "specDirectory": "tests",
+  "modes": {
+    "default": "Runs under `pnpm exec vitest run packages/bundle/riko-memory` with no environment setup. No test inside may be skipped, todo or conditional.",
+    "opt-in": "Does not run in the default suite. It needs external configuration, so it must name the environment variables that gate it and the job that covers it."
+  },
+  "coverageOwnerForms": {
+    "none": "No job covers it. acceptedGap must be true, and neither the README nor memory-v3-progress.md may claim the behaviour as verified.",
+    "manual:<slug>": "A documented operator procedure covers it. The slug names the procedure; it is not a CI job.",
+    "ci-<mode>": "A run-gates mode covers it. The mode must exist in scripts/run-gates.ts."
+  },
+  "specs": {
+    "alias-recall-loader.spec.ts": {
+      "mode": "default"
+    },
+    "ambiguous-conflict.spec.ts": {
+      "mode": "default"
+    },
+    "answer-eval.spec.ts": {
+      "mode": "default"
+    },
+    "chaos-dense-ablation.spec.ts": {
+      "mode": "default"
+    },
+    "companion-campaign.spec.ts": {
+      "mode": "opt-in",
+      "reason": "It drives the 30-scenario Appendix F corpus against the operator's real Dream and final-answer providers. Continuous integration has no such provider, and every recorded metric is provider-dependent, so the file skips before corpus setup instead of measuring a stand-in.",
+      "envGate": [
+        "DSH_MEMORY_DREAM_ENDPOINT",
+        "DSH_MEMORY_DREAM_KEY",
+        "DSH_MEMORY_ANSWER_ENDPOINT",
+        "DSH_MEMORY_ANSWER_MODEL"
+      ],
+      "coveredBy": "none",
+      "acceptedGap": true
+    },
+    "companion-eval.spec.ts": {
+      "mode": "default"
+    },
+    "contracts.spec.ts": {
+      "mode": "default"
+    },
+    "degradation-storage-init.spec.ts": {
+      "mode": "default"
+    },
+    "degradation-storage-write.spec.ts": {
+      "mode": "default"
+    },
+    "degradation-vector-persisted.spec.ts": {
+      "mode": "default"
+    },
+    "dense-ablation-real.spec.ts": {
+      "mode": "opt-in",
+      "reason": "It measures dense recall over the Appendix F corpus through a real embedding endpoint. The keyless deterministic provider reports dense noise 60 of 60 on the same corpus where a real model reports 2 of 10, so a run without DSH_MEMORY_BGE_ENDPOINT measures the stand-in rather than the capability.",
+      "envGate": [
+        "DSH_MEMORY_BGE_ENDPOINT"
+      ],
+      "coveredBy": "manual:local-bge-endpoint"
+    },
+    "dense-ablation.spec.ts": {
+      "mode": "default"
+    },
+    "dense-routing.spec.ts": {
+      "mode": "default"
+    },
+    "dense-semantic-gain.spec.ts": {
+      "mode": "opt-in",
+      "reason": "It measures unique semantic gain on the paraphrase corpus through a real embedding endpoint. Lexical overlap is the negative control and the deterministic provider scores 2 of 5, so the spec is meaningless without DSH_MEMORY_BGE_ENDPOINT.",
+      "envGate": [
+        "DSH_MEMORY_BGE_ENDPOINT"
+      ],
+      "coveredBy": "manual:local-bge-endpoint"
+    },
+    "disclosure-policy.spec.ts": {
+      "mode": "default"
+    },
+    "dream-protocol.spec.ts": {
+      "mode": "default"
+    },
+    "entity-alias-resolution.spec.ts": {
+      "mode": "default"
+    },
+    "evidence-classification-surface.spec.ts": {
+      "mode": "default"
+    },
+    "evidence-classification.spec.ts": {
+      "mode": "default"
+    },
+    "evidence-classifier-failure.spec.ts": {
+      "mode": "default"
+    },
+    "evidence-disclosure-precedence.spec.ts": {
+      "mode": "default"
+    },
+    "evidence-sensitivity-correction-loader.spec.ts": {
+      "mode": "default"
+    },
+    "live-flag-matrix.spec.ts": {
+      "mode": "default"
+    },
+    "live-projection-conflict.spec.ts": {
+      "mode": "default"
+    },
+    "live-scenarios.spec.ts": {
+      "mode": "default"
+    },
+    "loader-composition.spec.ts": {
+      "mode": "default"
+    },
+    "multi-turn-conversation.spec.ts": {
+      "mode": "default"
+    },
+    "observation-activation.spec.ts": {
+      "mode": "default"
+    },
+    "observation-evidence-live.spec.ts": {
+      "mode": "default"
+    },
+    "persistence-complexity.spec.ts": {
+      "mode": "default"
+    },
+    "persistence-storage-schema.spec.ts": {
+      "mode": "default"
+    },
+    "recall.spec.ts": {
+      "mode": "default"
+    },
+    "recovery.spec.ts": {
+      "mode": "default"
+    },
+    "resilience-load.spec.ts": {
+      "mode": "default"
+    },
+    "resilience-restart-purge.spec.ts": {
+      "mode": "default"
+    },
+    "runner-diagnostics.spec.ts": {
+      "mode": "default"
+    },
+    "sensitivity-provisional.spec.ts": {
+      "mode": "default"
+    },
+    "silent-use-projection.spec.ts": {
+      "mode": "default"
+    },
+    "spec-registry.spec.ts": {
+      "mode": "default"
+    },
+    "store.spec.ts": {
+      "mode": "default"
+    },
+    "vector-index.spec.ts": {
+      "mode": "default"
+    },
+    "wiki.spec.ts": {
+      "mode": "default"
+    }
+  },
+  "observed": {
+    "$comment": "Recorded measurements, kept for comparison. tests/spec-registry.spec.ts does not assert these numbers; wiring them to real runner output is the separate step that reconciles discovery against execution. These totals include the registry gate itself. The repository rejects commit identifiers in maintained files, so this record is anchored by date and package version; the platform that ran it holds the revision.",
+    "recordedOn": "2026-09-21",
+    "packageVersion": "0.1.6-alpha.2",
+    "suite": {
+      "files": 42,
+      "tests": 323,
+      "passed": 312,
+      "skipped": 11
+    },
+    "perSpec": {
+      "companion-campaign.spec.ts": {
+        "tests": 3,
+        "skipped": 3
+      },
+      "dense-ablation-real.spec.ts": {
+        "tests": 4,
+        "skipped": 4
+      },
+      "dense-semantic-gain.spec.ts": {
+        "tests": 4,
+        "skipped": 4
+      }
+    }
+  }
+}

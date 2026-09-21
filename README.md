@@ -417,6 +417,8 @@ No. It is the source mirror of the native memory bundle. Install it from the com
 
 Keep long-lived memory changes inside the storage-domain, Candidate, Wiki and Resident state machine. Do not add a parallel file store, broaden scope silently, persist raw secrets or promote model output without authoritative confirmation. After behavior changes, run static checks, focused tests, Loader tests, the relevant provider probe only when protocol code changed, raw attribution checks and documentation gates before publishing.
 
+**Runtime invariant:** No companion is published. The shared storage domain owns every durable projection this package writes, and its runtime relations are asserted by the Loader-driven contract tests, so it reserves no separate runtime ownership.
+
 <a id="model-experience"></a>
 ## Model Experience
 

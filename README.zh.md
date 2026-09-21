@@ -417,6 +417,8 @@ Dream 执行时从 DSH credentials 或进程环境解析，管理 API 不会写�
 
 长期记忆修改必须留在 storage-domain、Candidate、Wiki 和 Resident 状态机内。不要添加平行文件存储、悄悄扩大 scope、持久化明文 secret，或让模型输出绕过权威确认。行为改变后依次执行静态检查、定向测试、Loader 测试；只有 Dream 协议变化时才重新 provider probe，并检查原始归因和文档门禁后再发布。
 
+**运行时不变式：** 不发布伴生入口。本包写下的所有持久投影都由共享 storage domain 拥有，运行时关系由走真实 Loader 的契约测试断言，因此不再单独登记运行时所有权。
+
 <a id="model-experience"></a>
 ## Model Experience
 
