@@ -14,7 +14,7 @@
       ],
       "closure": {
         "kind": "static_gate",
-        "next": "Run both official external campaigns in a resumable opt-in job: LoCoMo's 10-conversation/1986-QA corpus needs a Gemini-compatible evaluator, while LongMemEval-V2 needs its Python 3.11 runner, prepared small-tier data (the published trajectories file is 1,195,604,539 bytes), reader/controller/embedding endpoints, and a judge; record both official metric artifacts before removing this gap."
+        "next": "Review the published v2 fixed-cohort answer/scorer records under docs/benchmark-results/riko-memory-v2-fixed-cohort-2026-09-22/ and keep this gap open until the empirical acceptance criteria are defined and the measured recall relevance and answer quality are sufficient; the current run completed LoCoMo 49/50 with mean F1 0.0149 and LongMemEval-S 9/50 correct."
       },
       "candidate_deficits": [
         "tests/static-contract-gates.spec.ts: evidence level below empirical",

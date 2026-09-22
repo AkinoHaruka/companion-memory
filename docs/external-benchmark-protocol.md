@@ -73,3 +73,9 @@ On 2026-09-22 the real LoCoMo `conv-26` conversation replay ingested 419 turns a
 The LongMemEval-S diagnostic replay ingested 1,035 role-preserving turns for 2 isolated questions and produced non-empty adapted recall for both; the question date was carried separately as `asOf` and was not inserted into the question text.
 
 These smoke artifacts demonstrate that the adapter and live memory path are not systematically empty, but they do not claim full LoCoMo or LongMemEval-S answer/scorer completion and do not change the `REQ-EVAL-035` evidence status.
+
+## Fixed-cohort v2 result
+
+The 2026-09-22 v2 fixed cohort contains 50 LoCoMo items and 50 LongMemEval-S items. LoCoMo completed recall for 50 items, produced non-empty context for 49, and completed answer/scoring for 49 with mean official-compatible F1 0.0149; one item remains a recorded empty-recall failure. LongMemEval-S completed recall, answer generation and yes/no scoring for all 50 items, with 9 judged correct and 41 judged incorrect. All three configured text models were used, and both campaigns recorded zero API failures and zero scorer failures.
+
+The complete checkpoint, hypothesis, score and failure records are published under `docs/benchmark-results/riko-memory-v2-fixed-cohort-2026-09-22/`. These results validate the resumable execution path, not the quality of the memory capability: traces were dominated by raw-evidence fallback, and non-empty context was not reliably relevant. `REQ-EVAL-035` therefore remains open and the package capability status remains unassessed.
