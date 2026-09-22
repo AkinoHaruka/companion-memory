@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { RETAINED_RUNS, describeError, pruneCompanionRuns } from './support/companion-runner.ts'
+import { RETAINED_RUNS, campaignCheckpointKey, describeError, isCompletedCampaignOutcome, pruneCompanionRuns } from './support/companion-runner.ts'
 
 const roots: string[] = []
 
@@ -117,5 +117,24 @@ describe('transport error diagnostics', () => {
 
   it('renders a thrown value that is not an Error', () => {
     expect(describeError('fixture refused the connection')).toBe('thrown string: fixture refused the connection')
+  })
+})
+
+describe('campaign checkpoint identity', () => {
+  it('reuses only completed or explicitly unsupported outcomes', () => {
+    expect(isCompletedCampaignOutcome({ status: 'executed' })).toBe(true)
+    expect(isCompletedCampaignOutcome({ status: 'unsupported' })).toBe(true)
+    expect(isCompletedCampaignOutcome({ status: 'error' })).toBe(false)
+  })
+
+  it('does not make a credential change invalidate the non-secret provider identity', () => {
+    const previous = process.env.DSH_MEMORY_DREAM_KEY
+    process.env.DSH_MEMORY_DREAM_KEY = 'checkpoint-secret-one'
+    const first = campaignCheckpointKey()
+    process.env.DSH_MEMORY_DREAM_KEY = 'checkpoint-secret-two'
+    const second = campaignCheckpointKey()
+    if (previous === undefined) delete process.env.DSH_MEMORY_DREAM_KEY
+    else process.env.DSH_MEMORY_DREAM_KEY = previous
+    expect(second).toBe(first)
   })
 })

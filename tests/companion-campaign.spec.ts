@@ -6,20 +6,28 @@
  * without pinning provider-dependent rates.
  */
 import { beforeAll, describe, expect, it } from 'vitest'
+import { fileURLToPath } from 'node:url'
 import { companionCorpus } from './support/companion-corpus.ts'
-import { ANSWER_ENDPOINT_ENV, ANSWER_MODEL_ENV } from './support/answer-evaluation.ts'
-import { DREAM_ENDPOINT_ENV, DREAM_KEY_ENV, runCompanionCorpus, type RawOutcome } from './support/companion-runner.ts'
+import { ANSWER_ENDPOINT_ENV, ANSWER_KEY_ENV, ANSWER_MODEL_ENV } from './support/answer-evaluation.ts'
+import { CAMPAIGN_CHECKPOINT_ENV, DREAM_ENDPOINT_ENV, DREAM_KEY_ENV, runCompanionCorpus, type RawOutcome } from './support/companion-runner.ts'
 import { aggregateMetrics, type Metric } from './support/evaluation-metrics.ts'
 
-const dreamEndpoint = process.env[DREAM_ENDPOINT_ENV]?.trim()
+// The test provider is intentionally fixed to the documented Gemini OpenAI-compatible API.
+// Credentials remain runtime-only: the local launcher supplies DSH_MEMORY_DREAM_KEY.
+const DEFAULT_GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
+const DEFAULT_DREAM_MODEL = 'gemini-3.5-flash-lite'
+const DEFAULT_ANSWER_MODEL = 'gemma-4-26b-a4b-it'
+const DEFAULT_CHECKPOINT_PATH = fileURLToPath(new URL('./artifacts/companion-campaign.checkpoint.json', import.meta.url))
+
+const dreamEndpoint = process.env[DREAM_ENDPOINT_ENV]?.trim() || DEFAULT_GEMINI_ENDPOINT
 const dreamKey = process.env[DREAM_KEY_ENV]?.trim()
-const answerEndpoint = process.env[ANSWER_ENDPOINT_ENV]?.trim()
-const answerModel = process.env[ANSWER_MODEL_ENV]?.trim()
+const answerEndpoint = process.env[ANSWER_ENDPOINT_ENV]?.trim() || DEFAULT_GEMINI_ENDPOINT
+const answerKey = process.env[ANSWER_KEY_ENV]?.trim()
+const answerModel = process.env[ANSWER_MODEL_ENV]?.trim() || DEFAULT_ANSWER_MODEL
+const dreamModel = process.env.DSH_MEMORY_DREAM_MODEL?.trim() || DEFAULT_DREAM_MODEL
+const checkpointPath = process.env[CAMPAIGN_CHECKPOINT_ENV]?.trim() || DEFAULT_CHECKPOINT_PATH
 const missing = [
-  dreamEndpoint === undefined || dreamEndpoint.length === 0 ? DREAM_ENDPOINT_ENV : undefined,
   dreamKey === undefined || dreamKey.length === 0 ? DREAM_KEY_ENV : undefined,
-  answerEndpoint === undefined || answerEndpoint.length === 0 ? ANSWER_ENDPOINT_ENV : undefined,
-  answerModel === undefined || answerModel.length === 0 ? ANSWER_MODEL_ENV : undefined,
 ].filter((name): name is string => name !== undefined)
 
 if (missing.length > 0) console.log(`Appendix G real-provider campaign skipped: missing ${missing.join(', ')}`)
@@ -30,11 +38,12 @@ let metrics: Record<string, Metric> = {}
 describe.skipIf(missing.length > 0)('Appendix G real-provider companion campaign', () => {
   beforeAll(async () => {
     if (dreamEndpoint === undefined || dreamKey === undefined) throw new Error('campaign requires a Dream endpoint and key')
-    const dreamModel = process.env.DSH_MEMORY_DREAM_MODEL?.trim()
     const run = await runCompanionCorpus({
       dreamApiUrl: dreamEndpoint,
       dreamApiKey: dreamKey,
-      ...(dreamModel === undefined ? {} : { dreamModel }),
+      dreamModel,
+      answerProvider: { endpoint: answerEndpoint, model: answerModel, ...(answerKey === undefined ? {} : { key: answerKey }) },
+      checkpointPath,
     })
     outcomes = run.outcomes
     console.log(`Appendix G campaign raw results: ${run.path}`)

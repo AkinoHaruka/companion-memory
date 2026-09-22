@@ -298,7 +298,7 @@ describe('Riko memory multi-turn conversation shape', () => {
       if (activeHarness !== undefined) await activeHarness.dispose()
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 15_000)
 
   it('D1 aligns a corrected manual-memory title with its replacement body', async () => {
     const harness = await startLiveHarness(['    recallEnabled: true'])

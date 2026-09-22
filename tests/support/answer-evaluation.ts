@@ -32,6 +32,13 @@ export interface AnswerGenerationRequest {
 /** Injected provider used to create one final assistant answer from the live prompt context. */
 export type AnswerGenerator = (request: AnswerGenerationRequest) => Promise<string> | string
 
+/** Optional non-secret provider settings supplied by a campaign launcher. */
+export interface AnswerProviderSettings {
+  readonly endpoint?: string
+  readonly model?: string
+  readonly key?: string
+}
+
 /** Shared pacing state for the Dream and final-answer provider adapters in one campaign. */
 export interface ProviderRequestGate {
   readonly minIntervalMs: number
@@ -127,11 +134,14 @@ export async function fetchWithProviderRetry(
 export function answerGeneratorFromEnvironment(
   providerGate?: ProviderRequestGate,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  settings: AnswerProviderSettings = {},
 ): AnswerGenerator | undefined {
-  const endpoint = process.env[ANSWER_ENDPOINT_ENV]?.trim()
+  const endpoint = settings.endpoint?.trim() || process.env[ANSWER_ENDPOINT_ENV]?.trim()
   if (endpoint === undefined || endpoint.length === 0) return undefined
-  const model = process.env[ANSWER_MODEL_ENV]?.trim()
-  const key = process.env[ANSWER_KEY_ENV]?.trim()
+  const model = settings.model?.trim() || process.env[ANSWER_MODEL_ENV]?.trim()
+  // The campaign often uses one Gemini key for both provider roles. A separately supplied answer
+  // key still wins; the Dream key fallback is process-local and is never persisted by this module.
+  const key = settings.key?.trim() || process.env[ANSWER_KEY_ENV]?.trim() || process.env.DSH_MEMORY_DREAM_KEY?.trim()
   const gate = providerGate ?? createProviderRequestGate()
   return async (request) => {
     if (model !== undefined && model.length > 0) {

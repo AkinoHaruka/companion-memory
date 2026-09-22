@@ -789,6 +789,15 @@ describe('G4 graph negatives', () => {
     const rootId = wikiPageId('wiki/concepts/hop-root.md')
     expect(value.graph(rootId, 8).nodes.some(node => node.title === 'hop three')).toBe(false)
   })
+
+  it('keeps derived graph recall below canonical authority', async () => {
+    const value = store('graph-authority')
+    await value.upsertManualPage(page('权威根', '根证据 [[派生邻居]]', {}, 'authority-root'))
+    await value.upsertManualPage(page('派生邻居', '关联细节', {}, 'derived-neighbor'))
+    const response = await value.recall('你还记得权威根后来怎么样？', { graphEnabled: true, graphMaxHop: 1 })
+    const derived = response.results.find(result => result.channels.includes('graph') && result.text.includes('关联细节'))
+    expect(derived).toMatchObject({ sourceType: 'canonical', authorityTier: 'graph' })
+  })
 })
 
 describe('§34 purge acceptance', () => {

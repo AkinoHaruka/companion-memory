@@ -1,0 +1,30 @@
+{
+  "$comment": "README capability status is validated from this manifest and the normative requirement/report pair. The current package deliberately makes no verified capability claim while requirements remain unassessed.",
+  "recordedOn": "2026-09-22",
+  "packageVersion": "0.1.6-alpha.2",
+  "overall": "unassessed",
+  "requirementStatus": {
+    "total": 335,
+    "unassessed": 335,
+    "verified": 0
+  },
+  "evidence": {
+    "eligibleRequirements": 334,
+    "requirementsWithEvidenceGaps": 1,
+    "requirementsWithCandidateDeficits": 113
+  },
+  "gapRegister": {
+    "path": "docs/traceability-gap-register.json",
+    "count": 1
+  },
+  "readme": {
+    "en": {
+      "path": "README.md",
+      "anchor": "The current implementation is a governed Phase 1–5 substrate, not a claim that every production evaluation gate is complete."
+    },
+    "zh": {
+      "path": "README.zh.md",
+      "anchor": "当前实现是受治理的 Phase 1–5 substrate，不代表所有生产级评测门槛都已完成。"
+    }
+  }
+}

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createEmbeddingProvider } from '../src/embedding-provider.ts'
 import { memoryScopeForPreset } from '../src/contracts.ts'
 import { MemoryProfileStore } from '../src/store.ts'
-import type { WikiPage } from '../src/wiki.ts'
+import { wikiPageId, type WikiPage } from '../src/wiki.ts'
 
 class Table<V> {
   private readonly values = new Map<string, V>()
@@ -62,6 +62,11 @@ function page(index: number, kind: 'target' | 'distractor'): WikiPage {
     category: 'interaction_rules',
     kind: 'preference',
   }
+}
+
+function cyclePage(title: string, body: string, fileName: string): WikiPage {
+  const path = `wiki/concepts/${fileName}.md`
+  return { ...page(0, 'target'), id: wikiPageId(path), path, title, description: title, body }
 }
 
 interface Trial {
@@ -151,4 +156,16 @@ describe('larger keyless dense ablation', () => {
       expect(gateRejected).toBeLessThanOrEqual(gateCandidates)
     },
   )
+
+  it('terminates graph traversal on a cycle within the chaos budget', { timeout: 15_000 }, async () => {
+    const store = new MemoryProfileStore(new AblationDomain(), memoryScopeForPreset('graph-chaos-owner', 'graph-cycle'), undefined, 12_000)
+    stores.push(store)
+    await store.upsertManualPage(cyclePage('cycle A', '[[cycle B]]', 'cycle-a'))
+    await store.upsertManualPage(cyclePage('cycle B', '[[cycle A]]', 'cycle-b'))
+
+    const graph = store.graph(wikiPageId('wiki/concepts/cycle-a.md'), 64)
+
+    expect(graph.nodes.map(node => node.title)).toEqual(['cycle A', 'cycle B'])
+    expect(graph.edges.length).toBeLessThanOrEqual(2)
+  })
 })

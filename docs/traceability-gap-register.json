@@ -1,0 +1,25 @@
+{
+  "$comment": "Every entry is an evidence gap in the current executed report; closure.next is an actionable next step and does not assert implementation.",
+  "recordedOn": "2026-09-22",
+  "packageVersion": "0.1.6-alpha.2",
+  "count": 1,
+  "gaps": [
+    {
+      "id": "REQ-EVAL-035",
+      "domain": "EVAL",
+      "evidence_min": "empirical",
+      "title": "External benchmarks are conditional on environment availability",
+      "candidate_tests": [
+        "tests/static-contract-gates.spec.ts"
+      ],
+      "closure": {
+        "kind": "static_gate",
+        "next": "Run both official external campaigns in a resumable opt-in job: LoCoMo's 10-conversation/1986-QA corpus needs a Gemini-compatible evaluator, while LongMemEval-V2 needs its Python 3.11 runner, prepared small-tier data (the published trajectories file is 1,195,604,539 bytes), reader/controller/embedding endpoints, and a judge; record both official metric artifacts before removing this gap."
+      },
+      "candidate_deficits": [
+        "tests/static-contract-gates.spec.ts: evidence level below empirical",
+        "tests/static-contract-gates.spec.ts: provider is not compatible with empirical"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 /** Real Loader/HTTP/Agent corpus execution, attributed JSON evidence and bounded artifact retention. */
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { expect, vi } from 'vitest'
@@ -15,6 +16,7 @@ import {
   answerGeneratorFromEnvironment,
   createProviderRequestGate,
   fetchWithProviderRetry,
+  type AnswerProviderSettings,
   type AnswerGenerator,
   type ProviderRequestGate,
 } from './answer-evaluation.ts'
@@ -25,8 +27,11 @@ import { fetchLive } from './live-http.ts'
 export const DREAM_ENDPOINT_ENV = 'DSH_MEMORY_DREAM_ENDPOINT'
 /** Environment variable supplying the credential written to the campaign's disposable credentials file. */
 export const DREAM_KEY_ENV = 'DSH_MEMORY_DREAM_KEY'
+/** Optional path for a durable per-scenario campaign checkpoint. */
+export const CAMPAIGN_CHECKPOINT_ENV = 'DSH_MEMORY_CAMPAIGN_CHECKPOINT'
 
 const FIXTURE_DREAM_API_URL = 'https://api.test/api/v1/chat/completions'
+const REAL_PROVIDER_ROUTE_TIMEOUT_MS = 90_000
 
 interface Snapshot {
   pages: Array<{ id: string; description: string; title: string; status: string }>
@@ -112,6 +117,8 @@ export interface CorpusRunOptions {
   readonly denseEmbedding?: { readonly endpoint: string; readonly model: string; readonly credentialRef: string }
   /** Optional final-answer provider; when absent, the environment-selected provider is used. */
   readonly answerGenerator?: AnswerGenerator
+  /** Optional non-secret answer endpoint/model/key settings for a campaign launcher. */
+  readonly answerProvider?: AnswerProviderSettings
   /** Dream endpoint override; defaults to `DSH_MEMORY_DREAM_ENDPOINT` or the fixture endpoint. */
   readonly dreamApiUrl?: string
   /** Credential passed to `startLiveHarness`; defaults to `DSH_MEMORY_DREAM_KEY` when configured. */
@@ -120,6 +127,8 @@ export interface CorpusRunOptions {
   readonly dreamModel?: string
   /** Shared provider pacing state for one corpus run. */
   readonly providerGate?: ProviderRequestGate
+  /** Optional durable checkpoint; completed scenarios are reused and errors are retried. */
+  readonly checkpointPath?: string
 }
 
 /** One corpus execution set for one side of the dense ablation. */
@@ -132,6 +141,77 @@ export interface CorpusRun {
 export interface DenseAblationRun {
   readonly denseOff: CorpusRun
   readonly denseOn: CorpusRun
+}
+
+/** A completed outcome is safe to reuse after an interrupted campaign. */
+export function isCompletedCampaignOutcome(outcome: Pick<RawOutcome, 'status'>): boolean {
+  return outcome.status === 'executed' || outcome.status === 'unsupported'
+}
+
+/**
+ * Build a provider/configuration identity without including any credential material.
+ *
+ * A checkpoint is evidence for one provider configuration, not a general-purpose answer cache.
+ * Endpoint and model changes therefore invalidate it, while changing a secret does not leak that
+ * secret into the checkpoint or change the identity of the same configured provider.
+ * @param options - Corpus options whose non-secret values define the run.
+ * @returns A stable SHA-256 identity for checkpoint compatibility checks.
+ */
+export function campaignCheckpointKey(options: CorpusRunOptions = {}): string {
+  const identity = {
+    corpus: companionCorpus.map(scenario => scenario.id),
+    evidenceClassification: options.evidenceClassification !== false,
+    denseEnabled: options.denseEnabled ?? null,
+    denseEmbedding: options.denseEmbedding === undefined ? null : {
+      endpoint: options.denseEmbedding.endpoint,
+      model: options.denseEmbedding.model,
+      credentialRef: options.denseEmbedding.credentialRef,
+    },
+    dreamEndpoint: options.dreamApiUrl?.trim() || process.env[DREAM_ENDPOINT_ENV]?.trim() || FIXTURE_DREAM_API_URL,
+    dreamModel: options.dreamModel?.trim() || process.env.DSH_MEMORY_DREAM_MODEL?.trim() || '',
+    answerEndpoint: options.answerProvider?.endpoint?.trim() || process.env.DSH_MEMORY_ANSWER_ENDPOINT?.trim() || '',
+    answerModel: options.answerProvider?.model?.trim() || process.env.DSH_MEMORY_ANSWER_MODEL?.trim() || '',
+    answerMode: options.answerGenerator === undefined ? 'environment' : 'custom',
+  }
+  return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
+}
+
+interface CampaignCheckpointDocument {
+  schemaVersion: 1
+  campaignKey: string
+  updatedAt: string
+  outcomes: RawOutcome[]
+}
+
+async function loadCampaignCheckpoint(path: string, campaignKey: string): Promise<RawOutcome[]> {
+  const text = await readFile(path, 'utf8').catch((error: unknown) => {
+    if ((error as { code?: string }).code === 'ENOENT') return undefined
+    throw error
+  })
+  if (text === undefined) return []
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { throw new Error(`campaign checkpoint is not valid JSON: ${path}; remove it or resume with a new path`) }
+  if (typeof parsed !== 'object' || parsed === null) throw new Error(`campaign checkpoint is not an object: ${path}`)
+  const document = parsed as Partial<CampaignCheckpointDocument>
+  if (document.schemaVersion !== 1 || document.campaignKey !== campaignKey || !Array.isArray(document.outcomes)) {
+    throw new Error(`campaign checkpoint does not match the current provider/model/corpus configuration: ${path}; use a new checkpoint path`)
+  }
+  return document.outcomes.filter((outcome): outcome is RawOutcome => (
+    typeof outcome === 'object' && outcome !== null && typeof (outcome as RawOutcome).scenario?.id === 'string'
+  ))
+}
+
+async function saveCampaignCheckpoint(path: string, campaignKey: string, outcomes: readonly RawOutcome[]): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  const temporary = `${path}.tmp-${String(process.pid)}`
+  const document: CampaignCheckpointDocument = {
+    schemaVersion: 1,
+    campaignKey,
+    updatedAt: new Date().toISOString(),
+    outcomes: [...outcomes],
+  }
+  await writeFile(temporary, JSON.stringify(document, null, 2) + '\n')
+  await rename(temporary, path)
 }
 
 /**
@@ -166,7 +246,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
   let harness: LiveHarness | undefined
   const nativeFetch = globalThis.fetch
   const providerGate = options.providerGate ?? createProviderRequestGate()
-  const answerGenerator = options.answerGenerator ?? answerGeneratorFromEnvironment(providerGate, nativeFetch)
+  const answerGenerator = options.answerGenerator ?? answerGeneratorFromEnvironment(providerGate, nativeFetch, options.answerProvider)
   const kind = scenario.setup.kind
   const sessionId = `eval-${scenario.id.replace('.', '-')}`
   let providerCalls = 0
@@ -198,7 +278,8 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
     ? ((input: RequestInfo | URL, init?: RequestInit) => {
       const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
       if (inputUrl.startsWith('https://api.test/embeddings')) return Promise.resolve(new Response('{}', { status: 503 }))
-      if (inputUrl !== dreamApiUrl) return nativeFetch(input, init)
+      const isDreamRequest = inputUrl === dreamApiUrl || inputUrl.startsWith(`${dreamApiUrl}/`)
+      if (!isDreamRequest) return nativeFetch(input, init)
       // The degradation trial injects its own provider failure. A live endpoint would answer it, so the
       // fault stays in the fixture; the call is counted once because the plugin did make one.
       if (kind === 'dream-failure') { providerCalls += 1; return Promise.resolve(new Response('{}', { status: 503 })) }
@@ -216,7 +297,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
   try {
     harness = await startLiveHarness(config, root, dreamApiKey)
     await vi.waitFor(() => { expect(harness?.context.webServer.port).toBeGreaterThan(0) }, { timeout: 15_000 })
-    const request = async <T>(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST', profile = 'standard'): Promise<T> => {
+    const request = async <T>(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST', profile = 'standard', timeoutMs?: number): Promise<T> => {
       let response: Response
       try {
         // `fetchLive`, not the native fetch: this URL's port is OS-assigned, and Fetch refuses a
@@ -224,7 +305,7 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
         // 1024-15000 (`netsh int ipv4 show dynamicport tcp`), which overlaps the blocklist, so the
         // native transport turns one scenario into `TypeError: fetch failed <- caused by Error: bad
         // port` often enough to fail a round. `fetchLive` is node:http for exactly this reason.
-        response = await fetchLive(`http://127.0.0.1:${String(harness!.context.webServer.port)}/memory/v1${path}`, { method, headers: { 'content-type': 'application/json', 'x-dsh-memory-profile': profile }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        response = await fetchLive(`http://127.0.0.1:${String(harness!.context.webServer.port)}/memory/v1${path}`, { method, headers: { 'content-type': 'application/json', 'x-dsh-memory-profile': profile }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, timeoutMs === undefined ? {} : { timeoutMs })
       } catch (error) {
         // A fetch-level failure carries no request identity of its own, so name the route on
         // the thrown error and keep its cause chain intact for the recorded outcome.
@@ -369,11 +450,11 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
       if (kind === 'dream-failure') { append('dream failure anchor'); await evidence() }
       await request('/dream', { sessionId })
       await vi.waitFor(async () => {
-        const state = await request<Snapshot>('/wiki')
+        const state = await request<Snapshot>('/wiki', undefined, 'GET', 'standard', REAL_PROVIDER_ROUTE_TIMEOUT_MS)
         expect(providerCalls).toBeGreaterThan(0)
         if (kind === 'dream') expect(state.candidates.length).toBeGreaterThan(0)
         else expect(state.lastError).toBeTruthy()
-      }, { timeout: 15_000 })
+      }, { timeout: 120_000 })
     }
     if (kind === 'restart' || kind === 'purge' || kind === 'evidence' || kind === 'purge-crash-recovery') {
       // The evidence trial restarts for the same reason the others do — to read state back from durable
@@ -542,12 +623,28 @@ export async function runCompanionCorpus(options: CorpusRunOptions = {}): Promis
   // by recency long before this run stops writing into it.
   await writeFile(join(run, RUN_OWNER_FILE), JSON.stringify({ pid: process.pid }))
   const path = join(run, 'raw-results.json')
-  const outcomes: RawOutcome[] = []
+  const checkpointPath = options.checkpointPath?.trim() || process.env[CAMPAIGN_CHECKPOINT_ENV]?.trim()
+  const checkpointKey = campaignCheckpointKey(options)
+  const restored = checkpointPath === undefined ? [] : await loadCampaignCheckpoint(checkpointPath, checkpointKey)
+  const scenarioIds = new Set(companionCorpus.map(scenario => scenario.id))
+  const byScenario = new Map(restored.filter(outcome => scenarioIds.has(outcome.scenario.id)).map(outcome => [outcome.scenario.id, outcome]))
+  let outcomes = companionCorpus.flatMap(scenario => {
+    const outcome = byScenario.get(scenario.id)
+    return outcome === undefined ? [] : [outcome]
+  })
   const providerGate = options.providerGate ?? createProviderRequestGate()
   for (const scenario of companionCorpus) {
-    outcomes.push(await executeCompanion(scenario, { ...options, providerGate }))
+    const restoredOutcome = byScenario.get(scenario.id)
+    if (restoredOutcome !== undefined && isCompletedCampaignOutcome(restoredOutcome)) continue
+    byScenario.set(scenario.id, await executeCompanion(scenario, { ...options, providerGate }))
+    outcomes = companionCorpus.flatMap(current => {
+      const outcome = byScenario.get(current.id)
+      return outcome === undefined ? [] : [outcome]
+    })
     await writeFile(path, JSON.stringify({ schemaVersion: 1, outcomes }, null, 2) + '\n')
+    if (checkpointPath !== undefined) await saveCampaignCheckpoint(checkpointPath, checkpointKey, outcomes)
   }
+  if (outcomes.length > 0) await writeFile(path, JSON.stringify({ schemaVersion: 1, outcomes }, null, 2) + '\n')
   return { path, outcomes }
 }
 
