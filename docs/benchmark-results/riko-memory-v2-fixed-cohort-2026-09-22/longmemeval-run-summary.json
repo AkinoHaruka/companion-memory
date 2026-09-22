@@ -1,0 +1,36 @@
+{
+  "benchmark": "longmemeval",
+  "dataset": "C:\\Users\\shen_\\AppData\\Local\\Temp\\riko-memory-external-benchmarks\\longmemeval_s_cleaned.json",
+  "datasetSha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+  "cohortManifest": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\benchmark-cohort-100.json",
+  "selectedItems": 50,
+  "answerModels": [
+    "gemini-3.5-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it"
+  ],
+  "scorerModels": [
+    "gemini-3.5-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it"
+  ],
+  "apiFailureThreshold": 3,
+  "parallelLanes": 3,
+  "answerNormalizationVersion": "answer-normalization-v1",
+  "maxNewItems": 0,
+  "processedThisRun": 50,
+  "recalled": 50,
+  "recallNonEmpty": 50,
+  "emptyRecall": 0,
+  "answered": 50,
+  "answerGenerated": 50,
+  "scored": 50,
+  "successfullyScored": 50,
+  "completed": 50,
+  "effectiveCompletionRate": 1,
+  "failures": 0,
+  "answerApiFailures": 0,
+  "scorerFailures": 0,
+  "checkpoint": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\longmemeval-s-answer-v2-exact.checkpoint.json",
+  "artifactDir": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\longmemeval-s-answer-score-v2-exact"
+}

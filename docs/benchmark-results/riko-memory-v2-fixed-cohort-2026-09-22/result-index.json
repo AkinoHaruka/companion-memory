@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "runDate": "2026-09-22",
+  "title": "riko-memory v2 fixed cohort answer and scoring records",
+  "cohort": {
+    "total": 100,
+    "locomo": 50,
+    "longmemeval": 50,
+    "selection": "benchmark-cohort-100.json"
+  },
+  "models": [
+    "gemini-3.5-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it"
+  ],
+  "results": {
+    "locomo": {
+      "recall": 50,
+      "nonEmptyRecall": 49,
+      "answered": 49,
+      "scored": 49,
+      "completed": 49,
+      "emptyRecall": 1,
+      "meanF1": 0.0149,
+      "apiFailures": 0,
+      "scorerFailures": 0
+    },
+    "longmemeval": {
+      "recall": 50,
+      "nonEmptyRecall": 50,
+      "answered": 50,
+      "scored": 50,
+      "completed": 50,
+      "scorerTrue": 9,
+      "scorerFalse": 41,
+      "apiFailures": 0,
+      "scorerFailures": 0
+    }
+  },
+  "interpretation": [
+    "The execution and checkpoint pipeline completed without API or scorer failures.",
+    "Non-empty recall was not equivalent to relevant recall: the traces were dominated by raw evidence fallback and had no lexical-channel candidates in this run.",
+    "These records measure the current controlled benchmark run; they do not upgrade the package capability status to verified."
+  ],
+  "files": [
+    "benchmark-cohort-100.json",
+    "locomo-recall-v2-cohort-50-exact.checkpoint.json",
+    "locomo-recall-v2-cohort-50-exact.json",
+    "locomo-answer-v2-exact.checkpoint.json",
+    "locomo-failure-summary.json",
+    "locomo-hypotheses.ndjson",
+    "locomo-run-summary.json",
+    "locomo-scores.ndjson",
+    "longmemeval-recall-v2-cohort-50.checkpoint.json",
+    "longmemeval-recall-v2-cohort-50.json",
+    "longmemeval-s-answer-v2-exact.checkpoint.json",
+    "longmemeval-failure-summary.json",
+    "longmemeval-hypotheses.ndjson",
+    "longmemeval-run-summary.json",
+    "longmemeval-scores.ndjson"
+  ]
+}

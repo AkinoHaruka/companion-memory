@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "mode": "recall-only-smoke",
+  "identity": {
+    "benchmark": "locomo",
+    "datasetVersion": "locomo10.json",
+    "datasetSha256": "553cd5a15e25f2ceccc6ed185221eba645080c93e5b91087560a91aa5961f365",
+    "adapterVersion": "benchmark-query-v2",
+    "ingestionMappingVersion": "role-map-v1",
+    "runtimeFingerprint": "riko-memory-live-harness-v1",
+    "embeddingProvider": "lexical-default",
+    "timeoutPolicy": "fixture-default",
+    "retryPolicy": "explicit-stage-retry-only"
+  },
+  "campaignKey": "a3fd32471e285ebed3ec4577c5a5975fbb4bf490a7c1bec9a013d7ce506c6a16",
+  "datasetPath": "C:\\Users\\shen_\\AppData\\Local\\Temp\\riko-memory-external-benchmarks\\locomo\\data\\locomo10.json",
+  "checkpointPath": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\locomo-recall-v2-cohort-50-exact.checkpoint.json",
+  "harnessRoot": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\locomo-recall-v2-cohort-50-exact-runtime",
+  "sampleIds": [
+    "conv-26",
+    "conv-30",
+    "conv-41",
+    "conv-42",
+    "conv-43",
+    "conv-44",
+    "conv-47",
+    "conv-48",
+    "conv-49",
+    "conv-50"
+  ],
+  "sampleCount": 10,
+  "turnCount": 5882,
+  "queryCount": 50,
+  "attemptedCountThisRun": 50,
+  "turnsIngestedThisRun": 5882,
+  "recordedRecallCount": 50,
+  "nonEmptyCount": 49,
+  "emptyCount": 1,
+  "status": "partial-recall-observed",
+  "completedAt": "2026-09-22T11:50:42.160Z"
+}

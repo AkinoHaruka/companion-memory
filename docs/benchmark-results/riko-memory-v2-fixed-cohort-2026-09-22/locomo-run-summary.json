@@ -1,0 +1,32 @@
+{
+  "benchmark": "locomo",
+  "dataset": "C:\\Users\\shen_\\AppData\\Local\\Temp\\riko-memory-external-benchmarks\\locomo\\data\\locomo10.json",
+  "datasetSha256": "553cd5a15e25f2ceccc6ed185221eba645080c93e5b91087560a91aa5961f365",
+  "cohortManifest": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\benchmark-cohort-100.json",
+  "selectedItems": 50,
+  "answerModels": [
+    "gemini-3.5-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it"
+  ],
+  "scorerModels": [],
+  "apiFailureThreshold": 3,
+  "parallelLanes": 3,
+  "answerNormalizationVersion": "answer-normalization-v1",
+  "maxNewItems": 0,
+  "processedThisRun": 49,
+  "recalled": 50,
+  "recallNonEmpty": 49,
+  "emptyRecall": 1,
+  "answered": 49,
+  "answerGenerated": 49,
+  "scored": 49,
+  "successfullyScored": 49,
+  "completed": 49,
+  "effectiveCompletionRate": 0.98,
+  "failures": 1,
+  "answerApiFailures": 0,
+  "scorerFailures": 0,
+  "checkpoint": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\locomo-answer-v2-exact.checkpoint.json",
+  "artifactDir": "C:\\TRAE\\Riko-dsh\\codex-runs-p5\\artifacts\\locomo-answer-score-v2-exact"
+}

@@ -1,0 +1,12 @@
+{
+  "failures": [
+    {
+      "itemId": "qa:conv-50:92",
+      "failure": {
+        "stage": "recalled",
+        "retryable": false,
+        "message": "recall-only smoke returned no usable context (debug=200, recall=200, results=0)"
+      }
+    }
+  ]
+}

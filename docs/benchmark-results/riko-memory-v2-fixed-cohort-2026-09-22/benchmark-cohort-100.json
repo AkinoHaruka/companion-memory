@@ -1,0 +1,637 @@
+{
+  "schemaVersion": 1,
+  "name": "benchmark-cohort-100",
+  "selectionPolicy": "valid non-empty question and reference answer; fixed strata quotas; stable SHA-256 order within each stratum; no outcome-based filtering",
+  "dataset": {
+    "locomo": {
+      "path": "C:\\Users\\shen_\\AppData\\Local\\Temp\\riko-memory-external-benchmarks\\locomo\\data\\locomo10.json",
+      "file": "locomo10.json",
+      "sha256": "553cd5a15e25f2ceccc6ed185221eba645080c93e5b91087560a91aa5961f365"
+    },
+    "longmemeval": {
+      "path": "C:\\Users\\shen_\\AppData\\Local\\Temp\\riko-memory-external-benchmarks\\longmemeval_s_cleaned.json",
+      "file": "longmemeval_s_cleaned.json",
+      "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+    }
+  },
+  "quotas": {
+    "locomo": {
+      "1": 7,
+      "2": 8,
+      "3": 3,
+      "4": 21,
+      "5": 11
+    },
+    "longmemeval": {
+      "single-session-user": 7,
+      "multi-session": 13,
+      "single-session-preference": 3,
+      "temporal-reasoning": 13,
+      "knowledge-update": 8,
+      "single-session-assistant": 6
+    }
+  },
+  "items": [
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-26:154",
+      "stratum": "category:5",
+      "sourceIndex": 0
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-26:77",
+      "stratum": "category:3",
+      "sourceIndex": 0
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-26:78",
+      "stratum": "category:1",
+      "sourceIndex": 0
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-26:99",
+      "stratum": "category:4",
+      "sourceIndex": 0
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-30:101",
+      "stratum": "category:5",
+      "sourceIndex": 1
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-30:20",
+      "stratum": "category:2",
+      "sourceIndex": 1
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-30:39",
+      "stratum": "category:4",
+      "sourceIndex": 1
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-30:74",
+      "stratum": "category:4",
+      "sourceIndex": 1
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-41:130",
+      "stratum": "category:4",
+      "sourceIndex": 2
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-41:182",
+      "stratum": "category:5",
+      "sourceIndex": 2
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-41:19",
+      "stratum": "category:1",
+      "sourceIndex": 2
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-41:34",
+      "stratum": "category:2",
+      "sourceIndex": 2
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-41:79",
+      "stratum": "category:4",
+      "sourceIndex": 2
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-42:137",
+      "stratum": "category:4",
+      "sourceIndex": 3
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-42:229",
+      "stratum": "category:5",
+      "sourceIndex": 3
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-42:37",
+      "stratum": "category:2",
+      "sourceIndex": 3
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-42:50",
+      "stratum": "category:1",
+      "sourceIndex": 3
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-43:138",
+      "stratum": "category:4",
+      "sourceIndex": 4
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-43:199",
+      "stratum": "category:5",
+      "sourceIndex": 4
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-43:219",
+      "stratum": "category:5",
+      "sourceIndex": 4
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-43:225",
+      "stratum": "category:5",
+      "sourceIndex": 4
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-43:227",
+      "stratum": "category:5",
+      "sourceIndex": 4
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-43:56",
+      "stratum": "category:2",
+      "sourceIndex": 4
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-43:65",
+      "stratum": "category:1",
+      "sourceIndex": 4
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-44:55",
+      "stratum": "category:2",
+      "sourceIndex": 5
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-47:178",
+      "stratum": "category:5",
+      "sourceIndex": 6
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-47:44",
+      "stratum": "category:3",
+      "sourceIndex": 6
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-47:73",
+      "stratum": "category:4",
+      "sourceIndex": 6
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-47:88",
+      "stratum": "category:4",
+      "sourceIndex": 6
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:109",
+      "stratum": "category:4",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:141",
+      "stratum": "category:4",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:188",
+      "stratum": "category:4",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:24",
+      "stratum": "category:1",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:5",
+      "stratum": "category:3",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:53",
+      "stratum": "category:2",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:58",
+      "stratum": "category:4",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-48:8",
+      "stratum": "category:1",
+      "sourceIndex": 7
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:108",
+      "stratum": "category:4",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:119",
+      "stratum": "category:4",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:157",
+      "stratum": "category:5",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:176",
+      "stratum": "category:5",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:68",
+      "stratum": "category:2",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:76",
+      "stratum": "category:2",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:77",
+      "stratum": "category:1",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-49:86",
+      "stratum": "category:4",
+      "sourceIndex": 8
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-50:115",
+      "stratum": "category:4",
+      "sourceIndex": 9
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-50:117",
+      "stratum": "category:4",
+      "sourceIndex": 9
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-50:118",
+      "stratum": "category:4",
+      "sourceIndex": 9
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-50:92",
+      "stratum": "category:4",
+      "sourceIndex": 9
+    },
+    {
+      "benchmark": "locomo",
+      "itemId": "qa:conv-50:94",
+      "stratum": "category:4",
+      "sourceIndex": 9
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:0100672e",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 193
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:0862e8bf_abs",
+      "stratum": "question_type:single-session-user",
+      "sourceIndex": 64
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:0bc8ad92",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 238
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:0e4e4c46",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 406
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:129d1232",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 107
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:1c0ddc50",
+      "stratum": "question_type:single-session-preference",
+      "sourceIndex": 160
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:1d4e3b97",
+      "stratum": "question_type:single-session-preference",
+      "sourceIndex": 158
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:21436231",
+      "stratum": "question_type:single-session-user",
+      "sourceIndex": 24
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:2ebe6c92",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 286
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:38146c39",
+      "stratum": "question_type:single-session-preference",
+      "sourceIndex": 146
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:3b6f954b",
+      "stratum": "question_type:single-session-user",
+      "sourceIndex": 13
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:51b23612",
+      "stratum": "question_type:single-session-assistant",
+      "sourceIndex": 476
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:5809eb10",
+      "stratum": "question_type:single-session-assistant",
+      "sourceIndex": 484
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:5a4f22c0",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 388
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:5d3d2817",
+      "stratum": "question_type:single-session-user",
+      "sourceIndex": 10
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:6456829e",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 175
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:7024f17c",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 94
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:7401057b",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 421
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:7527f7e2",
+      "stratum": "question_type:single-session-user",
+      "sourceIndex": 11
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:7a8d0b71",
+      "stratum": "question_type:single-session-assistant",
+      "sourceIndex": 481
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:7e974930",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 408
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:80ec1f4f_abs",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 127
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:830ce83f",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 368
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:86f00804",
+      "stratum": "question_type:single-session-user",
+      "sourceIndex": 51
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:8cf51dda",
+      "stratum": "question_type:single-session-assistant",
+      "sourceIndex": 461
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:a08a253f",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 216
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:a1eacc2a",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 377
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:a3332713",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 214
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:a3838d2b",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 321
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:affe2881",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 413
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:b86304ba",
+      "stratum": "question_type:single-session-user",
+      "sourceIndex": 30
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:bcbe585f",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 272
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:c18a7dc8",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 213
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:d596882b",
+      "stratum": "question_type:single-session-assistant",
+      "sourceIndex": 474
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:d682f1a2",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 93
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:d851d5ba",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 111
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:dcfa8644",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 333
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:e3fc4d6e",
+      "stratum": "question_type:single-session-assistant",
+      "sourceIndex": 475
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:eace081b",
+      "stratum": "question_type:knowledge-update",
+      "sourceIndex": 412
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:edced276_abs",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 130
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_1d80365e",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 246
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_731e37d7",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 115
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_7de946e7",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 339
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_7f6b06db",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 247
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_85da3956",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 280
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_88806d6e",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 345
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_b4a80587",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 334
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_d12ceb0e",
+      "stratum": "question_type:multi-session",
+      "sourceIndex": 99
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_f420262c",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 269
+    },
+    {
+      "benchmark": "longmemeval",
+      "itemId": "question:gpt4_fe651585_abs",
+      "stratum": "question_type:temporal-reasoning",
+      "sourceIndex": 365
+    }
+  ],
+  "cohortKey": "902095fdee7f9c28239e0d31646ad3f09ab8274a7e5bc9341913984530f0823c"
+}
