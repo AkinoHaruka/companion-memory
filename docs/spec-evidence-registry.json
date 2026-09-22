@@ -18,6 +18,8 @@
     "tests/alias-recall-loader.spec.ts": { "level": "loader_e2e", "provider": "deterministic_fixture" },
     "tests/ambiguous-conflict.spec.ts": { "level": "integration", "provider": "deterministic_fixture" },
     "tests/answer-eval.spec.ts": { "level": "loader_e2e", "provider": "deterministic_fixture" },
+    "tests/benchmark-checkpoint.spec.ts": { "level": "unit", "provider": "deterministic_fixture" },
+    "tests/benchmark-query-adapter.spec.ts": { "level": "unit", "provider": "deterministic_fixture" },
     "tests/chaos-dense-ablation.spec.ts": { "level": "chaos", "provider": "deterministic_fixture" },
     "tests/companion-campaign.spec.ts": { "level": "empirical", "provider": "real_provider" },
     "tests/companion-eval.spec.ts": { "level": "loader_e2e", "provider": "deterministic_fixture" },

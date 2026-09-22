@@ -4,9 +4,9 @@
   "packageVersion": "0.1.6-alpha.2",
   "runner": "vitest --reporter=json",
   "suite": {
-    "files": 45,
-    "tests": 344,
-    "passed": 333,
+    "files": 47,
+    "tests": 355,
+    "passed": 344,
     "failed": 0,
     "skipped": 11,
     "todo": 0,
@@ -44,6 +44,28 @@
       "todo": 0,
       "executed": true,
       "evidenceLevel": "loader_e2e",
+      "provider": "deterministic_fixture"
+    },
+    "tests/benchmark-checkpoint.spec.ts": {
+      "status": "passed",
+      "tests": 5,
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "executed": true,
+      "evidenceLevel": "unit",
+      "provider": "deterministic_fixture"
+    },
+    "tests/benchmark-query-adapter.spec.ts": {
+      "status": "passed",
+      "tests": 6,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "executed": true,
+      "evidenceLevel": "unit",
       "provider": "deterministic_fixture"
     },
     "tests/chaos-dense-ablation.spec.ts": {

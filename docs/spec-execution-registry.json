@@ -21,6 +21,12 @@
     "answer-eval.spec.ts": {
       "mode": "default"
     },
+    "benchmark-checkpoint.spec.ts": {
+      "mode": "default"
+    },
+    "benchmark-query-adapter.spec.ts": {
+      "mode": "default"
+    },
     "chaos-dense-ablation.spec.ts": {
       "mode": "default"
     },
@@ -179,9 +185,9 @@
     "runner": "vitest --reporter=json",
     "report": "docs/spec-execution-report.json",
     "suite": {
-      "files": 45,
-      "tests": 344,
-      "passed": 333,
+      "files": 47,
+      "tests": 355,
+      "passed": 344,
       "skipped": 11
     },
     "perSpec": {
@@ -220,6 +226,16 @@
       "execution-baseline.integration.spec.ts": {
         "tests": 1,
         "passed": 1,
+        "skipped": 0
+      },
+      "benchmark-checkpoint.spec.ts": {
+        "tests": 5,
+        "passed": 5,
+        "skipped": 0
+      },
+      "benchmark-query-adapter.spec.ts": {
+        "tests": 6,
+        "passed": 6,
         "skipped": 0
       }
     }
