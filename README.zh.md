@@ -384,6 +384,8 @@ sanitized-provider-errors.log
 
 明确延期：生产级后台 vector-index compaction 和多节点 index ownership；live reranker 接入；sensitivity 假阴率和假阳率；完整 projection 和 answer-side outcome 指标；完整 conflict evaluation matrix；经过验证的 hedged silent use；超出 anchored Observation candidate 的完整 Reflection/consolidation；完整 live HTTP/Agent alias authority matrix；超出有界 wikilink graph expansion 的 entity resolution；storageDomain 之外的完整数据擦除；多节点存储；公网多租户运营；敏感内容的生产级自动确认策略；超出三十场景 companion 语料的 200–500 场景生产 benchmark；超出 focused package probe 的生产级 load/chaos 评测；以及脱离兼容 DSH workspace 的独立 runtime。
 
+当前验证快照（2026-09-22）：335 条规范合同中有 334 条已有可用证据，仍有 1 条证据缺口，即 [REQ-EVAL-035](docs/traceability-gap-register.json)。执行报告记录 45 个 spec 文件和 344 个测试，其中 333 个通过、11 个跳过；默认无凭据运行记录 41 个文件、329 个通过、15 个跳过。跳过项是 opt-in provider/data campaign，不是失败。该快照不宣称 LoCoMo 或 LongMemEval 外部 benchmark 已完成。
+
 当前实现是受治理的 Phase 1–5 substrate，不代表所有生产级评测门槛都已完成。现有 package suite 覆盖已实现的状态转换，并已运行 Appendix F 语料和 Appendix G 聚合；没有 answer generator 时仍有四个 answer-side 语料指标显式标记为 unsupported，同时 focused restart、purge-interruption、load 和 keyless chaos probe 已存在。启用 opt-in flags 前仍需补齐 production benchmark、coverage 和生产级 load/chaos 证据。
 
 ## 常见问题
@@ -463,4 +465,5 @@ Recall 上下文变化会修改注入点之后的动态请求上下文，并可�
 - Observation candidate 可以来自启用的 Dream reflection。创建 candidate 和更新 evidence 时，candidate 只有在敏感度为 `normal`、没有强矛盾，并满足配置的 evidence、不同 Session 和 confidence 阈值时才会自动激活；需要认证的管理路由也可以显式 activate、invalidate 或 suppress Observation，显式 activation 使用 store 的最少 evidence 检查。两条激活路径都不等于 canonical confirmation，也不授予 explicit mention permission。
 - `storageDomain` 是宿主持久化边界，不是分布式共识；公网多节点部署需要额外设计。
 - Provider 质量仍有波动，严格解析能保护状态机，但不能保证候选一定相关或完整。
+- 外部 benchmark 尚未闭环：REQ-EVAL-035 需要真实、可断点续跑的 LoCoMo 和 LongMemEval campaign，并保留各自的指标产物。产生空 recall context 或零分的适配器实验不计为证据。
 - Appendix F 语料覆盖三十个代表场景；没有 answer generator 时有四个 answer-side 指标 unsupported，Appendix G 产出 21 个字段。`safeUsageProjectionRate` 和 `rawTextWithheldRate` 是直接投影测量，answer-side outcome 字段在没有生成答案时仍 unsupported。keyless dense ablation 是 routing 和 selection probe，不是 BGE 质量结果。sensitivity 假阴率和假阳率、经过验证的 hedged silent-use 评测、完整 Reflection/consolidation、超出有界 wikilink graph expansion 的 entity resolution、storageDomain 之外的完整数据擦除、公网多租户运营、敏感内容自动确认、200–500 场景生产 benchmark、生产级 load/chaos 评测，以及脱离 DSH 的独立 runtime 均为后续工作。
