@@ -48,7 +48,7 @@ Checkpoint writes use a temporary file followed by an atomic rename, and complet
 
 Each run summary reports the fixed cohort denominator, non-empty recall, generated answers, successfully scored answers, effective completion rate, empty recall, answer-provider failures and scorer failures separately; provider or protocol failures are never counted as wrong answers.
 
-The live answer/scorer runner uses one fixed model lane per configured text model and processes different items in parallel across lanes; an item retries the same model for ordinary empty-output or protocol failures, and only repeated provider-unavailable errors such as 429, 5xx, timeout or network failure permit failover to the next model. If every configured model is unavailable, the runner keeps cycling and retrying until one provider recovers. The embedding model is never used for text generation.
+The live answer/scorer runner uses one fixed worker lane per configured text model and pulls the next unfinished item from a shared queue whenever that model finishes; it does not pre-assign a disjoint question range to a model. An item retries the same model for ordinary empty-output or protocol failures, and only repeated provider-unavailable errors such as 429, 5xx, timeout or network failure permit failover to the next model. If every configured model is unavailable, the runner keeps cycling and retrying until one provider recovers. The embedding model is never used for text generation.
 
 ## Evidence units
 
