@@ -58,6 +58,8 @@ export interface BenchmarkCheckpointItem {
   readonly rawAnswer?: string
   readonly scoredAnswer?: string
   readonly answerNormalizationVersion?: typeof BENCHMARK_ANSWER_NORMALIZATION_VERSION
+  readonly answerModelUsed?: string
+  readonly scorerModelUsed?: string
   readonly score?: unknown
   readonly failure?: BenchmarkFailure
   readonly ingestion?: BenchmarkIngestionSummary
