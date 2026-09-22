@@ -10,6 +10,7 @@ import {
   recordBenchmarkStage,
   saveBenchmarkCheckpoint,
   stageCompleted,
+  normalizeBenchmarkAnswer,
   type BenchmarkCheckpointItem,
   type BenchmarkRunIdentity,
 } from './support/benchmark-checkpoint.ts'
@@ -76,6 +77,12 @@ describe('external benchmark checkpoint', () => {
     expect(failed.attempts.answered).toBe(1)
     expect(() => recordBenchmarkStage(recalled, 'ingested')).toThrow('cannot move backwards')
     expect(() => recordBenchmarkStage(recalled, 'pending')).toThrow('cannot move backwards')
+  })
+
+  it('normalizes protocol thought wrappers without changing the raw answer', () => {
+    const rawAnswer = '<thought>Need to inspect memory.</thought> The hamster is named Mochi.'
+    expect(normalizeBenchmarkAnswer(rawAnswer)).toBe('The hamster is named Mochi.')
+    expect(rawAnswer).toContain('<thought>')
   })
 
   it('persists each stage and does not implicitly retry a failed provider stage', async () => {

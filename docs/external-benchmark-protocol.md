@@ -6,7 +6,7 @@ This protocol defines the only permitted path for closing `REQ-EVAL-035`; it is 
 
 `originalQuestion` is the exact benchmark question used by the answer generator and official scorer.
 
-`retrievalQuery` is produced by the fixed `benchmark-query-v1` adapter, which adds only a generic long-term-memory intent and a no-invention instruction.
+`retrievalQuery` is produced by the fixed `benchmark-query-v2` adapter, which adds a memory-intent cue and a no-invention instruction without using production temporal cues such as `before`, `earlier`, `last year` or `recent`.
 
 The adapter may normalize Unicode, whitespace and punctuation for retrieval, and may carry an evaluation `asOf` value separately; it must not alter the scored question.
 
@@ -30,6 +30,10 @@ The QA question must not be appended to memory after it is asked, and one conver
 
 The answer generator receives only the original question and the retrieved context; it does not receive answer labels, evidence labels or retrieval hints derived from them.
 
+The adapter has deterministic planner regression cases for personal questions shaped like `What is`, `Who is` and `Where did`, plus a genuinely temporal question; ordinary personal questions must not become temporal only because of the adapter.
+
+Answer artifacts preserve the model's `rawAnswer` and record a deterministic `scoredAnswer` under `answer-normalization-v1`; paired `thought` wrappers are removed only from the scorer input and never from the raw artifact.
+
 ## Checkpoint stages
 
 Every item advances monotonically through `pending`, `ingested`, `recalled`, `answered`, `scored` and `completed`.
@@ -41,6 +45,8 @@ Checkpoint identity includes benchmark name and version, dataset SHA-256, adapte
 Credential values never enter checkpoint identity or artifacts.
 
 Checkpoint writes use a temporary file followed by an atomic rename, and completed stages are reused only when the full identity matches.
+
+Each run summary reports the fixed cohort denominator, non-empty recall, generated answers, successfully scored answers, effective completion rate, empty recall, answer-provider failures and scorer failures separately; provider or protocol failures are never counted as wrong answers.
 
 ## Evidence units
 

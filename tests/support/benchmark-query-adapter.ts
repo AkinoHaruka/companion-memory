@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 
 /** Version of the deterministic, label-blind benchmark query transformation. */
-export const BENCHMARK_QUERY_ADAPTER_VERSION = 'benchmark-query-v1'
+export const BENCHMARK_QUERY_ADAPTER_VERSION = 'benchmark-query-v2'
 
-const MEMORY_INTENT_PREFIX = 'Retrieve relevant information from long-term conversation memory before answering.'
+const MEMORY_INTENT_PREFIX = 'Do you remember my previous conversation context relevant to this question?'
 const NO_MEMORY_INSTRUCTION = 'If no relevant memory is available, say so instead of inventing.'
 
 /** The only benchmark fields allowed to affect the retrieval query. */
@@ -33,9 +33,10 @@ function digest(value: string): string {
 /**
  * Turn an implicit benchmark memory question into an explicit retrieval request.
  *
- * The answer-side question remains byte-for-byte intact. Only a fixed task-intent prefix and a
+ * The answer-side question remains byte-for-byte intact. Only a fixed memory-intent prefix and a
  * no-invention instruction are added to the retrieval query; benchmark labels are not accepted by
- * this input shape and therefore cannot influence retrieval.
+ * this input shape and therefore cannot influence retrieval. The prefix is deliberately free of
+ * production temporal cues such as "before", "earlier", "last year", and "recent".
  */
 export function adaptBenchmarkQuestion(input: BenchmarkQuestionInput): BenchmarkQueryPlan {
   if (typeof input.question !== 'string' || input.question.trim().length === 0) {

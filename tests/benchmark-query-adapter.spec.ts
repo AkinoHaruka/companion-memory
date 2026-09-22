@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { adaptBenchmarkQuestion, benchmarkMemoryIntentPrefix } from './support/benchmark-query-adapter.ts'
 import { mapLoCoMoTurn, mapLongMemEvalTurn } from './support/benchmark-transcript.ts'
+import { analyzeRecallQuery } from '../src/recall.ts'
 
 describe('external benchmark query adapter', () => {
   it('keeps the scored question separate while making memory intent explicit', () => {
@@ -13,6 +14,25 @@ describe('external benchmark query adapter', () => {
     expect(plan.asOf).toBe('2024-06-01T00:00:00Z')
     expect(plan.retrievalQuery).not.toContain('2024-06-01T00:00:00Z')
     expect(plan.originalQuestionDigest).toMatch(/^[0-9a-f]{64}$/u)
+  })
+
+  it('uses a memory cue without forcing ordinary questions into temporal intent', () => {
+    expect(benchmarkMemoryIntentPrefix()).not.toMatch(/\b(before|earlier|last time|last year|recent)\b/iu)
+
+    const cases = [
+      { question: "What is the name of my hamster?", temporal: false },
+      { question: 'Where did I attend for my study abroad program?', temporal: false },
+      { question: "What is Gina's favorite style of dance?", temporal: false },
+      { question: 'Who was I talking about?', temporal: false },
+      { question: 'What did I do last year?', temporal: true },
+    ] as const
+
+    for (const testCase of cases) {
+      const planner = analyzeRecallQuery(adaptBenchmarkQuestion({ question: testCase.question }).retrievalQuery)
+      expect(planner.searchEvidence, testCase.question).toBe(true)
+      expect(planner.intent, testCase.question).not.toBe('none')
+      expect(planner.intent === 'temporal', testCase.question).toBe(testCase.temporal)
+    }
   })
 
   it('does not read evaluation labels even when hostile extra fields are supplied', () => {

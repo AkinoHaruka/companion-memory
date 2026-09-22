@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 export const EXTERNAL_BENCHMARK_CHECKPOINT_SCHEMA_VERSION = 1 as const
+export const BENCHMARK_ANSWER_NORMALIZATION_VERSION = 'answer-normalization-v1' as const
 
 export type BenchmarkName = 'locomo' | 'longmemeval'
 export type BenchmarkStage = 'pending' | 'ingested' | 'recalled' | 'answered' | 'scored' | 'completed'
@@ -54,6 +55,9 @@ export interface BenchmarkCheckpointItem {
   readonly recallContext?: string
   readonly recallTrace?: unknown
   readonly answer?: string
+  readonly rawAnswer?: string
+  readonly scoredAnswer?: string
+  readonly answerNormalizationVersion?: typeof BENCHMARK_ANSWER_NORMALIZATION_VERSION
   readonly score?: unknown
   readonly failure?: BenchmarkFailure
   readonly ingestion?: BenchmarkIngestionSummary
@@ -120,6 +124,11 @@ export async function saveBenchmarkCheckpoint(path: string, document: BenchmarkC
 
 export function stageCompleted(item: Pick<BenchmarkCheckpointItem, 'status'>, stage: BenchmarkStage): boolean {
   return STAGE_ORDER.indexOf(item.status) >= STAGE_ORDER.indexOf(stage)
+}
+
+/** Remove protocol-only thought wrappers without changing the raw model output. */
+export function normalizeBenchmarkAnswer(answer: string): string {
+  return answer.replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/giu, '').trim()
 }
 
 export function recordBenchmarkStage(item: BenchmarkCheckpointItem, stage: BenchmarkStage, patch: Omit<Partial<BenchmarkCheckpointItem>, 'itemId' | 'status' | 'attempts' | 'failure'> = {}): BenchmarkCheckpointItem {
