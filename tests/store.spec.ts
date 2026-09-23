@@ -503,9 +503,9 @@ describe('storage-domain-backed MemoryProfileStore', () => {
 
   it('keeps a user-grounded candidate pending while the auto-confirm policy is off', async () => {
     const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA); stores.push(store)
-    await store.appendSessionEvent('session-auto-off', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417.' }] } }))
+    await store.appendSessionEvent('session-auto-off', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417' }] } }))
     await store.ingestPages([{ ...page(scopeA, 'My locker number is B-417', 'candidate'), sources: ['session-auto-off'] }], new Date().toISOString(), 'session-auto-off')
-    expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages).toHaveLength(0)
+    expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages ?? []).toHaveLength(0)
   })
 
   it('auto-confirms a candidate only when the user stated the claim verbatim', async () => {

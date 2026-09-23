@@ -24,6 +24,18 @@ import RikoMemoryService from '../../src/index.ts'
 const DEFAULT_DREAM_API_KEY = 'fixture-secret'
 
 /**
+ * Optional `candidateAutoConfirm` override for live runs, e.g.
+ * `DSH_MEMORY_CANDIDATE_AUTO_CONFIRM=user_grounded`. Unset keeps the plugin default, so the
+ * companion corpus keeps measuring the pending-candidate boundary it is written against.
+ * @returns One config line when the variable names a supported policy, otherwise nothing.
+ */
+function candidateAutoConfirmLines(): string[] {
+  const value = process.env.DSH_MEMORY_CANDIDATE_AUTO_CONFIRM?.trim()
+  if (value !== 'off' && value !== 'user_grounded' && value !== 'all') return []
+  return [`    candidateAutoConfirm: ${value}`]
+}
+
+/**
  * Budget for the L0 persistence chain behind one drain, derived from its measured cost.
  *
  * One append now persists the session record it wrote and defers the two records derived from it, so
@@ -167,6 +179,7 @@ export async function startLiveHarness(
       '    ownerNamespace: test-owner',
       '    debounceMs: 60000',
       '    dreamIntervalMs: 3600000',
+      ...candidateAutoConfirmLines(),
       ...config,
       '',
     ].join('\n'))

@@ -136,18 +136,15 @@ export interface MemoryStoreOptions {
   /** Model identity recorded in dense index metadata. */
   readonly embeddingModel?: string
   /**
-   * Candidate auto-confirmation policy.
+   * Candidate auto-confirmation policy; defaults to `off`.
    *
-   * `off` (default) keeps every Dream, extractor and reflection candidate pending until an explicit
-   * authority action confirms it, as required by the "model and background outputs never auto-promote
-   * to canonical confirmed truth" invariant.
-   *
-   * `user_grounded` promotes a candidate only when its description appears verbatim in a user-authored
-   * L0 event of the same scope, so the authority is the user's own statement rather than model output;
-   * conflicting and non-normal-sensitivity candidates stay pending.
-   *
-   * `all` auto-confirms every candidate regardless of grounding. It is an explicit deviation from that
-   * invariant, intended for controlled dogfooding only, and must not be enabled in a product default.
+   * `off` keeps every Dream, extractor and reflection candidate pending until an explicit authority
+   * action confirms it, as required by the "model and background outputs never auto-promote to canonical
+   * confirmed truth" invariant. `user_grounded` promotes a candidate when its description appears
+   * verbatim in a user-authored L0 event of the same scope, so the authority is the user's own statement
+   * rather than model output; conflicting and non-normal-sensitivity candidates stay pending. `all`
+   * auto-confirms every candidate regardless of grounding: it is an explicit deviation from that
+   * invariant, intended for controlled dogfooding only.
    */
   readonly candidateAutoConfirm?: 'off' | 'user_grounded' | 'all'
 }

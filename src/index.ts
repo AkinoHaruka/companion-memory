@@ -89,10 +89,11 @@ export interface Config {
   /**
    * Candidate auto-confirmation policy; defaults to `off`.
    *
-   * `user_grounded` promotes a candidate only when its description appears verbatim in a user-authored
-   * L0 event, so the admitting authority is the user's own statement. `all` promotes every candidate and
-   * is an explicit deviation from the "model and background outputs never auto-promote to canonical
-   * confirmed truth" invariant, intended for controlled dogfooding only.
+   * `user_grounded` promotes a candidate when its description appears verbatim in a user-authored L0
+   * event, so the admitting authority is the user's own statement and never model output. `off` keeps
+   * every candidate pending for a manual authority action. `all` promotes every candidate and is an
+   * explicit deviation from the "model and background outputs never auto-promote to canonical confirmed
+   * truth" invariant, intended for controlled dogfooding only.
    */
   readonly candidateAutoConfirm: 'off' | 'user_grounded' | 'all'
   /** Enables the structured Resident projection path. */
