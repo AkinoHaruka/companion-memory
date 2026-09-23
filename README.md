@@ -141,6 +141,8 @@ Confirmation has exactly two valid authorities:
 
 The Dream model's own `status: confirmed`, `consent: true`, `locked: true`, or a sentence saying “the user asked me to remember this” has no authority.
 
+The `candidateAutoConfirm` policy can admit an extracted page without a manual confirmation step, and it is `off` by default. `user_grounded` admits a candidate only when its description appears verbatim in a user-authored L0 event of the same scope, so the admitting authority stays the user's own statement and never model output; `all` admits every non-sensitive, non-conflicting candidate regardless of grounding, which is a deliberate deviation from the no-auto-promotion invariant and is intended only for controlled dogfooding. Every automatic admission is audited as `candidate-auto-confirmed` with its mode and grounding reference.
+
 ### 5. Commit to the canonical Wiki
 
 Confirmation creates or updates a versioned Wiki page, records source lineage and removes its pending Candidate. Corrections retain prior version information in the audit lineage. Superseding a page removes it from future Residents while retaining the page and evidence trail for review.
@@ -302,6 +304,7 @@ Configure an owner namespace and stable Agent preset. Without both, durable read
 | `recallMaxContextChars` | `3000` | Maximum rendered recall context length. | Included. |
 | `recallAuthoritativeReserve` | `4` | Minimum reserved seats for non-evidence authoritative recall candidates. | Included. |
 | `recallRawEvidenceMaxCandidates` | `4` | Maximum raw L0 evidence candidates considered per recall. | Included. |
+| `candidateAutoConfirm` | `off` | Candidate auto-confirmation policy. `user_grounded` admits only claims the user stated verbatim; `all` is an explicit deviation from the no-auto-promotion invariant for controlled dogfooding. | Included. |
 | `residentV2Enabled` | `true` | Enables the structured Resident projection path. | Included. |
 | `residentBlocksEnabled` | `true` | Enables bounded structured Resident blocks. | Included. |
 | `sensitiveResidentEnabled` | `false` | Allows eligible sensitive pages in Resident output. | Included. |

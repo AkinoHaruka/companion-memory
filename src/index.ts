@@ -86,6 +86,15 @@ export interface Config {
   readonly recallAuthoritativeReserve: number
   /** Maximum raw L0 evidence candidates admitted per recall; defaults to 4. */
   readonly recallRawEvidenceMaxCandidates: number
+  /**
+   * Candidate auto-confirmation policy; defaults to `off`.
+   *
+   * `user_grounded` promotes a candidate only when its description appears verbatim in a user-authored
+   * L0 event, so the admitting authority is the user's own statement. `all` promotes every candidate and
+   * is an explicit deviation from the "model and background outputs never auto-promote to canonical
+   * confirmed truth" invariant, intended for controlled dogfooding only.
+   */
+  readonly candidateAutoConfirm: 'off' | 'user_grounded' | 'all'
   /** Enables the structured Resident projection path. */
   readonly residentV2Enabled: boolean
   /** Enables bounded structured Resident blocks. */
@@ -165,6 +174,7 @@ export class RikoMemoryService extends Service {
     recallMaxContextChars: z.number().step(1).min(256).max(16_000).default(3_000),
     recallAuthoritativeReserve: z.number().step(1).min(0).max(32).default(4),
     recallRawEvidenceMaxCandidates: z.number().step(1).min(0).max(32).default(4),
+    candidateAutoConfirm: z.union(['off', 'user_grounded', 'all'] as const).default('off'),
     residentV2Enabled: z.boolean().default(true),
     residentBlocksEnabled: z.boolean().default(true),
     sensitiveResidentEnabled: z.boolean().default(false),
@@ -487,6 +497,7 @@ export class RikoMemoryService extends Service {
         observationActivationMinConfidence: this.config.observationActivationMinConfidence,
         embeddingProvider: this.embeddingProvider,
         embeddingModel: this.config.embeddingModel,
+        candidateAutoConfirm: this.config.candidateAutoConfirm,
       }
       store = new MemoryProfileStore(this.domain, scope, this.defaultDreamSettings(), this.config.maxResidentChars, options)
       this.stores.set(scope.key, store)

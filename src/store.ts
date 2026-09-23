@@ -135,6 +135,21 @@ export interface MemoryStoreOptions {
   readonly reranker?: MemoryReranker
   /** Model identity recorded in dense index metadata. */
   readonly embeddingModel?: string
+  /**
+   * Candidate auto-confirmation policy.
+   *
+   * `off` (default) keeps every Dream, extractor and reflection candidate pending until an explicit
+   * authority action confirms it, as required by the "model and background outputs never auto-promote
+   * to canonical confirmed truth" invariant.
+   *
+   * `user_grounded` promotes a candidate only when its description appears verbatim in a user-authored
+   * L0 event of the same scope, so the authority is the user's own statement rather than model output;
+   * conflicting and non-normal-sensitivity candidates stay pending.
+   *
+   * `all` auto-confirms every candidate regardless of grounding. It is an explicit deviation from that
+   * invariant, intended for controlled dogfooding only, and must not be enabled in a product default.
+   */
+  readonly candidateAutoConfirm?: 'off' | 'user_grounded' | 'all'
 }
 
 /** Alias input stored as an explicit, correctable record. */
@@ -385,6 +400,7 @@ export class MemoryProfileStore {
   private readonly embeddingProvider: EmbeddingProvider | undefined
   private readonly reranker: MemoryReranker | undefined
   private readonly embeddingModel: string | undefined
+  private readonly candidateAutoConfirm: 'off' | 'user_grounded' | 'all'
   private denseIndex: DenseVectorIndex | undefined
   private denseGenerationId: string | undefined
   private densePreviousGenerationId: string | undefined
@@ -413,6 +429,7 @@ export class MemoryProfileStore {
     this.embeddingProvider = options.embeddingProvider
     this.reranker = options.reranker
     this.embeddingModel = normalizeOptionalModel(options.embeddingModel)
+    this.candidateAutoConfirm = options.candidateAutoConfirm ?? 'off'
     this.settings = { ...defaultSettings }
     this.ready = this.load()
   }
@@ -1210,7 +1227,7 @@ export class MemoryProfileStore {
     await this.waitReady(); await this.mutate(async () => {
       const before = { pages: this.pages.map(clonePage), candidates: this.candidates.map(cloneCandidate), sources: this.sources.map(source => ({ ...source })), state: { ...this.state }, resident: this.resident }
       try {
-        for (const item of items) { const page = this.normalizeIncomingPage(item, item.status === 'confirmed' && item.locked); if (page.status === 'confirmed' && page.consent && !this.pages.find(existing => existing.id === page.id)?.locked) { this.commitPage(page); this.candidates = this.candidates.filter(candidate => candidate.page.id !== page.id && candidate.proposedPath !== page.path) } else this.upsertCandidate(page) }
+        for (const item of items) { const page = this.normalizeIncomingPage(item, item.status === 'confirmed' && item.locked); if (page.status === 'confirmed' && page.consent && !this.pages.find(existing => existing.id === page.id)?.locked) { this.commitPage(page); this.candidates = this.candidates.filter(candidate => candidate.page.id !== page.id && candidate.proposedPath !== page.path) } else await this.autoConfirmCandidate(this.upsertCandidate(page)) }
         if (ingestedSourceRef !== undefined) this.markSourceIngested([ingestedSourceRef], dreamAt)
         this.markSuccess({ lastDreamAt: dreamAt }); await this.persist(); await this.audit('dream-succeeded', { pages: items.length })
       } catch (error) { this.pages = before.pages; this.candidates = before.candidates; this.sources = before.sources; this.state = before.state; this.resident = before.resident; throw error }
@@ -1980,13 +1997,13 @@ export class MemoryProfileStore {
   private markSuccess(extra: Pick<StoreState, 'lastDreamAt'> = {}): void { const next = { ...this.state, ...extra, updatedAt: new Date().toISOString() }; delete next.lastError; this.state = next }
   private markSourceIngested(refs: readonly string[], at: string): void { const wanted = new Set(refs); this.sources = this.sources.map((source) => { if (!wanted.has(source.ref)) return source; const { error: _error, ...withoutError } = source; return { ...withoutError, status: 'ingested' as const, ingestedAt: at } }) }
   private commitPage(page: WikiPage): void { const existing = this.pages.find(item => item.path === page.path || item.id === page.id); const retainedSensitivity: MemorySensitivity = existing === undefined ? page.sensitivity ?? 'normal' : existing.sensitivity ?? 'normal'; const recordedAt = new Date().toISOString(); const observedAt = page.observedAt ?? existing?.observedAt; const temporal = observedAt === undefined ? {} : { observedAt }; const next = existing === undefined ? { ...page, ...temporal, recordedAt, sensitivity: retainedSensitivity } : { ...page, ...temporal, recordedAt, id: existing.id, version: existing.version + 1, updatedAt: recordedAt, sources: [...new Set([...existing.sources, ...page.sources])], locked: existing.locked || page.locked, sensitivity: retainedSensitivity, ...(existing.sensitivityHistory === undefined ? page.sensitivityHistory === undefined ? {} : { sensitivityHistory: [...page.sensitivityHistory] } : { sensitivityHistory: [...existing.sensitivityHistory] }) }; if (existing === undefined) this.pages.push(next); else this.pages[this.pages.indexOf(existing)] = next }
-  private upsertCandidate(page: WikiPage, knownConflict?: WikiPage): void {
+  private upsertCandidate(page: WikiPage, knownConflict?: WikiPage): WikiCandidate | undefined {
     const fingerprint = pageFingerprint(page)
     const existing = this.candidates.find(item => (item.status === 'candidate' || item.status === 'pending_conflict') && (item.proposedPath === page.path || pageFingerprint(item.page) === fingerprint))
     const duplicate = this.pages.find(item => pageFingerprint(item) === fingerprint && !this.isContradictoryPair(item, page))
     if (duplicate !== undefined) {
       this.candidates = this.candidates.filter(item => item.page.id !== duplicate.id && item.proposedPath !== page.path)
-      return
+      return undefined
     }
     const conflict = knownConflict ?? this.findContradictoryCanonical(page)
     const mergedPage = existing === undefined
@@ -2004,6 +2021,50 @@ export class MemoryProfileStore {
     if (existing === undefined) this.candidates.push(next)
     else this.candidates[this.candidates.indexOf(existing)] = next
     if (conflict !== undefined) this.recordConflict(conflict, next)
+    return next
+  }
+
+  /**
+   * Promote a freshly merged candidate when the configured policy allows it.
+   *
+   * `user_grounded` requires the candidate description to appear verbatim in a user-authored L0 event of
+   * this scope, so the admitting authority stays the user's own statement and never model output; `all`
+   * skips that check. Conflicting candidates and non-normal sensitivity always stay pending, and every
+   * promotion records the rule plus its grounding reference so the admission stays explainable.
+   * @param candidate The candidate the Dream merge just stored or refreshed.
+   * @returns True when the candidate became canonical.
+   */
+  private async autoConfirmCandidate(candidate: WikiCandidate | undefined): Promise<boolean> {
+    if (candidate === undefined || this.candidateAutoConfirm === 'off' || candidate.status !== 'candidate') return false
+    const sensitivity = candidate.page.sensitivity
+    if (sensitivity !== undefined && sensitivity !== 'normal') return false
+    const groundingRef = this.candidateGroundingRef(candidate)
+    if (this.candidateAutoConfirm === 'user_grounded' && groundingRef === undefined) return false
+    this.commitPage(this.normalizeIncomingPage({ ...candidate.page, status: 'confirmed', consent: true, locked: true }, true))
+    this.candidates = this.candidates.filter(item => item.id !== candidate.id)
+    this.markSuccess()
+    await this.audit('candidate-auto-confirmed', { id: candidate.id, mode: this.candidateAutoConfirm, ...(groundingRef === undefined ? {} : { groundingRef }) })
+    return true
+  }
+
+  /**
+   * First user-authored L0 evidence ref whose text contains the candidate description verbatim.
+   * @param candidate The pending candidate to ground.
+   * @returns The evidence reference, or undefined when no user statement carries the claim.
+   */
+  private candidateGroundingRef(candidate: WikiCandidate): string | undefined {
+    const claim = verbatimClaimForm(candidate.page.description)
+    if (claim.length < MIN_AUTO_CONFIRM_CLAIM_CHARS) return undefined
+    for (const sessionId of candidate.sourceConversations) {
+      const lines = this.sessionLines.get(sessionId)
+      if (lines === undefined) continue
+      for (const [index, line] of lines.entries()) {
+        const parsed = parseEvidenceLine(line)
+        if (parsed === undefined || parsed.sourceKind !== 'user' || parsed.text.length === 0) continue
+        if (verbatimClaimForm(parsed.text).includes(claim)) return `session:${sessionId}/event:${String(parsed.eventSeq ?? index)}`
+      }
+    }
+    return undefined
   }
   private recordConflict(oldCanonical: WikiPage, candidate: WikiCandidate): ConflictOverlay {
     const id = conflictId(this.scope, oldCanonical.id, candidate.id)
@@ -2459,6 +2520,12 @@ function normalizeTemporalInstant(value: string, field: string): string {
 function normalizeOptionalTemporalInstant(value: string | undefined): string | undefined { if (value === undefined) return undefined; const parsed = Date.parse(value); return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString() }
 
 function lexicalScoreForPage(query: string, page: WikiPage): number { return lexicalScore(query, `${page.title}\n${page.description}\n${page.body}`) }
+
+/** Shortest claim that may be grounded verbatim in a user statement; shorter claims match by accident. */
+const MIN_AUTO_CONFIRM_CLAIM_CHARS = 8
+
+/** NFKC, case-folded, whitespace-collapsed form used for verbatim grounding checks. */
+function verbatimClaimForm(value: string): string { return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim() }
 
 function sanitizeProviderError(message: string): string { return message.replace(/bearer\s+[^\s]+/gi, 'Bearer [redacted]').replace(/sk-[A-Za-z0-9_-]+/g, '[redacted]').slice(0, 500) }
 

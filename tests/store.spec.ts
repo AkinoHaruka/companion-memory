@@ -500,4 +500,40 @@ describe('storage-domain-backed MemoryProfileStore', () => {
     const rerankDomain = new DomainFixture(); const reranked = new MemoryProfileStore(rerankDomain, scopeA, undefined, 12_000, { reranker: throwingReranker() }); stores.push(reranked); await reranked.upsertManualPage(page(scopeA, 'shared alpha')); await reranked.upsertManualPage(page(scopeA, 'shared beta')); const response = await reranked.recall('你还记得之前 shared 吗？')
     expect(response.results.map(result => result.id)).toEqual(expected); expect(response.trace.degradedModes).toContain('reranker-fallback-rrf')
   })
+
+  it('keeps a user-grounded candidate pending while the auto-confirm policy is off', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA); stores.push(store)
+    await store.appendSessionEvent('session-auto-off', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417.' }] } }))
+    await store.ingestPages([{ ...page(scopeA, 'My locker number is B-417', 'candidate'), sources: ['session-auto-off'] }], new Date().toISOString(), 'session-auto-off')
+    expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages).toHaveLength(0)
+  })
+
+  it('auto-confirms a candidate only when the user stated the claim verbatim', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    await store.appendSessionEvent('session-grounded', JSON.stringify({ seq: 4, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Remember that my locker number is B-417 please.' }] } }))
+    await store.ingestPages([{ ...page(scopeA, 'my locker number is b-417', 'candidate'), sources: ['session-grounded'] }], new Date().toISOString(), 'session-grounded')
+    expect(store.snapshot().candidates).toHaveLength(0)
+    expect((store.snapshot().pages ?? []).map(existing => existing.description)).toContain('my locker number is b-417')
+    const audits = [...domain.table('audits').entries()].map(([, value]) => value as { event: string; detail?: { groundingRef?: string; mode?: string } })
+    const promotion = audits.find(entry => entry.event === 'candidate-auto-confirmed')
+    expect(promotion?.detail?.mode).toBe('user_grounded')
+    expect(promotion?.detail?.groundingRef).toBe('session:session-grounded/event:4')
+  })
+
+  it('leaves a claim the user never made pending under the user-grounded policy', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    await store.appendSessionEvent('session-ungrounded', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417.' }] } }))
+    await store.ingestPages([{ ...page(scopeA, 'The user may enjoy running', 'candidate'), sources: ['session-ungrounded'] }], new Date().toISOString(), 'session-ungrounded')
+    expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages).toHaveLength(0)
+  })
+
+  it('auto-confirms every candidate under the explicit all policy and never a sensitive or conflicting one', async () => {
+    const domain = new DomainFixture(); const all = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'all' }); stores.push(all)
+    await all.ingestPages([{ ...page(scopeA, 'plain inferred preference', 'candidate'), sensitivity: 'sensitive' }], new Date().toISOString(), 'session-a')
+    expect(all.snapshot().candidates).toHaveLength(1); expect(all.snapshot().pages).toHaveLength(0)
+    const grounded = new MemoryProfileStore(domain, scopeB, undefined, 12_000, { candidateAutoConfirm: 'all' }); stores.push(grounded)
+    await grounded.ingestPages([page(scopeB, 'plain inferred preference', 'candidate')], new Date().toISOString(), 'session-a')
+    expect(grounded.snapshot().candidates).toHaveLength(0)
+    expect((grounded.snapshot().pages ?? []).map(existing => existing.description)).toContain('plain inferred preference')
+  })
 })

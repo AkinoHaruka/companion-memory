@@ -141,6 +141,8 @@ Dream 使用受控 FILE 协议，只接受允许的 `wiki/` 目录。解析器�
 
 Provider 返回的 `status: confirmed`、`consent: true`、`locked: true`，或者模型自己写出的“用户让我记住”，都不会授予确认权。
 
+`candidateAutoConfirm` 策略可以省掉手动确认这一步，默认是 `off`。`user_grounded` 只在候选的 description 逐字出现在同 scope 的用户 L0 事件里时才承认它，因此授予权威的始终是用户自己的原话而不是模型输出；`all` 则不看依据地承认每一个非敏感、非冲突候选，这是对"不自动提升"不变量的刻意偏离，只用于受控 dogfooding。每一次自动承认都会以 `candidate-auto-confirmed` 记入审计，附带策略模式与依据引用。
+
 ### 5. 写入权威 Wiki
 
 确认会创建或更新带版本的 Wiki 页面，记录来源血缘并移除对应 pending Candidate。更正保留旧版本的审计链。Supersede 会让页面从后续 Resident 消失，但保留页面和来源供审计。
@@ -302,6 +304,7 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 | `recallMaxContextChars` | `3000` | 渲染后的 recall context 最大长度。 | 返回。 |
 | `recallAuthoritativeReserve` | `4` | 为非 evidence 权威 recall 候选保留的最小席位数。 | 返回。 |
 | `recallRawEvidenceMaxCandidates` | `4` | 每次 recall 最多考虑的 raw L0 evidence 候选数。 | 返回。 |
+| `candidateAutoConfirm` | `off` | 候选自动确认策略。`user_grounded` 只承认用户逐字说过的声明；`all` 是对"不自动提升"不变量的刻意偏离，仅用于受控 dogfooding。 | 返回。 |
 | `residentV2Enabled` | `true` | 启用结构化 Resident projection 路径。 | 返回。 |
 | `residentBlocksEnabled` | `true` | 启用有界的结构化 Resident block。 | 返回。 |
 | `sensitiveResidentEnabled` | `false` | 允许符合条件的 sensitive page 进入 Resident 输出。 | 返回。 |
