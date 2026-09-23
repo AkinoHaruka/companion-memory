@@ -6,7 +6,9 @@ import {
   documentFromEvidence,
   documentFromPage,
   fuseRecallChannels,
+  lexicalScore,
   lexicalTokens,
+  rankLexical,
   renderRecallContext,
   termCoverage,
   type RecallDocument,
@@ -195,7 +197,8 @@ describe('query-time recall primitives', () => {
     const bob = documentFromPage({ ...page('Bob'), id: 'bob', path: 'wiki/entities/bob.md', title: 'Bob', description: 'likes tea', body: 'likes tea' })
     const results = fuseRecallChannels({ lexical: [alice, bob] }, 'likes tea', { maxCandidates: 4 })
 
-    expect(results.map(result => result.id)).toEqual(['page:alice', 'page:bob'])
+    expect(results).toHaveLength(2)
+    expect(results.map(result => result.id).sort()).toEqual(['page:alice', 'page:bob'])
   })
 
   it('reports eligibility counters, planned channels, exact context length, and fail-closed evidence sensitivity', () => {
@@ -224,5 +227,44 @@ describe('query-time recall primitives', () => {
     }
     const results = await denseRank('locker', documents, provider, 1)
     expect(results[0]?.id).toBe('evidence:session-a:2')
+  })
+
+  it('ranks rare discriminative terms above ubiquitous adapter-prefix tokens', () => {
+    const query = 'Do you remember my previous conversation context relevant to this question? largemouth bass'
+    const filler = Array.from({ length: 8 }, (_, index) =>
+      documentFromEvidence(`session-filler-${String(index + 1)}`, 1, 'Do you remember our conversation about the question we discussed?', undefined, 'normal'))
+    const catchLog = documentFromEvidence('session-catch', 1, 'I caught twelve largemouth bass on the lake yesterday.', undefined, 'normal')
+    const ranked = rankLexical(query, [...filler, catchLog], 9)
+    expect(ranked[0]?.document.id).toBe('evidence:session-catch:1')
+  })
+
+  it('lets the BM25 fused order surface rare-term evidence over prefix-matched chatter', () => {
+    const adapterPrefix = 'Do you remember my previous conversation context relevant to this question?'
+    const query = `${adapterPrefix}\nHow many largemouth bass did I catch?`
+    const filler = Array.from({ length: 6 }, (_, index) =>
+      documentFromEvidence(`session-filler-${String(index + 1)}`, 1, 'Do you remember our conversation about the question?', undefined, 'normal'))
+    const catchLog = documentFromEvidence('session-catch', 1, 'I caught twelve largemouth bass yesterday.', undefined, 'normal')
+    const results = fuseRecallChannels({ rawEvidence: [...filler, catchLog] }, query, { maxCandidates: 2 })
+    expect(results[0]?.id).toBe('evidence:session-catch:1')
+  })
+
+  it('admits up to four raw evidence candidates under the default budget', () => {
+    const query = '你还记得之前的 North Pier Cafe 吗？'
+    const plan = analyzeRecallQuery(query)
+    expect(plan.rawEvidenceMaxCandidates).toBe(4)
+    const details = Array.from({ length: 5 }, (_, index) =>
+      documentFromEvidence('session-budget', index + 1, `North Pier Cafe visit detail ${String(index + 1)}`, undefined, 'normal'))
+    const fused = fuseRecallChannels({ rawEvidence: details }, query, { maxCandidates: 8 })
+    const budgeted = applyRecallBudget(fused, plan, query)
+    const evidence = budgeted.results.filter(result => result.authorityTier === 'evidence')
+    expect(evidence).toHaveLength(4)
+    expect(budgeted.gateReasons).toContain('raw-evidence-budget')
+  })
+
+  it('keeps the legacy lexical score scale for downstream confidence thresholds', () => {
+    const text = 'North Pier Cafe by the pier'
+    const ranked = rankLexical('North Pier Cafe', [documentFromEvidence('session-scale', 1, text, undefined, 'normal')], 1)
+    expect(ranked[0]?.score).toBe(lexicalScore('North Pier Cafe', text))
+    expect(ranked[0]?.score).toBe(5)
   })
 })

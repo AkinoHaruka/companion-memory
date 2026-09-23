@@ -84,7 +84,7 @@ export interface Config {
   readonly recallMaxContextChars: number
   /** Minimum reserved seats for non-L0 authoritative recall candidates; defaults to 4. */
   readonly recallAuthoritativeReserve: number
-  /** Maximum raw L0 evidence candidates admitted per recall; defaults to 2. */
+  /** Maximum raw L0 evidence candidates admitted per recall; defaults to 4. */
   readonly recallRawEvidenceMaxCandidates: number
   /** Enables the structured Resident projection path. */
   readonly residentV2Enabled: boolean
@@ -164,7 +164,7 @@ export class RikoMemoryService extends Service {
     recallMaxCandidates: z.number().step(1).min(1).max(32).default(8),
     recallMaxContextChars: z.number().step(1).min(256).max(16_000).default(3_000),
     recallAuthoritativeReserve: z.number().step(1).min(0).max(32).default(4),
-    recallRawEvidenceMaxCandidates: z.number().step(1).min(0).max(32).default(2),
+    recallRawEvidenceMaxCandidates: z.number().step(1).min(0).max(32).default(4),
     residentV2Enabled: z.boolean().default(true),
     residentBlocksEnabled: z.boolean().default(true),
     sensitiveResidentEnabled: z.boolean().default(false),
@@ -802,7 +802,7 @@ export function validateConfig(config: Config): void {
   const observationActivationMinConfidence = config.observationActivationMinConfidence ?? 0.8
   const unclassifiedEvidenceDisclosure = config.unclassifiedEvidenceDisclosure ?? 'user_explicit_only'
   const authoritativeReserve = config.recallAuthoritativeReserve ?? 4
-  const rawEvidenceMaxCandidates = config.recallRawEvidenceMaxCandidates ?? 2
+  const rawEvidenceMaxCandidates = config.recallRawEvidenceMaxCandidates ?? 4
   if (!config.ownerNamespace.trim()) throw new Error('riko-memory ownerNamespace must not be empty')
   if (!config.apiPath.startsWith('/') || config.apiPath.endsWith('/') || config.apiPath.includes('?')) throw new Error('riko-memory apiPath must be absolute without trailing slash or query')
   if (apiToken && Object.keys(apiTokens).length > 0) throw new Error('riko-memory apiToken and apiTokens are mutually exclusive')

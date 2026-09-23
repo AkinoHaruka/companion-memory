@@ -180,7 +180,7 @@ const DEFAULT_RRF_K = 60
 const DEFAULT_LEXICAL_CANDIDATE_CAP = 20
 const DEFAULT_DENSE_CANDIDATE_CAP = 8
 const DEFAULT_AUTHORITATIVE_RESERVE = 4
-const DEFAULT_RAW_EVIDENCE_MAX_CANDIDATES = 2
+const DEFAULT_RAW_EVIDENCE_MAX_CANDIDATES = 4
 const DEFAULT_TIMEOUT_MS = 250
 const EXPLICIT_RECALL_PATTERN = /还记得|记得.*之前|之前|上次|以前|曾经|过去|回忆|我说过|你记得|do you remember|what did i say|earlier|last time|before/i
 const PERSONAL_CONTEXT_PATTERN = /我(?:的(?:号码|编号|名字|地址|咖啡馆|储物柜|偏好|习惯)|现在|目前|住|姐|喜欢|之前|以前|过去|上次|说过|提过)|my (?:number|name|address|cafe|locker|preference|habit|past|previous|earlier|last)/i
@@ -330,18 +330,61 @@ export function lexicalScore(query: string, text: string): number {
   return matched + exactBonus
 }
 
+/** BM25 tuning constants for corpus-aware lexical ranking. */
+const BM25_K1 = 1.2
+const BM25_B = 0.75
+
+/**
+ * Score documents with BM25 using IDF derived from the candidate corpus itself.
+ * Ubiquitous tokens (fixed adapter prefixes, generic chatter) are downweighted,
+ * so rare discriminative terms decide the order even when a fixed query prefix
+ * contributes many generic matches.
+ * @param query The query used for scoring.
+ * @param documents The candidate documents; also the IDF corpus.
+ * @returns One BM25 score per document, aligned with the input order.
+ */
+function bm25RankScores(query: string, documents: readonly RecallDocument[]): number[] {
+  const terms = [...new Set(lexicalTokens(query))]
+  if (terms.length === 0) return documents.map(() => 0)
+  const count = documents.length
+  const documentFrequency = new Map<string, number>()
+  const matched = documents.map((document) => {
+    const text = document.text.normalize('NFKC').toLocaleLowerCase()
+    const present: string[] = []
+    for (const term of terms) if (text.includes(term)) present.push(term)
+    for (const term of present) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1)
+    return { present, length: text.length }
+  })
+  const averageLength = matched.reduce((sum, item) => sum + item.length, 0) / Math.max(1, count)
+  const inverseDocumentFrequency = new Map<string, number>()
+  for (const term of terms) {
+    const seen = documentFrequency.get(term) ?? 0
+    inverseDocumentFrequency.set(term, Math.log(1 + (count - seen + 0.5) / (seen + 0.5)))
+  }
+  return matched.map((item) => {
+    const lengthNorm = 1 - BM25_B + BM25_B * (item.length / Math.max(1, averageLength))
+    let score = 0
+    for (const term of item.present) score += (inverseDocumentFrequency.get(term) ?? 0) * ((BM25_K1 + 1) / (BM25_K1 * lengthNorm + 1))
+    return score
+  })
+}
+
 /**
  * Rank a bounded document list using the same lexical rules as Wiki search.
+ * Documents keep the legacy token-overlap score (threshold callers rely on its
+ * scale), while the order follows BM25 so ubiquitous tokens cannot bury
+ * rare-term evidence; ties fall back to the legacy score, then document id.
  * @param query The query used for lexical scoring.
  * @param documents The candidate documents to rank.
  * @param maxResults The maximum number of documents to return.
  * @returns The ranked documents, best score first.
  */
 export function rankLexical(query: string, documents: readonly RecallDocument[], maxResults: number): RankedDocument[] {
+  const bm25 = bm25RankScores(query, documents)
   return documents
-    .map(document => ({ document, score: lexicalScore(query, document.text) }))
+    .map((document, index) => ({ document, index, score: lexicalScore(query, document.text) }))
     .filter(result => result.score > 0)
-    .sort((left, right) => right.score - left.score || left.document.id.localeCompare(right.document.id))
+    .sort((left, right) => (bm25[right.index] ?? 0) - (bm25[left.index] ?? 0) || right.score - left.score || left.document.id.localeCompare(right.document.id))
     .slice(0, Math.max(1, maxResults))
 }
 
