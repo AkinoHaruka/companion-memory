@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/bundle/riko-memory/README.md
-README.md: b6ca51114231672bc1c7514d670410fc80886681
-README.zh.md: 93f0f409adc6d00bfcd4db18132b4188aaa1a39d
+README.md: 21d74dbd4fad3493045ed233379f925cc6f430b5
+README.zh.md: 2b4137cf71b62b0f477ff8e17146592a7c7c912c

@@ -191,7 +191,7 @@ Dream is a recoverable background organizer, not the source of truth.
 2. Jobs are serialized within a scope; different scopes may progress independently.
 3. Persisted cursors prevent repeat ingestion and persisted jobs enable restart recovery.
 4. Transcripts are bounded and the provider is asked for only a small number of concise pages.
-5. Google Gemini and Gemma endpoints under `generativelanguage.googleapis.com` use the native `models/{model}:generateContent` contract; OpenAI-compatible endpoints such as OpenRouter use Chat Completions; Anthropic-compatible endpoints such as Xiaomi MiMo use Anthropic Messages. The protocol is inferred from endpoint shape.
+5. Production Web defaults use Google's native `models/{model}:generateContent` contract. Explicit operator configurations may use OpenAI-compatible Chat Completions or Anthropic-compatible Messages; the protocol is inferred from endpoint shape, and these adapters are outside the formal Dream acceptance set.
 6. Requests use bounded provider fields, never put credentials in the URL, time out each provider attempt after 60 seconds, and switch in order on network errors, timeouts, HTTP 429/5xx, or invalid FILE output. HTTP 400/401/403 stop the chain.
 7. Responses pass strict FILE parsing before persistence. Invalid blocks, empty content, unexpected JSON and provider errors fail the job without replacing the old Wiki or Resident.
 8. System-generated extraction sessions do not recursively trigger another Dream pass.

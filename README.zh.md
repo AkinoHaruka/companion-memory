@@ -191,7 +191,7 @@ Dream 是可恢复的后台整理器，不是长期记忆的权威来源。
 2. 同一个 scope 内串行执行，不同 scope 可以并行。
 3. 持久化 cursor 防止重复消费，持久化 job 支持重启恢复。
 4. Transcript 有字符上限，Provider 只被要求生成少量简短页面。
-5. `generativelanguage.googleapis.com` 下的 Gemini 和 Gemma endpoint 使用原生 `models/{model}:generateContent` 合同；OpenRouter 等 OpenAI-compatible endpoint 使用 Chat Completions；小米 MiMo 等 Anthropic-compatible endpoint 使用 Anthropic Messages，协议由 endpoint 形态推断。
+5. 正式 Web 默认使用 Google 原生 `models/{model}:generateContent` 合同。显式 operator 配置仍可使用 OpenAI-compatible Chat Completions 或 Anthropic-compatible Messages；协议由 endpoint 形态推断，这些 adapter 不属于正式 Dream 验收集合。
 6. 请求使用有界 provider 字段，credential 不放入 URL；每个 provider 尝试超时 60 秒，并在网络错误、超时、HTTP 429/5xx 或 FILE 无效时按顺序切换。HTTP 400/401/403 会终止切换。
 7. 响应必须先通过严格 FILE 解析再持久化。非法 block、空响应、非预期 JSON 和 provider 错误都只让 job 失败，不替换旧 Wiki 或 Resident。
 8. 系统生成的提取 Session 不会再次触发 Dream，避免递归。
