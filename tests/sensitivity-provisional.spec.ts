@@ -111,7 +111,7 @@ describe('sensitivity-provisional', () => {
     '我男朋友怀孕了。',
     '我经历过流产。',
     '我的伴侣是穆斯林。',
-  ])('classifies an explicit personal attribute as sensitive: %s', claim => {
+  ])('classifies an explicit personal attribute as sensitive: %s', (claim) => {
     expect(classifyMemorySensitivity(claim)).toBe('sensitive')
     expect(classifyEvidenceSensitivity(claim)).toBe('sensitive')
   })
@@ -126,7 +126,7 @@ describe('sensitivity-provisional', () => {
     'The app records which option I voted for in its tutorial.',
     'The book explains ADHD to new teachers.',
     'This accessibility guide explains inclusive design.',
-  ])('leaves a general topic mention at normal sensitivity: %s', mention => {
+  ])('leaves a general topic mention at normal sensitivity: %s', (mention) => {
     expect(classifyMemorySensitivity(mention)).toBe('normal')
     expect(classifyEvidenceSensitivity(mention)).toBe('normal')
   })

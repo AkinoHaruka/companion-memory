@@ -1,6 +1,6 @@
 {
   "$comment": "Every entry is an evidence gap in the current executed report; closure.next is an actionable next step and does not assert implementation.",
-  "recordedOn": "2026-09-22",
+  "recordedOn": "2026-09-24",
   "packageVersion": "0.1.6-alpha.2",
   "count": 1,
   "gaps": [

@@ -130,7 +130,7 @@ The keyless focused suite runs with no answer provider and therefore checks the 
 
 ## Real-provider campaign
 
-The campaign spec runs all thirty Appendix F scenarios with the real Dream endpoint and the real final-answer endpoint. It uses the same `dreamApiUrl` value for each scenario, passes the Dream credential through the disposable `DSH_MEMORY_DREAM_API_KEY` credential reference, and proxies only that Dream URL while preserving the fixture handlers for other URLs. It keeps the corpus rules unchanged: F.05, F.09 and F.10 start with evidence classification enabled, and the two declared unsupported scenarios remain unsupported with their recorded reasons.
+The campaign spec runs all thirty Appendix F scenarios with the real Dream endpoint and the real final-answer endpoint. It uses the same `dreamApiUrl` value for each scenario, passes the Dream key through the disposable `DSH_MEMORY_DREAM_API_KEY` credential reference inside each isolated harness, and proxies only that Dream URL while preserving the fixture handlers for other URLs. This disposable campaign reference is separate from the formal Web deployment reference (`GEMINI_API_KEY` by default, or `DSH_MEMORY_DREAM_CREDENTIAL_REF`). It keeps the corpus rules unchanged: F.05, F.09 and F.10 start with evidence classification enabled, and the two declared unsupported scenarios remain unsupported with their recorded reasons.
 
 Set these process variables before the run:
 
@@ -155,9 +155,9 @@ pnpm exec vitest run packages/bundle/riko-memory/tests/companion-campaign.spec.t
 
 The process environment supplies every provider value; no credential belongs in this repository. A configured run prints the artifact path and the complete 21-field Appendix G metric object as JSON. The four answer-side fields — `semanticDriftRate`, `falsePersonalizationRate`, `unwantedMentionRate` and `memoryOveruseRate` — are measured from generated answers in this mode. The default fixture run keeps those four fields `unsupported`, because it generates no final answers. If a provider call fails, the runner records the error and the campaign fails its execution assertion instead of treating the call as a successful measurement.
 
-## Recorded campaign
+## Historical provider campaign
 
-One campaign ran on 2026-09-20 against an OpenAI-compatible endpoint serving `gemini-3.5-flash-lite` for both Dream and final answers, with `DSH_MEMORY_PROVIDER_MIN_INTERVAL_MS=6000` and `DSH_MEMORY_PROVIDER_MAX_RETRIES=6` to stay inside the provider's fifteen-requests-per-minute limit. All thirty scenarios ran: twenty-seven executed and the three declared `unsupported` cases kept their recorded reasons. Every value is provider- and prompt-dependent, and the answer-side denominators are one to three trials, so this is one observation rather than a rate.
+One historical campaign ran on 2026-09-20 against an OpenAI-compatible endpoint serving `gemini-3.5-flash-lite` for both Dream and final answers, with `DSH_MEMORY_PROVIDER_MIN_INTERVAL_MS=6000` and `DSH_MEMORY_PROVIDER_MAX_RETRIES=6` to stay inside the provider's fifteen-requests-per-minute limit. All thirty scenarios ran: twenty-seven executed and the three declared `unsupported` cases kept their recorded reasons. These values are retained for audit only; the current formal Dream acceptance uses Google's native protocol and the qualified Gemini → Gemma 26B chain.
 
 | Field | Value | Field | Value |
 |---|---|---|---|
@@ -176,6 +176,8 @@ One campaign ran on 2026-09-20 against an OpenAI-compatible endpoint serving `ge
 The four answer-side fields stopped being unsupported: with a real model answering from the live context, no answer asserted an unsupplied personal claim, mentioned protected memory it was not authorised to mention, or used memory the scenario marks irrelevant. Retrieval and correction targets were all reached and no leakage field fired.
 
 `semanticDriftRate` is the weakest value in the table. It is the lexical-overlap proxy described above, and the model restates memory in its own words, so a faithful paraphrase is counted as drift. Treat 4/6 as evidence that the proxy needs a model or human judgment before it can carry a product claim.
+
+The latest 2026-09-24 provider campaign used the native Google Dream protocol with the qualified text-model set. It completed 28 scenarios and retained two explicitly unsupported cases, with no provider or scorer failure. This result is included in the normalized execution report as isolated empirical evidence; the deterministic fixture run remains the default test baseline. Gemma 4 31B is historical diagnostic evidence only and is excluded from the formal Dream model list after failing the 3/3 acceptance gate.
 
 ## F.05 exact number
 

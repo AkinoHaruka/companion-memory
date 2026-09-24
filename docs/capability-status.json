@@ -1,6 +1,6 @@
 {
   "$comment": "README capability status is validated from this manifest and the normative requirement/report pair. The current package deliberately makes no verified capability claim while requirements remain unassessed.",
-  "recordedOn": "2026-09-22",
+  "recordedOn": "2026-09-24",
   "packageVersion": "0.1.6-alpha.2",
   "overall": "unassessed",
   "requirementStatus": {

@@ -276,7 +276,7 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 
 插件使用 DSH workspace 依赖和 `0.1.6-alpha.2` 基线。GitHub 镜像是源码/包镜像，实际运行仍应安装到兼容的 DSH Harness worktree。
 
-配置 owner namespace 和稳定 Agent preset。两者缺一时长期记忆读写都会 fail-closed。下表完整列出 42 个 live `Config` 字段。`configResponse()` 只返回安全的运行状态；`ownerNamespace`、`apiToken` 和 `apiTokens` 因为会暴露 scope 或凭据而特意不返回。OpenAI-compatible embedding 必须配置非空 model、credential reference 和 HTTPS endpoint（仅环回主机接受明文 HTTP）；deterministic embedding 使用配置的 dimension。OpenRouter 临时验收只把变量注入当前进程：
+配置 owner namespace 和稳定 Agent preset。两者缺一时长期记忆读写都会 fail-closed。下表完整列出 42 个 live `Config` 字段。`configResponse()` 只返回安全的运行状态；`ownerNamespace`、`apiToken` 和 `apiTokens` 因为会暴露 scope 或凭据而特意不返回。OpenAI-compatible embedding 必须配置非空 model、credential reference 和 HTTPS endpoint（仅环回主机接受明文 HTTP）；deterministic embedding 使用配置的 dimension。临时 provider 验收只把变量注入当前进程：
 
 | 配置字段 | 默认值 | 说明 | `configResponse()` |
 |---|---:|---|---|
@@ -339,7 +339,7 @@ DSH_MEMORY_DREAM_FALLBACKS_JSON=[{"apiUrl":"https://generativelanguage.googleapi
 DSH_MEMORY_RECALL_ENABLED=true
 ```
 
-Fallback 会在网络/超时、HTTP 429/5xx 或 FILE 输出无效时按顺序尝试。HTTP 400/401/403 会终止切换；响应格式有效但仅生成待确认候选时，Dream 仍算成功。每个 `credentialRef` 都要配置在 Host credential store 中。不要通过 UI 保存 key，不要写入 `dream-settings.json`，不要提交到仓库，不要放进 URL，也不要粘贴到 issue 或日志。MiMo 兼容验收使用 Anthropic-compatible endpoint，例如 `https://api.xiaomimimo.com/anthropic` 和 `mimo-v2.5`。
+Fallback 会在网络/超时、HTTP 429/5xx 或 FILE 输出无效时按顺序尝试。HTTP 400/401/403 会终止切换；响应格式有效但仅生成待确认候选时，Dream 仍算成功。每个 `credentialRef` 都要配置在 Host credential store 中。不要通过 UI 保存 key，不要写入 `dream-settings.json`，不要提交到仓库，不要放进 URL，也不要粘贴到 issue 或日志。正式验收使用 Google 原生 Gemini/Gemma `generateContent` 协议；OpenAI-compatible 和 Anthropic-compatible adapter 只保留给显式配置的 operator 场景。
 
 <a id="acceptance-and-verification"></a>
 ## 验收与验证
@@ -392,7 +392,7 @@ sanitized-provider-errors.log
 
 当前验证快照（2026-09-24）：335 条规范合同中有 334 条已有可用证据，仍有 1 条证据缺口，即 [REQ-EVAL-035](docs/traceability-gap-register.json)。规范化执行报告记录 47 个 spec 文件和 422 个测试，其中 420 个通过、0 个失败、2 个仅在 refresh 模式跳过的检查。默认无凭据运行记录 43 个默认文件和 4 个 opt-in provider 文件，其中 407 个通过、15 个跳过。opt-in 证据在隔离 provider 运行中执行后合并进报告，没有改变 deterministic fixture 语义：Gemini empirical campaign 4/4 通过，Appendix G companion campaign 完成 28 个场景、2 个明确 unsupported，真实 embedding semantic gain 命中 5/5，真实 dense ablation 4/4 通过。v2 固定 cohort 已对 LoCoMo 50 题和 LongMemEval-S 50 题完成真实 answer/scorer：LoCoMo 完成 49/50，1 题空召回，平均 F1 为 0.0149；LongMemEval-S 完成 50/50，评分器判定正确 9/50。完整记录发布在[固定 cohort 结果索引](docs/benchmark-results/riko-memory-v2-fixed-cohort-2026-09-22/result-index.json)。这些结果保持 REQ-EVAL-035 开放，因为非空召回并不稳定地等于相关召回，也不会把任何能力升级为 verified。
 
-当前实现是受治理的 Phase 1–5 substrate，不代表所有生产级评测门槛都已完成。现有 package suite 覆盖已实现的状态转换，并已运行 Appendix F 语料和 Appendix G 聚合；没有 answer generator 时仍有四个 answer-side 语料指标显式标记为 unsupported，同时 focused restart、purge-interruption、load 和 keyless chaos probe 已存在。启用 opt-in flags 前仍需补齐 production benchmark、coverage 和生产级 load/chaos 证据。
+当前实现是受治理的 Phase 1–5 substrate，不代表所有生产级评测门槛都已完成。现有 package suite 覆盖已实现的状态转换，并已运行 Appendix F 语料和 Appendix G 聚合；没有 answer generator 时仍有四个 answer-side 语料指标显式标记为 unsupported，同时 focused restart、purge-interruption、load 和 keyless chaos probe 已存在。把额外 opt-in 能力视为生产就绪前，仍需补齐 production benchmark、coverage 和生产级 load/chaos 证据。
 
 ## 常见问题
 

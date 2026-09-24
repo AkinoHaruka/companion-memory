@@ -180,63 +180,57 @@
   },
   "observed": {
     "$comment": "Recorded measurements, kept for comparison. tests/spec-registry.spec.ts checks the detailed docs/spec-execution-report.json against discovered specs and requirement candidates; these totals include the registry gate itself. The repository rejects commit identifiers in maintained files, so this record is anchored by date and package version; the platform that ran it holds the revision.",
-    "recordedOn": "2026-09-22",
+    "recordedOn": "2026-09-24",
     "packageVersion": "0.1.6-alpha.2",
     "runner": "vitest --reporter=json",
     "report": "docs/spec-execution-report.json",
     "suite": {
       "files": 47,
-      "tests": 355,
-      "passed": 344,
-      "skipped": 11
+      "tests": 422,
+      "passed": 420,
+      "skipped": 2
     },
     "perSpec": {
       "companion-campaign.spec.ts": {
         "tests": 3,
-        "skipped": 3
+        "passed": 3
       },
       "dense-ablation-real.spec.ts": {
         "tests": 4,
-        "skipped": 4
+        "passed": 4
       },
       "dense-semantic-gain.spec.ts": {
         "tests": 4,
-        "skipped": 4
+        "passed": 4
       },
       "empirical-decision-campaign.spec.ts": {
         "tests": 4,
-        "passed": 4,
-        "skipped": 0
+        "passed": 4
       },
       "spec-registry.spec.ts": {
-        "tests": 8,
-        "passed": 8,
-        "skipped": 0
+        "tests": 9,
+        "passed": 7,
+        "skipped": 2
       },
       "static-contract-gates.spec.ts": {
         "tests": 11,
-        "passed": 11,
-        "skipped": 0
+        "passed": 11
       },
       "chaos-dense-ablation.spec.ts": {
         "tests": 2,
-        "passed": 2,
-        "skipped": 0
+        "passed": 2
       },
       "execution-baseline.integration.spec.ts": {
         "tests": 1,
-        "passed": 1,
-        "skipped": 0
+        "passed": 1
       },
       "benchmark-checkpoint.spec.ts": {
-        "tests": 5,
-        "passed": 5,
-        "skipped": 0
+        "tests": 6,
+        "passed": 6
       },
       "benchmark-query-adapter.spec.ts": {
-        "tests": 6,
-        "passed": 6,
-        "skipped": 0
+        "tests": 7,
+        "passed": 7
       }
     }
   }

@@ -15,7 +15,7 @@
     ]
   },
   "rawJsonSha256": "68eb8136798514cddc4525907c08394da73cd450b6f4448b274a3cd9045c6ded",
-  "inputFingerprint": "347693940f953a5aae37faeb74b0fba403cee9f8e70dea42c1ec9e9bd1462ea2",
+  "inputFingerprint": "dfdbb03ae78dbc7fcc81bb2f5a171cc9acbdc3c8a9b2ca1fb7dd5df9085321c0",
   "packageVersion": "0.1.6-alpha.2",
   "runner": "vitest --reporter=json",
   "suite": {
