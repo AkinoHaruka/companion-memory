@@ -1,5 +1,5 @@
 /** Wire protocol variants understood by the dream request builder. */
-export type DreamProtocol = 'openai-chat-completions' | 'anthropic-messages'
+export type DreamProtocol = 'openai-chat-completions' | 'anthropic-messages' | 'google-generate-content'
 
 /** Connection settings needed to build one dream request. */
 export interface DreamRequestSettings {
@@ -22,7 +22,9 @@ export interface DreamRequest {
  * @returns the inferred wire protocol.
  */
 export function dreamProtocolForUrl(value: string): DreamProtocol {
-  return /\/anthropic(?:\/|$)/i.test(value) ? 'anthropic-messages' : 'openai-chat-completions'
+  if (/\/anthropic(?:\/|$)/i.test(value)) return 'anthropic-messages'
+  if (/generativelanguage\.googleapis\.com/i.test(value) && !/\/openai(?:\/|$)/i.test(value)) return 'google-generate-content'
+  return 'openai-chat-completions'
 }
 
 /**
@@ -34,6 +36,17 @@ export function dreamProtocolForUrl(value: string): DreamProtocol {
  */
 export function buildDreamRequest(settings: DreamRequestSettings, credential: string, prompt: string): DreamRequest {
   const protocol = dreamProtocolForUrl(settings.apiUrl)
+  if (protocol === 'google-generate-content') {
+    return {
+      protocol,
+      endpoint: resolveGoogleEndpoint(settings.apiUrl, settings.model),
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'x-goog-api-key': credential },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: settings.maxTokens, thinkingConfig: { thinkingLevel: 'minimal' } },
+      }),
+    }
+  }
   if (protocol === 'anthropic-messages') {
     return {
       protocol,
@@ -57,6 +70,16 @@ export function buildDreamRequest(settings: DreamRequestSettings, credential: st
  * @returns the extracted assistant text, or undefined when none is present.
  */
 export function extractDreamText(body: unknown, protocol: DreamProtocol): string | undefined {
+  if (protocol === 'google-generate-content') {
+    const candidates = body && typeof body === 'object' && Array.isArray((body as { candidates?: unknown }).candidates)
+      ? (body as { candidates: Array<{ content?: { parts?: unknown } }> }).candidates
+      : []
+    const parts = candidates[0]?.content?.parts
+    const text = Array.isArray(parts)
+      ? parts.filter(part => part && typeof part === 'object' && (part as { thought?: unknown }).thought !== true && typeof (part as { text?: unknown }).text === 'string').map(part => (part as { text: string }).text).join('')
+      : ''
+    return text.trim() || undefined
+  }
   if (protocol === 'anthropic-messages') {
     const blocks = body && typeof body === 'object' && Array.isArray((body as { content?: unknown }).content) ? (body as { content: Array<{ type?: unknown; text?: unknown }> }).content : []
     const text = blocks.filter(block => block.type === 'text' && typeof block.text === 'string').map(block => block.text as string).join('')
@@ -69,6 +92,22 @@ export function extractDreamText(body: unknown, protocol: DreamProtocol): string
 function resolveChatEndpoint(value: string): string {
   const normalized = value.replace(/\/$/, '')
   return normalized.endsWith('/chat/completions') ? normalized : `${normalized}/v1/chat/completions`
+}
+
+function resolveGoogleEndpoint(value: string, model: string): string {
+  const normalized = value.replace(/\/$/, '')
+  if (/[?#]/.test(normalized)) throw new Error('Google native Dream endpoint must not include a query or fragment')
+  if (/:generateContent$/i.test(normalized)) {
+    const match = normalized.match(/\/models\/([^/:]+):generateContent$/i)
+    const configuredModel = match?.[1]
+    if (configuredModel !== undefined && decodeURIComponent(configuredModel) !== model) {
+      return normalized.replace(/\/models\/[^/:]+:generateContent$/i, `/models/${encodeURIComponent(model)}:generateContent`)
+    }
+    return normalized
+  }
+  if (/\/models$/i.test(normalized)) return `${normalized}/${encodeURIComponent(model)}:generateContent`
+  if (/\/v1beta$/i.test(normalized)) return `${normalized}/models/${encodeURIComponent(model)}:generateContent`
+  return `${normalized}/models/${encodeURIComponent(model)}:generateContent`
 }
 
 function resolveAnthropicEndpoint(value: string): string {

@@ -1,6 +1,7 @@
 /* oxlint-disable @stylistic/max-len */
 import { afterEach, describe, expect, it } from 'vitest'
 import { memoryScopeForPreset } from '../src/contracts.ts'
+import { classifyEvidenceSensitivity, classifyMemorySensitivity } from '../src/sensitivity.ts'
 import { MemoryProfileStore } from '../src/store.ts'
 import type { WikiPage } from '../src/wiki.ts'
 
@@ -23,6 +24,12 @@ function page(body: string): WikiPage {
 }
 
 describe('sensitivity-provisional', () => {
+  it('normalizes compatibility characters before classifying private cues', () => {
+    const claim = 'My ｐａｓｓｗｏｒｄ is hidden'
+    expect(classifyMemorySensitivity(claim)).toBe('sensitive')
+    expect(classifyEvidenceSensitivity(claim)).toBe('sensitive')
+  })
+
   it('applies model tightening, rejects model loosening, and permits user loosening', async () => {
     const store = new MemoryProfileStore(new Domain(), scope); stores.push(store)
     await store.upsertManualPage(page('private tone preference'))
@@ -72,5 +79,61 @@ describe('sensitivity-provisional', () => {
     await first.setMemorySensitivity({ id, target: 'page', sensitivity: 'sensitive', authority: 'model_proposal' })
     const restored = new MemoryProfileStore(domain, scope); stores.push(restored); await restored.waitReady()
     expect(restored.page(id)?.sensitivityHistory?.[0]).toMatchObject({ from: 'normal', to: 'sensitive', authority: 'model_proposal' })
+  })
+
+  it.each([
+    'I am gay.',
+    "I'm transgender.",
+    'I identify as nonbinary.',
+    'My sexual orientation is bisexual.',
+    'I am Muslim.',
+    'My political affiliation is the Green Party.',
+    'My ethnicity is Kurdish.',
+    'I am disabled.',
+    'I have ADHD.',
+    'I am pregnant.',
+    'My partner is pregnant.',
+    'My girlfriend is pregnant.',
+    'My boyfriend is pregnant.',
+    'I am a gay man.',
+    'I had a miscarriage.',
+    'My partner is gay.',
+    'My daughter is Muslim.',
+    '我是同性恋者。',
+    '我是一名跨性别者。',
+    '我的性别认同是非二元。',
+    '我信仰伊斯兰教。',
+    '我的政治立场是保守主义。',
+    '我患有ADHD。',
+    '我怀孕了。',
+    '我伴侣怀孕了。',
+    '我女朋友怀孕了。',
+    '我男朋友怀孕了。',
+    '我经历过流产。',
+    '我的伴侣是穆斯林。',
+  ])('classifies an explicit personal attribute as sensitive: %s', claim => {
+    expect(classifyMemorySensitivity(claim)).toBe('sensitive')
+    expect(classifyEvidenceSensitivity(claim)).toBe('sensitive')
+  })
+
+  it.each([
+    'The novel has a gay protagonist.',
+    'The documentary discusses transgender history.',
+    'I am a gay rights lawyer.',
+    'My partner is a gay rights lawyer.',
+    'The museum displays Buddhist art.',
+    'The election coverage compares several political parties.',
+    'The app records which option I voted for in its tutorial.',
+    'The book explains ADHD to new teachers.',
+    'This accessibility guide explains inclusive design.',
+  ])('leaves a general topic mention at normal sensitivity: %s', mention => {
+    expect(classifyMemorySensitivity(mention)).toBe('normal')
+    expect(classifyEvidenceSensitivity(mention)).toBe('normal')
+  })
+
+  it('only tightens an already requested sensitivity level', () => {
+    expect(classifyMemorySensitivity('The novel has a gay protagonist.', 'provisional_sensitive')).toBe('provisional_sensitive')
+    expect(classifyMemorySensitivity('I am gay.', 'provisional_sensitive')).toBe('sensitive')
+    expect(classifyMemorySensitivity('I am gay.', 'sensitive')).toBe('sensitive')
   })
 })

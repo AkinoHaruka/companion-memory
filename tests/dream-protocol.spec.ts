@@ -21,6 +21,31 @@ describe('Dream provider protocols', () => {
     expect(extractDreamText({ choices: [{ message: { content: 'FILE output' } }] }, request.protocol)).toBe('FILE output')
   })
 
+  it('builds the Google native generateContent request for Gemini and Gemma', () => {
+    const request = buildDreamRequest({ apiUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemma-4-26b-a4b-it', maxTokens: 64 }, 'runtime-secret', 'probe')
+    expect(request.protocol).toBe('google-generate-content')
+    expect(request.endpoint).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent')
+    expect(request.headers['x-goog-api-key']).toBe('runtime-secret')
+    const body = JSON.parse(request.body)
+    expect(body).toMatchObject({ generationConfig: { maxOutputTokens: 64, thinkingConfig: { thinkingLevel: 'minimal' } } })
+    expect(body.contents[0].parts[0].text).toBe('probe')
+    expect(extractDreamText({ candidates: [{ content: { parts: [{ thought: true, text: 'hidden' }, { text: 'FILE output' }] } }] }, request.protocol)).toBe('FILE output')
+  })
+
+  it('binds a full native Google URL to the configured model and rejects URL secrets', () => {
+    const rebound = buildDreamRequest({
+      apiUrl: 'https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent',
+      model: 'gemini-3.5-flash-lite',
+      maxTokens: 64,
+    }, 'runtime-secret', 'probe')
+    expect(rebound.endpoint).toContain('/models/gemini-3.5-flash-lite:generateContent')
+    expect(() => buildDreamRequest({
+      apiUrl: 'https://generativelanguage.googleapis.com/v1beta?key=runtime-secret',
+      model: 'gemma-4-26b-a4b-it',
+      maxTokens: 64,
+    }, 'runtime-secret', 'probe')).toThrow('must not include a query or fragment')
+  })
+
   it('binds generated pages to the current raw session only', () => {
     const session = { id: 'session-authoritative' } as never
     const pages = parseWikiOutput(`<<<FILE path="wiki/entities/example.md">>>
@@ -76,4 +101,50 @@ ${longText}
     expect(() => parseWikiOutput('plain model prose', session)).toThrow(/invalid-file-protocol/)
     expect(() => parseWikiOutput('<<<FILE path="wiki/entities/bad.md">>>\nnot frontmatter\n<<<END>>>', session)).toThrow(/invalid-file-protocol/)
   })
+
+  it('rejects the full response when any FILE block is malformed', () => {
+    const valid = '<<<FILE path="wiki/concepts/partial.md">>>\n---\ntype: concept\ntitle: Partial\ndescription: Partial page\n---\nBody.\n<<<END>>>'
+    const invalid = '<<<FILE path="wiki/concepts/bad.md">>>\nnot frontmatter\n<<<END>>>'
+    expect(() => parseWikiOutput(`${valid}\n${invalid}`, 'session-authoritative')).toThrow(/invalid-file-protocol/)
+  })
+
+  it('normalizes safe provider folder aliases before typed Wiki validation', () => {
+    const pages = parseWikiOutput(`<<<FILE path="wiki/preferences/weekend.md">>>
+---
+type: concept
+title: Weekend preference
+description: A durable preference
+sources:
+  - session-authoritative
+timestamp: 2026-09-18T00:00:00.000Z
+confidence: 0.8
+status: candidate
+consent: false
+locked: false
+---
+
+A durable preference.
+<<<END>>>`, 'session-authoritative')
+    expect(pages[0]?.type).toBe('concept')
+    expect(pages[0]?.path).toContain('wiki/concepts/')
+    const entityPages = parseWikiOutput(`<<<FILE path="wiki/preferences/person.md">>>
+---
+type: entity
+title: Person
+description: A durable entity
+sources:
+  - session-authoritative
+timestamp: 2026-09-18T00:00:00.000Z
+confidence: 0.8
+status: candidate
+consent: false
+locked: false
+---
+
+A durable entity.
+<<<END>>>`, 'session-authoritative')
+    expect(entityPages[0]?.type).toBe('entity')
+    expect(entityPages[0]?.path).toContain('wiki/entities/')
+  })
+
 })

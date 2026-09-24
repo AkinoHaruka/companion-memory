@@ -49,6 +49,7 @@ describe('storage-domain-backed MemoryProfileStore', () => {
     const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA); stores.push(store)
     await expect(store.updateDreamSettings({ apiUrl: 'http://provider.example/anthropic' })).rejects.toThrow(/https/i)
     await expect(store.updateDreamSettings({ apiUrl: 'https://credential@provider.example/anthropic' })).rejects.toThrow(/embedded credential/i)
+    await expect(store.updateDreamSettings({ apiUrl: 'https://provider.example/anthropic?key=secret' })).rejects.toThrow(/query or fragment/i)
   })
 
   it('persists one scope and keeps a different preset isolated', async () => {
@@ -57,6 +58,38 @@ describe('storage-domain-backed MemoryProfileStore', () => {
     expect(alice.renderResident()).toContain('Alice likes concise answers')
     const restored = new MemoryProfileStore(domain, scopeA); stores.push(restored); await restored.waitReady(); expect(restored.renderResident()).toContain('Alice likes concise answers')
     const bob = new MemoryProfileStore(domain, scopeB); stores.push(bob); await bob.waitReady(); expect(bob.renderResident()).toBe('')
+  })
+
+  it('migrates only the former built-in Dream endpoint/model and preserves the saved token budget', async () => {
+    const domain = new DomainFixture()
+    const legacy = new MemoryProfileStore(domain, scopeA, { apiUrl: 'https://api.deepseek.com/api/v1/chat/completions', credentialRef: 'DSH_MEMORY_DREAM_API_KEY', model: 'deepseek-chat', maxTokens: 2048 }); stores.push(legacy)
+    await legacy.waitReady()
+    const current = new MemoryProfileStore(domain, scopeA); stores.push(current)
+    await current.waitReady()
+    expect(current.dreamSettings()).toEqual({ apiUrl: 'https://generativelanguage.googleapis.com/v1beta', credentialRef: 'GEMINI_API_KEY', model: 'gemini-3.5-flash-lite', maxTokens: 2048 })
+  })
+
+  it('migrates legacy-default Dream fields independently and preserves custom values', async () => {
+    const customCredentialDomain = new DomainFixture()
+    const customCredentialLegacy = new MemoryProfileStore(customCredentialDomain, scopeA, { apiUrl: 'https://api.deepseek.com/api/v1/chat/completions', credentialRef: 'MY_DREAM_SECRET', model: 'deepseek-chat', maxTokens: 1600 }); stores.push(customCredentialLegacy)
+    await customCredentialLegacy.waitReady()
+    const customCredentialCurrent = new MemoryProfileStore(customCredentialDomain, scopeA, { apiUrl: 'https://api.deepseek.com/chat/completions', credentialRef: 'DEEPSEEK_API_KEY', model: 'deepseek-flash', maxTokens: 1200 }); stores.push(customCredentialCurrent)
+    await customCredentialCurrent.waitReady()
+    expect(customCredentialCurrent.dreamSettings()).toEqual({ apiUrl: 'https://api.deepseek.com/chat/completions', credentialRef: 'MY_DREAM_SECRET', model: 'deepseek-flash', maxTokens: 1600 })
+
+    const customEndpointDomain = new DomainFixture()
+    const customEndpointLegacy = new MemoryProfileStore(customEndpointDomain, scopeA, { apiUrl: 'https://custom.example/chat/completions', credentialRef: 'CUSTOM_KEY', model: 'deepseek-chat', maxTokens: 1500 }); stores.push(customEndpointLegacy)
+    await customEndpointLegacy.waitReady()
+    const customEndpointCurrent = new MemoryProfileStore(customEndpointDomain, scopeA, { apiUrl: 'https://api.deepseek.com/chat/completions', credentialRef: 'DEEPSEEK_API_KEY', model: 'deepseek-flash', maxTokens: 1200 }); stores.push(customEndpointCurrent)
+    await customEndpointCurrent.waitReady()
+    expect(customEndpointCurrent.dreamSettings()).toEqual({ apiUrl: 'https://custom.example/chat/completions', credentialRef: 'CUSTOM_KEY', model: 'deepseek-flash', maxTokens: 1500 })
+
+    const customModelDomain = new DomainFixture()
+    const customModelLegacy = new MemoryProfileStore(customModelDomain, scopeA, { apiUrl: 'https://api.deepseek.com/api/v1/chat/completions', credentialRef: 'CUSTOM_KEY', model: 'my-finetune-v2', maxTokens: 1400 }); stores.push(customModelLegacy)
+    await customModelLegacy.waitReady()
+    const customModelCurrent = new MemoryProfileStore(customModelDomain, scopeA, { apiUrl: 'https://api.deepseek.com/chat/completions', credentialRef: 'DEEPSEEK_API_KEY', model: 'deepseek-flash', maxTokens: 1200 }); stores.push(customModelCurrent)
+    await customModelCurrent.waitReady()
+    expect(customModelCurrent.dreamSettings()).toEqual({ apiUrl: 'https://api.deepseek.com/chat/completions', credentialRef: 'CUSTOM_KEY', model: 'my-finetune-v2', maxTokens: 1400 })
   })
 
   it('keeps Dream output as a candidate until explicit confirmation', async () => {
@@ -502,7 +535,7 @@ describe('storage-domain-backed MemoryProfileStore', () => {
   })
 
   it('keeps a user-grounded candidate pending while the auto-confirm policy is off', async () => {
-    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA); stores.push(store)
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'off' }); stores.push(store)
     await store.appendSessionEvent('session-auto-off', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417' }] } }))
     await store.ingestPages([{ ...page(scopeA, 'My locker number is B-417', 'candidate'), sources: ['session-auto-off'] }], new Date().toISOString(), 'session-auto-off')
     expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages ?? []).toHaveLength(0)
@@ -510,14 +543,55 @@ describe('storage-domain-backed MemoryProfileStore', () => {
 
   it('auto-confirms a candidate only when the user stated the claim verbatim', async () => {
     const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
-    await store.appendSessionEvent('session-grounded', JSON.stringify({ seq: 4, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Remember that my locker number is B-417 please.' }] } }))
-    await store.ingestPages([{ ...page(scopeA, 'my locker number is b-417', 'candidate'), sources: ['session-grounded'] }], new Date().toISOString(), 'session-grounded')
+    await store.appendSessionEvent('session-grounded', JSON.stringify({ seq: 4, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417' }] } }))
+    await store.ingestPages([{ ...page(scopeA, 'my locker number is b-417', 'candidate'), sensitivity: 'normal', sources: ['session-grounded'] }], new Date().toISOString(), 'session-grounded')
     expect(store.snapshot().candidates).toHaveLength(0)
-    expect((store.snapshot().pages ?? []).map(existing => existing.description)).toContain('my locker number is b-417')
+    expect((store.snapshot().pages ?? []).map(existing => existing.description)).toContain('My locker number is B-417')
     const audits = [...domain.table('audits').entries()].map(([, value]) => value as { event: string; detail?: { groundingRef?: string; mode?: string } })
     const promotion = audits.find(entry => entry.event === 'candidate-auto-confirmed')
     expect(promotion?.detail?.mode).toBe('user_grounded')
     expect(promotion?.detail?.groundingRef).toBe('session:session-grounded/event:4')
+  })
+
+  it('resolves Dream event references only to same-session short, normal user L0 events', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { evidenceClassification: true }); stores.push(store)
+    const append = async (sessionId: string, seq: number, text: string, type = 'user/message'): Promise<void> => store.appendSessionEvent(sessionId, JSON.stringify({ seq, time: '2026-09-17T00:00:00.000Z', type, data: { source: { kind: type === 'user/message' ? 'user' : 'assistant' }, content: [{ type: 'text', text }] } }))
+    await append('session-grounding-ref', 4, 'I prefer short answers')
+    await append('session-grounding-ref', 5, 'I prefer detailed, untruncated explanations that are longer than one hundred and twenty characters because this is a deliberately long test sentence that must never be used as a grounding description.')
+    await append('session-grounding-ref', 6, 'My password is private')
+    await append('session-grounding-ref', 7, 'assistant-authored sentence', 'assistant/message')
+    await append('another-grounding-session', 4, 'I prefer short answers')
+
+    expect(store.resolveDreamGroundingEvent('session-grounding-ref', 'session:session-grounding-ref/event:4')).toEqual({ text: 'I prefer short answers' })
+    expect(store.resolveDreamGroundingEvent('session-grounding-ref', 'session:another-grounding-session/event:4')).toBeUndefined()
+    expect(store.resolveDreamGroundingEvent('session-grounding-ref', 'session:session-grounding-ref/event:5')).toBeUndefined()
+    expect(store.resolveDreamGroundingEvent('session-grounding-ref', 'session:session-grounding-ref/event:6')).toBeUndefined()
+    expect(store.resolveDreamGroundingEvent('session-grounding-ref', 'session:session-grounding-ref/event:7')).toBeUndefined()
+    expect(store.resolveDreamGroundingEvent('session-grounding-ref', 'session:session-grounding-ref/event:999')).toBeUndefined()
+  })
+
+  it('stores only the grounded user text when the model adds claims to the title or body', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    await store.appendSessionEvent('session-extra-claims', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417' }] } }))
+    const proposed = { ...page(scopeA, 'My locker number is B-417', 'candidate'), type: 'relationship' as const, tags: ['medical'], title: 'My locker number is B-417 and safe code is 1234', body: 'My locker number is B-417; the safe code is 1234', sensitivity: 'normal' as const, sources: ['session-extra-claims'] }
+    await store.ingestPages([proposed], new Date().toISOString(), 'session-extra-claims')
+    expect(store.snapshot().candidates).toHaveLength(0)
+    expect(store.snapshot().pages).toHaveLength(1)
+    const promoted = store.listPages()[0]!
+    expect(promoted).toMatchObject({ type: 'concept', title: 'My locker number is B-417', description: 'My locker number is B-417', body: 'My locker number is B-417', tags: [], confidence: 0.5 })
+    expect(promoted.category).toBeUndefined()
+    expect(promoted.kind).toBeUndefined()
+    expect(JSON.stringify(promoted)).not.toContain('safe code is 1234')
+  })
+
+  it('preserves negations from the user event when the model title or body drops them', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    const userText = "I don't like vegan pizza"
+    await store.appendSessionEvent('session-negation-dropped', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: userText }] } }))
+    const proposed = { ...page(scopeA, userText, 'candidate'), title: 'like vegan pizza', body: 'like vegan pizza', sensitivity: 'normal' as const, sources: ['session-negation-dropped'] }
+    await store.ingestPages([proposed], new Date().toISOString(), 'session-negation-dropped')
+    expect(store.snapshot().candidates).toHaveLength(0)
+    expect(store.listPages()[0]).toMatchObject({ title: userText, description: userText, body: userText })
   })
 
   it('leaves a claim the user never made pending under the user-grounded policy', async () => {
@@ -527,13 +601,54 @@ describe('storage-domain-backed MemoryProfileStore', () => {
     expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages).toHaveLength(0)
   })
 
+  it('does not ground a positive claim inside a negated user statement', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    await store.appendSessionEvent('session-negated', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: "I don't like vegan pizza" }] } }))
+    await store.ingestPages([{ ...page(scopeA, 'like vegan pizza', 'candidate'), sensitivity: 'normal', sources: ['session-negated'] }], new Date().toISOString(), 'session-negated')
+    expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages).toHaveLength(0)
+  })
+
+  it('does not auto-confirm a user-grounded candidate without normal sensitivity classification', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    await store.appendSessionEvent('session-unclassified', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'My locker number is B-417' }] } }))
+    await store.ingestPages([{ ...page(scopeA, 'my locker number is b-417', 'candidate'), sources: ['session-unclassified'] }], new Date().toISOString(), 'session-unclassified')
+    expect(store.snapshot().candidates).toHaveLength(1); expect(store.snapshot().pages).toHaveLength(0)
+  })
+
+  it('does not auto-confirm an NFKC-equivalent private claim when the model marks it normal', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    const userText = 'My ｐａｓｓｗｏｒｄ is hidden'
+    await store.appendSessionEvent('session-nfkc-sensitive', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: userText }] } }))
+    await store.ingestPages([{ ...page(scopeA, userText, 'candidate'), sensitivity: 'normal', sources: ['session-nfkc-sensitive'] }], new Date().toISOString(), 'session-nfkc-sensitive')
+    expect(store.snapshot().candidates).toHaveLength(1)
+    expect(store.snapshot().pages).toHaveLength(0)
+    expect(store.renderResident()).not.toContain(userText)
+  })
+
+  it('respects an explicit sensitive label on the L0 event used for grounding', async () => {
+    const domain = new DomainFixture(); const store = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'user_grounded' }); stores.push(store)
+    const userText = 'I prefer concise answers'
+    await store.appendSessionEvent('session-explicit-sensitive', JSON.stringify({ seq: 1, time: '2026-09-17T00:00:00.000Z', type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: userText }] } }))
+    expect(await store.markEvidenceSensitivity('session-explicit-sensitive', 0, 'sensitive', 'management')).toBe(true)
+    await store.ingestPages([{ ...page(scopeA, userText, 'candidate'), sensitivity: 'normal', sources: ['session-explicit-sensitive'] }], new Date().toISOString(), 'session-explicit-sensitive')
+    expect(store.snapshot().candidates).toHaveLength(1)
+    expect(store.snapshot().pages).toHaveLength(0)
+    expect(store.renderResident()).not.toContain(userText)
+  })
+
   it('auto-confirms every candidate under the explicit all policy and never a sensitive or conflicting one', async () => {
     const domain = new DomainFixture(); const all = new MemoryProfileStore(domain, scopeA, undefined, 12_000, { candidateAutoConfirm: 'all' }); stores.push(all)
     await all.ingestPages([{ ...page(scopeA, 'plain inferred preference', 'candidate'), sensitivity: 'sensitive' }], new Date().toISOString(), 'session-a')
     expect(all.snapshot().candidates).toHaveLength(1); expect(all.snapshot().pages).toHaveLength(0)
-    const grounded = new MemoryProfileStore(domain, scopeB, undefined, 12_000, { candidateAutoConfirm: 'all' }); stores.push(grounded)
-    await grounded.ingestPages([page(scopeB, 'plain inferred preference', 'candidate')], new Date().toISOString(), 'session-a')
-    expect(grounded.snapshot().candidates).toHaveLength(0)
-    expect((grounded.snapshot().pages ?? []).map(existing => existing.description)).toContain('plain inferred preference')
+    const unclassified = new MemoryProfileStore(new DomainFixture(), scopeA, undefined, 12_000, { candidateAutoConfirm: 'all' }); stores.push(unclassified)
+    await unclassified.ingestPages([page(scopeA, 'plain inferred preference', 'candidate')], new Date().toISOString(), 'session-a')
+    expect(unclassified.snapshot().candidates).toHaveLength(1); expect(unclassified.snapshot().pages).toHaveLength(0)
+    const explicitlyNormal = new MemoryProfileStore(new DomainFixture(), scopeB, undefined, 12_000, { candidateAutoConfirm: 'all' }); stores.push(explicitlyNormal)
+    await explicitlyNormal.ingestPages([{ ...page(scopeB, 'plain inferred preference', 'candidate'), sensitivity: 'normal' }], new Date().toISOString(), 'session-a')
+    expect(explicitlyNormal.snapshot().candidates).toHaveLength(0)
+    expect((explicitlyNormal.snapshot().pages ?? []).map(existing => existing.description)).toContain('plain inferred preference')
+    await explicitlyNormal.ingestPages([{ ...page(scopeB, 'My home address is 17 River Road', 'candidate'), sensitivity: 'normal' }], new Date().toISOString(), 'session-a')
+    expect(explicitlyNormal.snapshot().candidates).toHaveLength(1)
+    expect((explicitlyNormal.snapshot().pages ?? []).map(existing => existing.description)).not.toContain('My home address is 17 River Road')
   })
 })

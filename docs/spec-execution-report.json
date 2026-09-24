@@ -1,15 +1,35 @@
 {
-  "$comment": "Normalized evidence from a real Vitest JSON run; paths are package-relative, spec evidence is classified in spec-evidence-registry.json, and requirement summaries include execution, minimum-level, and provider checks.",
-  "recordedOn": "2026-09-22",
+  "$comment": "Normalized Vitest JSON with package-relative paths and registry-derived evidence and requirement summaries.",
+  "generatedAt": "2026-09-24T03:52:45.097Z",
+  "recordedOn": "2026-09-24",
+  "command": "$env:DSH_RIKO_MEMORY_REFRESH_SPEC_REPORT=1; pnpm exec vitest run packages/bundle/riko-memory --reporter=json --outputFile.json=C:/TRAE/Riko-dsh/codex-runs-p5/artifacts/riko-memory-provider-merged-2026-09-24-v2.json",
+  "inputFingerprintCaptureCommand": "node_modules/.bin/tsx.cmd scripts/update-riko-memory-spec-report.ts --fingerprint-only",
+  "reportRun": {
+    "mode": "refresh",
+    "environment": {
+      "DSH_RIKO_MEMORY_REFRESH_SPEC_REPORT": "1"
+    },
+    "skippedReportAssertions": [
+      "tests/spec-registry.spec.ts: report freshness and report reconciliation tests",
+      "tests/execution-baseline.integration.spec.ts: report suite assertions"
+    ]
+  },
+  "rawJsonSha256": "68eb8136798514cddc4525907c08394da73cd450b6f4448b274a3cd9045c6ded",
+  "inputFingerprint": "347693940f953a5aae37faeb74b0fba403cee9f8e70dea42c1ec9e9bd1462ea2",
   "packageVersion": "0.1.6-alpha.2",
   "runner": "vitest --reporter=json",
   "suite": {
     "files": 47,
-    "tests": 355,
-    "passed": 344,
+    "tests": 422,
+    "passed": 420,
     "failed": 0,
-    "skipped": 11,
+    "skipped": 2,
     "todo": 0,
+    "defaultSpecCompleteness": {
+      "expected": 43,
+      "complete": 43,
+      "incomplete": []
+    },
     "success": true
   },
   "specs": {
@@ -48,8 +68,8 @@
     },
     "tests/benchmark-checkpoint.spec.ts": {
       "status": "passed",
-      "tests": 5,
-      "passed": 5,
+      "tests": 6,
+      "passed": 6,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
@@ -59,8 +79,8 @@
     },
     "tests/benchmark-query-adapter.spec.ts": {
       "status": "passed",
-      "tests": 6,
-      "passed": 6,
+      "tests": 7,
+      "passed": 7,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
@@ -103,8 +123,8 @@
     },
     "tests/contracts.spec.ts": {
       "status": "passed",
-      "tests": 4,
-      "passed": 4,
+      "tests": 5,
+      "passed": 5,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
@@ -148,11 +168,11 @@
     "tests/dense-ablation-real.spec.ts": {
       "status": "passed",
       "tests": 4,
-      "passed": 0,
+      "passed": 4,
       "failed": 0,
-      "skipped": 4,
+      "skipped": 0,
       "todo": 0,
-      "executed": false,
+      "executed": true,
       "evidenceLevel": "empirical",
       "provider": "real_embedding"
     },
@@ -189,17 +209,6 @@
       "evidenceLevel": "empirical",
       "provider": "real_embedding"
     },
-    "tests/empirical-decision-campaign.spec.ts": {
-      "status": "passed",
-      "tests": 4,
-      "passed": 4,
-      "failed": 0,
-      "skipped": 0,
-      "todo": 0,
-      "executed": true,
-      "evidenceLevel": "empirical",
-      "provider": "real_embedding"
-    },
     "tests/disclosure-policy.spec.ts": {
       "status": "passed",
       "tests": 4,
@@ -213,14 +222,25 @@
     },
     "tests/dream-protocol.spec.ts": {
       "status": "passed",
-      "tests": 5,
-      "passed": 5,
+      "tests": 9,
+      "passed": 9,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
       "executed": true,
       "evidenceLevel": "unit",
       "provider": "deterministic_fixture"
+    },
+    "tests/empirical-decision-campaign.spec.ts": {
+      "status": "passed",
+      "tests": 4,
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "executed": true,
+      "evidenceLevel": "empirical",
+      "provider": "real_embedding"
     },
     "tests/entity-alias-resolution.spec.ts": {
       "status": "passed",
@@ -288,6 +308,17 @@
       "evidenceLevel": "loader_e2e",
       "provider": "deterministic_fixture"
     },
+    "tests/execution-baseline.integration.spec.ts": {
+      "status": "passed",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "executed": true,
+      "evidenceLevel": "integration",
+      "provider": "harness_gate"
+    },
     "tests/live-flag-matrix.spec.ts": {
       "status": "passed",
       "tests": 15,
@@ -323,8 +354,8 @@
     },
     "tests/loader-composition.spec.ts": {
       "status": "passed",
-      "tests": 9,
-      "passed": 9,
+      "tests": 11,
+      "passed": 11,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
@@ -389,8 +420,8 @@
     },
     "tests/recall.spec.ts": {
       "status": "passed",
-      "tests": 14,
-      "passed": 14,
+      "tests": 18,
+      "passed": 18,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
@@ -444,8 +475,8 @@
     },
     "tests/sensitivity-provisional.spec.ts": {
       "status": "passed",
-      "tests": 4,
-      "passed": 4,
+      "tests": 44,
+      "passed": 44,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
@@ -466,10 +497,10 @@
     },
     "tests/spec-registry.spec.ts": {
       "status": "passed",
-      "tests": 8,
-      "passed": 8,
+      "tests": 9,
+      "passed": 7,
       "failed": 0,
-      "skipped": 0,
+      "skipped": 2,
       "todo": 0,
       "executed": true,
       "evidenceLevel": "static",
@@ -488,8 +519,8 @@
     },
     "tests/store.spec.ts": {
       "status": "passed",
-      "tests": 45,
-      "passed": 45,
+      "tests": 58,
+      "passed": 58,
       "failed": 0,
       "skipped": 0,
       "todo": 0,
@@ -518,17 +549,6 @@
       "executed": true,
       "evidenceLevel": "integration",
       "provider": "deterministic_fixture"
-    },
-    "tests/execution-baseline.integration.spec.ts": {
-      "status": "passed",
-      "tests": 1,
-      "passed": 1,
-      "failed": 0,
-      "skipped": 0,
-      "todo": 0,
-      "executed": true,
-      "evidenceLevel": "integration",
-      "provider": "harness_gate"
     }
   },
   "requirements": {

@@ -14,9 +14,11 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load } from 'js-yaml'
 import { describe, expect, it } from 'vitest'
+import { computeSpecReportInputFingerprint } from './support/spec-report-fingerprint.ts'
 
 const testDirectory = dirname(fileURLToPath(import.meta.url))
 const packageDirectory = resolve(testDirectory, '..')
+const reportRefreshRun = process.env.DSH_RIKO_MEMORY_REFRESH_SPEC_REPORT === '1'
 const registryFile = join(packageDirectory, 'docs', 'spec-execution-registry.json')
 const registryText = readFileSync(registryFile, 'utf8')
 const requirementsFile = join(packageDirectory, 'docs', 'memory-v3-requirements.yml')
@@ -89,6 +91,10 @@ type RequirementExecution = {
   candidates: CandidateExecution[]
 }
 type ExecutionReport = {
+  generatedAt: string
+  command: string
+  rawJsonSha256: string
+  inputFingerprint: string
   packageVersion: string
   suite: { files: number; tests: number; passed: number; failed: number; skipped: number; success: boolean }
   specs: Record<string, { status: string; executed: boolean; failed: number; evidenceLevel: EvidenceLevel; provider: string }>
@@ -97,7 +103,6 @@ type ExecutionReport = {
 
 const registry = JSON.parse(registryText) as Registry
 const requirements = load(readFileSync(requirementsFile, 'utf8')) as Record<string, Requirement>
-const executionReport = JSON.parse(readFileSync(executionReportFile, 'utf8')) as ExecutionReport
 const evidenceRegistry = JSON.parse(readFileSync(evidenceRegistryFile, 'utf8')) as EvidenceRegistry
 const capabilityStatus = JSON.parse(readFileSync(capabilityStatusFile, 'utf8')) as CapabilityStatus
 const gapRegister = JSON.parse(readFileSync(join(packageDirectory, 'docs', 'traceability-gap-register.json'), 'utf8')) as GapRegister
@@ -128,6 +133,14 @@ const bareMarkers = ['x' + 'it(', 'x' + 'describe(']
 const packageSources = walk(testDirectory, name => name.endsWith('.ts')).map(file => readFileSync(file, 'utf8')).join('\n')
 
 describe('spec execution registry', () => {
+  it.skipIf(reportRefreshRun)('records fresh runner output bound to the current code and traceability inputs', () => {
+    const executionReport = JSON.parse(readFileSync(executionReportFile, 'utf8')) as ExecutionReport
+    expect(Number.isFinite(Date.parse(executionReport.generatedAt))).toBe(true)
+    expect(executionReport.command.trim().length).toBeGreaterThan(0)
+    expect(executionReport.rawJsonSha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(executionReport.inputFingerprint).toBe(computeSpecReportInputFingerprint(resolve(packageDirectory, '..', '..', '..')))
+  })
+
   it('discovers a spec corpus that is neither empty nor narrowed', () => {
     expect(specFiles.length).toBeGreaterThan(40)
     expect(registered.length).toBeGreaterThan(40)
@@ -174,12 +187,17 @@ describe('spec execution registry', () => {
     expect(defaultSpecs.length).toBeGreaterThan(30)
     for (const [file] of defaultSpecs) {
       const source = readFileSync(join(testDirectory, file), 'utf8')
-      const markers = [...dottedMarkers, ...bareMarkers].filter(marker => source.includes(marker))
+      // This registry test conditionally omits only report-dependent assertions during refresh runs.
+      const markerSource = file === 'spec-registry.spec.ts'
+        ? source.replaceAll('it.skipIf(reportRefreshRun)', '')
+        : source
+      const markers = [...dottedMarkers, ...bareMarkers].filter(marker => markerSource.includes(marker))
       expect(markers, file).toEqual([])
     }
   })
 
-  it('reconciles required requirement candidates against a real Vitest execution report', () => {
+  it.skipIf(reportRefreshRun)('reconciles required requirement candidates against a real Vitest execution report', () => {
+    const executionReport = JSON.parse(readFileSync(executionReportFile, 'utf8')) as ExecutionReport
     expect(Object.keys(requirements)).toHaveLength(335)
     expect(executionReport.suite.files).toBe(specFiles.length)
     expect(executionReport.suite.success).toBe(true)
@@ -238,10 +256,14 @@ describe('spec execution registry', () => {
       }
     }
     const unassessed = Object.values(requirements).filter(requirement => requirement.status === 'unassessed').length
-    const verified = Object.values(requirements).filter(requirement => /^(?:verified_contract|verified_e2e|validated_empirically)$/.test(requirement.status)).length
+    const verified = Object.values(requirements)
+      .filter(requirement => /^(?:verified_contract|verified_e2e|validated_empirically)$/.test(requirement.status))
+      .length
     const eligibleRequirements = Object.values(executionReport.requirements).filter(requirement => requirement.evidenceEligible).length
     const requirementsWithEvidenceGaps = Object.values(executionReport.requirements).filter(requirement => requirement.evidenceGap).length
-    const requirementsWithCandidateDeficits = Object.values(executionReport.requirements).filter(requirement => requirement.deficits.length > 0).length
+    const requirementsWithCandidateDeficits = Object.values(executionReport.requirements)
+      .filter(requirement => requirement.deficits.length > 0)
+      .length
     const evidenceGapIds = Object.entries(executionReport.requirements)
       .filter(([, requirement]) => requirement.evidenceGap)
       .map(([id]) => id)

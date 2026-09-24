@@ -141,7 +141,7 @@ Dream 使用受控 FILE 协议，只接受允许的 `wiki/` 目录。解析器�
 
 Provider 返回的 `status: confirmed`、`consent: true`、`locked: true`，或者模型自己写出的“用户让我记住”，都不会授予确认权。
 
-`candidateAutoConfirm` 策略可以省掉手动确认这一步，默认是 `off`。`user_grounded` 只在候选的 description 逐字出现在同 scope 的用户 L0 事件里时才承认它，因此授予权威的始终是用户自己的原话而不是模型输出；`all` 则不看依据地承认每一个非敏感、非冲突候选，这是对"不自动提升"不变量的刻意偏离，只用于受控 dogfooding。每一次自动承认都会以 `candidate-auto-confirmed` 记入审计，附带策略模式与依据引用。
+`candidateAutoConfirm` 策略可以省掉手动确认这一步，默认是 `user_grounded`。只有候选 description 与同 scope 某条用户 L0 事件的规范化完整文本完全相同时才会承认。随后标题、description 和正文都会替换为该条用户原文，以保留否定和限定并丢弃模型追加或省略的内容。Dream 生成的标签、分类、页面类型和时间断言也会在创建 canonical 页面时丢弃。系统会根据标题、description 和正文在本地规范化敏感度：私密内容为 `sensitive`，标识符样式内容为 `provisional_sensitive`，只有 `normal` 候选可以自动承认；格式错误的敏感度标签会按 provisional 拒绝自动承认。有冲突的候选继续等待人工处理。`off` 保持所有候选待确认。`all` 跳过依据匹配，是对"不自动提升"不变量的刻意偏离，只用于受控 dogfooding。每一次自动承认都会以 `candidate-auto-confirmed` 记入审计，附带策略模式与依据引用。
 
 ### 5. 写入权威 Wiki
 
@@ -171,7 +171,7 @@ Provider 返回的 `status: confirmed`、`consent: true`、`locked: true`，或�
 
 ## Query-Time Recall v1
 
-可选的 `recallEnabled` 会在 Resident 之外按当前用户 query 召回长尾细节，默认关闭。第一阶段使用 scope 内 canonical lexical search，并以原始用户证据作 secondary recall；词法排序使用 BM25，IDF 取自候选语料本身，因此固定 adapter 前缀或闲聊这类普遍出现的 token 不会压过稀有判别词。预算先用 `min(recallMaxCandidates, recallAuthoritativeReserve)` 为非 evidence 权威结果保留席位，再在融合结果中考虑剩余候选；raw evidence 受 `recallRawEvidenceMaxCandidates` 限制，canonical 文本标为 `[authoritative]`，选中的 supporting evidence 标为 `[supplement]`，而当已选非 L0 文本覆盖 raw 细节的全部词项时会抑制重复 raw 细节。最终上下文仍受 `recallMaxContextChars` 限制。`embeddingProvider` 可启用 deterministic-local 或 OpenAI-compatible dense recall；provider 失败会降级到 lexical/RRF，不阻断聊天。keyless deterministic 消融在 companion 对比中测得 unique recall gain 为 0/16、dense noise 为 2/9、gate rejection 为 0/9；更大的 12 个场景、每场景 20 页的 keyless chaos probe 在本次运行打印了 unique gain 0/12、noise 60/60、gate rejection 36/96。这些是 keyless routing 和 selection 测量，不是 BGE 质量结果。BGE 门控的语义语料（`tests/dense-semantic-gain.spec.ts`）测量 lexical 排序在结构上无法达到的改写召回：在本地 BGE-small-zh-v1.5 服务上记录的结果是 lexical-only 命中 0/5，deterministic hash provider 命中 2/5，BGE 向量命中 5/5；该运行需要 `DSH_MEMORY_BGE_ENDPOINT`，因此默认 package run 不报告 BGE 质量测量。live hook 也不会提供 `MemoryReranker`，rerank 只可由直接 helper/store 调用和测试触达。Recall 还支持调用方提供明确的 `atTime` 或 `history` 来读取保留的时间线。suppression cue 会作为 policy evidence 保留并驱动 suppression；在 suppression 生效期间，它不会作为普通 raw recall 返回。详见 [docs/recall-v1.md](docs/recall-v1.md) 与 [docs/migration-phase-2-temporal-resident.md](docs/migration-phase-2-temporal-resident.md)。
+可选的 `recallEnabled` 会在 Resident 之外按当前用户 query 召回长尾细节；插件默认关闭，Web overlay 默认开启，也可设置 `DSH_MEMORY_RECALL_ENABLED=false` 关闭。第一阶段使用 scope 内 canonical lexical search，并以原始用户证据作 secondary recall；词法排序使用 BM25，IDF 取自候选语料本身，因此固定 adapter 前缀或闲聊这类普遍出现的 token 不会压过稀有判别词。预算先用 `min(recallMaxCandidates, recallAuthoritativeReserve)` 为非 evidence 权威结果保留席位，再在融合结果中考虑剩余候选；raw evidence 受 `recallRawEvidenceMaxCandidates` 限制，canonical 文本标为 `[authoritative]`，选中的 supporting evidence 标为 `[supplement]`，而当已选非 L0 文本覆盖 raw 细节的全部词项时会抑制重复 raw 细节。最终上下文仍受 `recallMaxContextChars` 限制。`embeddingProvider` 可启用 deterministic-local 或 OpenAI-compatible dense recall；provider 失败会降级到 lexical/RRF，不阻断聊天。keyless deterministic 消融在 companion 对比中测得 unique recall gain 为 0/16、dense noise 为 2/9、gate rejection 为 0/9；更大的 12 个场景、每场景 20 页的 keyless chaos probe 在本次运行打印了 unique gain 0/12、noise 60/60、gate rejection 36/96。这些是 keyless routing 和 selection 测量，不是 BGE 质量结果。BGE 门控的语义语料（`tests/dense-semantic-gain.spec.ts`）测量 lexical 排序在结构上无法达到的改写召回：在本地 BGE-small-zh-v1.5 服务上记录的结果是 lexical-only 命中 0/5，deterministic hash provider 命中 2/5，BGE 向量命中 5/5；该运行需要 `DSH_MEMORY_BGE_ENDPOINT`，因此默认 package run 不报告 BGE 质量测量。live hook 也不会提供 `MemoryReranker`，rerank 只可由直接 helper/store 调用和测试触达。Recall 还支持调用方提供明确的 `atTime` 或 `history` 来读取保留的时间线。suppression cue 会作为 policy evidence 保留并驱动 suppression；在 suppression 生效期间，它不会作为普通 raw recall 返回。详见 [docs/recall-v1.md](docs/recall-v1.md) 与 [docs/migration-phase-2-temporal-resident.md](docs/migration-phase-2-temporal-resident.md)。
 
 Observation 管理、图谱扩展和 raw Session purge 分别由 `recallObservationEnabled`、`recallGraphEnabled`、`purgeEnabled` 控制，默认全部关闭。启用的 Dream reflection 可以创建带 anchor 的 Observation candidate；创建 candidate 或更新 evidence 时，只要记录仍是 candidate、敏感度为 `normal`、没有强矛盾，并满足配置的 evidence、不同 Session 和 confidence 下限，runtime 就可以自动激活它。另一个路径是经过认证的 `POST /memory/v1/observations/:id/activate` 管理操作；它在通过 store 的最少 evidence 检查后显式激活记录，匹配的路由可以让记录 invalidated 或 suppressed。两条激活路径都不会确认 fact 或授予 explicit mention permission。Observation 必须有 raw/confirmed evidence anchor，始终与 Wiki fact 分开。普通 `memory_forget` 仍会保留 raw Session 证据。
 
@@ -191,8 +191,8 @@ Dream 是可恢复的后台整理器，不是长期记忆的权威来源。
 2. 同一个 scope 内串行执行，不同 scope 可以并行。
 3. 持久化 cursor 防止重复消费，持久化 job 支持重启恢复。
 4. Transcript 有字符上限，Provider 只被要求生成少量简短页面。
-5. OpenRouter 等 OpenAI-compatible endpoint 使用 Chat Completions；小米 MiMo 等 Anthropic-compatible endpoint 使用 Anthropic Messages，协议由 endpoint 形态推断。
-6. 请求使用有界标准字段，credential 不放入 URL；原生后台请求超时 120 秒，HTTP 429 最多一次有界重试。
+5. `generativelanguage.googleapis.com` 下的 Gemini 和 Gemma endpoint 使用原生 `models/{model}:generateContent` 合同；OpenRouter 等 OpenAI-compatible endpoint 使用 Chat Completions；小米 MiMo 等 Anthropic-compatible endpoint 使用 Anthropic Messages，协议由 endpoint 形态推断。
+6. 请求使用有界 provider 字段，credential 不放入 URL；每个 provider 尝试超时 60 秒，并在网络错误、超时、HTTP 429/5xx 或 FILE 无效时按顺序切换。HTTP 400/401/403 会终止切换。
 7. 响应必须先通过严格 FILE 解析再持久化。非法 block、空响应、非预期 JSON 和 provider 错误都只让 job 失败，不替换旧 Wiki 或 Resident。
 8. 系统生成的提取 Session 不会再次触发 Dream，避免递归。
 
@@ -286,9 +286,10 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 | `apiTokens` | `{}` | 将 profile 绑定到不同 scope 的 bearer-token 映射。 | 不返回：secret 且 scope 私有。 |
 | `apiTokenProfile` | `''` | 单 token 认证模式选择的 profile。 | 仅非空时返回。 |
 | `ownerAdminToken` | `''` | 授予跨 profile 管理访问权限的 owner-admin bearer token。 | 仅以 `ownerAdminConfigured` 返回；令牌值本身永不返回。 |
-| `dreamApiUrl` | `https://api.deepseek.com/api/v1/chat/completions` | Dream Wiki 提取使用的 provider endpoint。 | 通过持久化 Dream 设置返回。 |
-| `dreamCredentialRef` | `DSH_MEMORY_DREAM_API_KEY` | Dream 调用 provider 时解析的 credential reference。 | 返回；不会返回 secret 值。 |
-| `dreamModel` | `deepseek-chat` | 发送给 Dream provider 的模型名。 | 通过持久化 Dream 设置返回。 |
+| `dreamApiUrl` | `https://generativelanguage.googleapis.com/v1beta` | Dream Wiki 提取使用的 Google Gemini/Gemma 原生 `generateContent` 基础地址。 | 通过持久化 Dream 设置返回。 |
+| `dreamCredentialRef` | `GEMINI_API_KEY` | Dream 调用 provider 时解析的 credential reference。 | 返回；不会返回 secret 值。 |
+| `dreamModel` | `gemini-3.5-flash-lite` | 发送给 Dream provider 的模型名。 | 通过持久化 Dream 设置返回。 |
+| `dreamFallbacks` | 核心插件为 `[]`；Web composition 当前只提供已达标的 `gemma-4-26b-a4b-it` | 最多两个有序 provider；仅在可重试 Dream 故障后依次调用，每个最多一次、超时 60 秒。未完成 3/3 真实验收的模型不会进入正式默认列表。 | 不返回；credential reference 和 provider URL 留在部署配置中。 |
 | `dreamMaxTokens` | `1200` | Dream completion 的最大 token 数。 | 通过持久化 Dream 设置返回。 |
 | `dreamIntervalMs` | `3600000` | 定时 Dream 恢复和 sweep 的间隔。 | 返回。 |
 | `debounceMs` | `5000` | Session 活动触发 Dream 调度前的延迟。 | 返回。 |
@@ -304,7 +305,7 @@ dsh plugin --profile web add /absolute/path/to/packages/bundle/riko-memory
 | `recallMaxContextChars` | `3000` | 渲染后的 recall context 最大长度。 | 返回。 |
 | `recallAuthoritativeReserve` | `4` | 为非 evidence 权威 recall 候选保留的最小席位数。 | 返回。 |
 | `recallRawEvidenceMaxCandidates` | `4` | 每次 recall 最多考虑的 raw L0 evidence 候选数。 | 返回。 |
-| `candidateAutoConfirm` | `off` | 候选自动确认策略。`user_grounded` 只承认用户逐字说过的声明；`all` 是对"不自动提升"不变量的刻意偏离，仅用于受控 dogfooding。 | 返回。 |
+| `candidateAutoConfirm` | `user_grounded` | 候选自动确认策略。默认要求 description 有完整规范化用户事件作为依据，随后所有 canonical 文本字段均替换成用户原文，并且本地分类为 `normal`；`off` 保持候选待确认，`all` 跳过依据匹配。 | 返回。 |
 | `residentV2Enabled` | `true` | 启用结构化 Resident projection 路径。 | 返回。 |
 | `residentBlocksEnabled` | `true` | 启用有界的结构化 Resident block。 | 返回。 |
 | `sensitiveResidentEnabled` | `false` | 允许符合条件的 sensitive page 进入 Resident 输出。 | 返回。 |
@@ -331,12 +332,14 @@ L0 evidence 本身也带一层使用许可；打开 `evidenceClassificationEnabl
 `SafeUsageProjection.disclosure` 是唯一的原文 disclosure policy 字段：`normal` 允许原文，`user_explicit_only` 只有在用户主动发起 turn、明确回忆该主题且主题匹配时才返回原文和已记录的来源引用，`never_explicit` 即使 query 匹配也永远不返回原文。Recall eligibility 检查和 mention renderer 都执行这个字段；`never_explicit` projection 始终保持 silent。普通 turn 只有在 projection 同时置了 `ordinaryRawText`、且 query 的词汇全部出现在存储文本中时才会拿到原文——这正是 preference 页面与 interaction rule 保持只给指引的原因；`allowedEffects` 只描述这条记忆可以被如何使用，不参与是否返回原文的判定。
 
 ```text
-DSH_MEMORY_DREAM_API_URL=https://openrouter.ai/api
-DSH_MEMORY_DREAM_MODEL=stealth/union-alpha
-DSH_MEMORY_DREAM_API_KEY=<runtime secret>
+DSH_MEMORY_DREAM_API_URL=https://generativelanguage.googleapis.com/v1beta
+DSH_MEMORY_DREAM_MODEL=gemini-3.5-flash-lite
+DSH_MEMORY_DREAM_CREDENTIAL_REF=GEMINI_API_KEY
+DSH_MEMORY_DREAM_FALLBACKS_JSON=[{"apiUrl":"https://generativelanguage.googleapis.com/v1beta","model":"gemma-4-26b-a4b-it","credentialRef":"GEMINI_API_KEY"}]
+DSH_MEMORY_RECALL_ENABLED=true
 ```
 
-不要通过 UI 保存 key，不要写入 `dream-settings.json`，不要提交到仓库，不要放进 URL，也不要粘贴到 issue 或日志。MiMo 兼容验收使用 Anthropic-compatible endpoint，例如 `https://api.xiaomimimo.com/anthropic` 和 `mimo-v2.5`。
+Fallback 会在网络/超时、HTTP 429/5xx 或 FILE 输出无效时按顺序尝试。HTTP 400/401/403 会终止切换；响应格式有效但仅生成待确认候选时，Dream 仍算成功。每个 `credentialRef` 都要配置在 Host credential store 中。不要通过 UI 保存 key，不要写入 `dream-settings.json`，不要提交到仓库，不要放进 URL，也不要粘贴到 issue 或日志。MiMo 兼容验收使用 Anthropic-compatible endpoint，例如 `https://api.xiaomimimo.com/anthropic` 和 `mimo-v2.5`。
 
 <a id="acceptance-and-verification"></a>
 ## 验收与验证
@@ -383,11 +386,11 @@ sanitized-provider-errors.log
 
 ## 当前状态与后续工作
 
-当前已实现：scope 安全的 L0 evidence、L1 Candidate、L2 Wiki、L3 Resident 契约；DSH 持久化与重启恢复；显式工具；profile/token 校验；安全 Dream/embedding credential；OpenAI-compatible 和 Anthropic-compatible Dream 协议；deterministic/OpenAI-compatible embedding wiring 和 lexical fallback；FILE 解析；标题/正文限制；wikilink 规范化；候选 fingerprint 合并；来源保留；last-valid Resident 回退；持久化 job/cursor；有界结构化 Resident block；带 `index_meta`/`vectors` 元数据、重启恢复、mismatch invalidation、candidate build 后原子切换和失败时保留旧 index 并标记降级的有界持久 vector-index generation；live Agent 的 lexical/RRF query-time recall 以及可选 dense、raw-evidence、graph 通道、canonical-first budget 和 policy-evidence suppression；Temporal validity 与历史召回；当前的保守 Mention Gate；带持久化/重建、认证 listing/resolution 和 live Agent 抑制的 contested conflict overlay；带可选 Dream reflection 的 anchored Observation candidate 和 HTTP 管理；authority-checked 三状态 sensitivity 转换；带 invalidation、历史解析和不改 canonical 的 rebuild 的可撤销 alias；显式同上下文 alias coreference；带 dry-run、confirmation、verification 和中断重试的 raw Session/page/candidate/source/observation journal purge；管理 UI、候选审核和审计路由；真实 Loader 的 SafeUsageProjection 和 conflict 注入断言；带真实 Loader runner 的 Appendix F companion 语料；以及从原始观测结果算出的 Appendix G 聚合指标，详见 [docs/companion-eval.md](docs/companion-eval.md)。
+当前已实现：scope 安全的 L0 evidence、L1 Candidate、L2 Wiki、L3 Resident 契约；DSH 持久化与重启恢复；显式工具；profile/token 校验；安全 Dream/embedding credential；Google 原生 Gemini/Gemma、OpenAI-compatible 和 Anthropic-compatible Dream 协议；有界有序 Dream 故障切换和旧 Resident 保留；deterministic/OpenAI-compatible embedding wiring 和 lexical fallback；FILE 解析；标题/正文限制；wikilink 规范化；候选 fingerprint 合并；来源保留；last-valid Resident 回退；持久化 job/cursor；有界结构化 Resident block；带 `index_meta`/`vectors` 元数据、重启恢复、mismatch invalidation、candidate build 后原子切换和失败时保留旧 index 并标记降级的有界持久 vector-index generation；live Agent 的 lexical/RRF query-time recall 以及可选 dense、raw-evidence、graph 通道、canonical-first budget 和 policy-evidence suppression；Temporal validity 与历史召回；当前的保守 Mention Gate；带持久化/重建、认证 listing/resolution 和 live Agent 抑制的 contested conflict overlay；带可选 Dream reflection 的 anchored Observation candidate 和 HTTP 管理；authority-checked 三状态 sensitivity 转换；带 invalidation、历史解析和不改 canonical 的 rebuild 的可撤销 alias；显式同上下文 alias coreference；带 dry-run、confirmation、verification 和中断重试的 raw Session/page/candidate/source/observation journal purge；管理 UI、候选审核和审计路由；真实 Loader 的 SafeUsageProjection 和 conflict 注入断言；带真实 Loader runner 的 Appendix F companion 语料；以及从原始观测结果算出的 Appendix G 聚合指标，详见 [docs/companion-eval.md](docs/companion-eval.md)。
 
 明确延期：生产级后台 vector-index compaction 和多节点 index ownership；live reranker 接入；sensitivity 假阴率和假阳率；完整 projection 和 answer-side outcome 指标；完整 conflict evaluation matrix；经过验证的 hedged silent use；超出 anchored Observation candidate 的完整 Reflection/consolidation；完整 live HTTP/Agent alias authority matrix；超出有界 wikilink graph expansion 的 entity resolution；storageDomain 之外的完整数据擦除；多节点存储；公网多租户运营；敏感内容的生产级自动确认策略；超出三十场景 companion 语料的 200–500 场景生产 benchmark；超出 focused package probe 的生产级 load/chaos 评测；以及脱离兼容 DSH workspace 的独立 runtime。
 
-当前验证快照（2026-09-22）：335 条规范合同中有 334 条已有可用证据，仍有 1 条证据缺口，即 [REQ-EVAL-035](docs/traceability-gap-register.json)。执行报告记录 47 个 spec 文件和 355 个测试，其中 344 个通过、11 个跳过；默认无凭据运行记录 43 个文件、340 个通过、15 个跳过。跳过项是 opt-in provider/data campaign，不是失败。v2 固定 cohort 已对 LoCoMo 50 题和 LongMemEval-S 50 题完成真实 answer/scorer：LoCoMo 完成 49/50，1 题空召回，平均 F1 为 0.0149；LongMemEval-S 完成 50/50，评分器判定正确 9/50。完整记录发布在[固定 cohort 结果索引](docs/benchmark-results/riko-memory-v2-fixed-cohort-2026-09-22/result-index.json)。这些结果保持 REQ-EVAL-035 开放，因为非空召回并不稳定地等于相关召回，也不会把任何能力升级为 verified。
+当前验证快照（2026-09-24）：335 条规范合同中有 334 条已有可用证据，仍有 1 条证据缺口，即 [REQ-EVAL-035](docs/traceability-gap-register.json)。规范化执行报告记录 47 个 spec 文件和 422 个测试，其中 420 个通过、0 个失败、2 个仅在 refresh 模式跳过的检查。默认无凭据运行记录 43 个默认文件和 4 个 opt-in provider 文件，其中 407 个通过、15 个跳过。opt-in 证据在隔离 provider 运行中执行后合并进报告，没有改变 deterministic fixture 语义：Gemini empirical campaign 4/4 通过，Appendix G companion campaign 完成 28 个场景、2 个明确 unsupported，真实 embedding semantic gain 命中 5/5，真实 dense ablation 4/4 通过。v2 固定 cohort 已对 LoCoMo 50 题和 LongMemEval-S 50 题完成真实 answer/scorer：LoCoMo 完成 49/50，1 题空召回，平均 F1 为 0.0149；LongMemEval-S 完成 50/50，评分器判定正确 9/50。完整记录发布在[固定 cohort 结果索引](docs/benchmark-results/riko-memory-v2-fixed-cohort-2026-09-22/result-index.json)。这些结果保持 REQ-EVAL-035 开放，因为非空召回并不稳定地等于相关召回，也不会把任何能力升级为 verified。
 
 当前实现是受治理的 Phase 1–5 substrate，不代表所有生产级评测门槛都已完成。现有 package suite 覆盖已实现的状态转换，并已运行 Appendix F 语料和 Appendix G 聚合；没有 answer generator 时仍有四个 answer-side 语料指标显式标记为 unsupported，同时 focused restart、purge-interruption、load 和 keyless chaos probe 已存在。启用 opt-in flags 前仍需补齐 production benchmark、coverage 和生产级 load/chaos 证据。
 

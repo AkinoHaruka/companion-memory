@@ -107,7 +107,9 @@ interface FaultServer {
   close(): Promise<void>
 }
 
-async function startFaultServer(responseForRequest: () => { status: number; body: string | undefined; hang?: boolean }): Promise<FaultServer> {
+async function startFaultServer(
+  responseForRequest: () => { status: number; body: string | undefined; hang?: boolean },
+): Promise<FaultServer> {
   const server = createServer((_request, response) => {
     const result = responseForRequest()
     if (result.hang === true) return

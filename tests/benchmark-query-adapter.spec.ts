@@ -20,7 +20,7 @@ describe('external benchmark query adapter', () => {
     expect(benchmarkMemoryIntentPrefix()).not.toMatch(/\b(before|earlier|last time|last year|recent)\b/iu)
 
     const cases = [
-      { question: "What is the name of my hamster?", temporal: false },
+      { question: 'What is the name of my hamster?', temporal: false },
       { question: 'Where did I attend for my study abroad program?', temporal: false },
       { question: "What is Gina's favorite style of dance?", temporal: false },
       { question: 'Who was I talking about?', temporal: false },

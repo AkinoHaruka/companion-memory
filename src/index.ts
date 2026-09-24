@@ -56,6 +56,8 @@ export interface Config {
   readonly dreamCredentialRef: string
   /** Model name sent to the Dream provider. */
   readonly dreamModel: string
+  /** Ordered provider choices used only after the primary Dream provider fails retryably. */
+  readonly dreamFallbacks: DreamFallback[]
   /** Maximum Dream completion tokens. */
   readonly dreamMaxTokens: number
   /** Interval for scheduled Dream recovery and sweep work. */
@@ -87,13 +89,14 @@ export interface Config {
   /** Maximum raw L0 evidence candidates admitted per recall; defaults to 4. */
   readonly recallRawEvidenceMaxCandidates: number
   /**
-   * Candidate auto-confirmation policy; defaults to `off`.
+   * Candidate auto-confirmation policy; defaults to `user_grounded`.
    *
-   * `user_grounded` promotes a candidate when its description appears verbatim in a user-authored L0
-   * event, so the admitting authority is the user's own statement and never model output. `off` keeps
-   * every candidate pending for a manual authority action. `all` promotes every candidate and is an
-   * explicit deviation from the "model and background outputs never auto-promote to canonical confirmed
-   * truth" invariant, intended for controlled dogfooding only.
+   * `user_grounded` promotes when the description exactly matches one user-authored L0 event, then stores
+   * that exact event text in all canonical text fields.
+   * Sensitivity is locally normalized from candidate content, and every policy keeps sensitive, provisional,
+   * and conflicting candidates pending. `off` keeps every candidate pending.
+   * `all` skips grounding and is an explicit deviation from the no-auto-promotion invariant, intended for
+   * controlled dogfooding only.
    */
   readonly candidateAutoConfirm: 'off' | 'user_grounded' | 'all'
   /** Enables the structured Resident projection path. */
@@ -138,6 +141,18 @@ export interface Config {
   readonly embeddingDimension: number
 }
 
+/** One provider used after the configured Dream primary fails. */
+export interface DreamFallback {
+  /** HTTPS endpoint to use after earlier Dream providers fail retryably. */
+  readonly apiUrl: string
+  /** Provider model name used for one Dream request. */
+  readonly model: string
+  /** Credential reference only; the secret is resolved per attempt. */
+  readonly credentialRef: string
+}
+
+interface DreamProviderSettings extends DreamFallback {}
+
 interface AuthenticatedRequest {
   readonly profile: string
   readonly ownerAdmin: boolean
@@ -157,9 +172,10 @@ export class RikoMemoryService extends Service {
     apiTokens: z.dict(z.string()).default({}),
     apiTokenProfile: z.string().default(''),
     ownerAdminToken: z.string().default(''),
-    dreamApiUrl: z.string().default('https://api.deepseek.com/api/v1/chat/completions'),
-    dreamCredentialRef: z.string().default('DSH_MEMORY_DREAM_API_KEY'),
-    dreamModel: z.string().default('deepseek-chat'),
+    dreamApiUrl: z.string().default('https://generativelanguage.googleapis.com/v1beta'),
+    dreamCredentialRef: z.string().default('GEMINI_API_KEY'),
+    dreamModel: z.string().default('gemini-3.5-flash-lite'),
+    dreamFallbacks: z.array(z.object({ apiUrl: z.string(), model: z.string(), credentialRef: z.string() })).max(2).default([]),
     dreamMaxTokens: z.number().step(1).min(128).default(1200),
     dreamIntervalMs: z.number().step(1).min(60_000).default(3_600_000),
     debounceMs: z.number().step(1).min(0).default(5_000),
@@ -175,7 +191,7 @@ export class RikoMemoryService extends Service {
     recallMaxContextChars: z.number().step(1).min(256).max(16_000).default(3_000),
     recallAuthoritativeReserve: z.number().step(1).min(0).max(32).default(4),
     recallRawEvidenceMaxCandidates: z.number().step(1).min(0).max(32).default(4),
-    candidateAutoConfirm: z.union(['off', 'user_grounded', 'all'] as const).default('off'),
+    candidateAutoConfirm: z.union(['off', 'user_grounded', 'all'] as const).default('user_grounded'),
     residentV2Enabled: z.boolean().default(true),
     residentBlocksEnabled: z.boolean().default(true),
     sensitiveResidentEnabled: z.boolean().default(false),
@@ -348,7 +364,12 @@ export class RikoMemoryService extends Service {
   }
 
   private async dreamSession(session: Session, scope: MemoryScope): Promise<void> {
-    return this.dreamEvidence(String(session.id), scope, transcriptText(session.deriveMessages() as unknown as readonly TranscriptMessage[], this.config.maxSessionChars))
+    const sessionId = String(session.id)
+    const evidence = await this.storeForScope(scope).sessionEvidence(sessionId)
+    const transcript = evidence === undefined
+      ? transcriptText(session.deriveMessages() as unknown as readonly TranscriptMessage[], this.config.maxSessionChars)
+      : transcriptFromEvidence(evidence.trimEnd().split('\n'), this.config.maxSessionChars)
+    return this.dreamEvidence(sessionId, scope, transcript)
   }
 
   private async dreamPersistedSession(record: MemorySessionRecord, transcript: string): Promise<void> {
@@ -373,7 +394,7 @@ export class RikoMemoryService extends Service {
         await store.upsertJob({ id: jobId, sessionId: key, scopeKey: scope.key, status: 'succeeded', attempts, cursor, createdAt: typeof previous?.createdAt === 'string' ? previous.createdAt : now, updatedAt: new Date().toISOString() })
         return
       }
-      const generated = await this.generateWikiPages(key, transcript, store.dreamSettings())
+      const generated = await this.generateWikiPages(key, transcript, store.dreamSettings(), store)
       const sourced = generated.map(page => page.sources.includes(key) ? page : { ...page, sources: [...page.sources, key] })
       await store.ingestPages(sourced, new Date().toISOString(), key)
       await this.applyDreamOutputPolicy(store, sourced, key)
@@ -416,31 +437,99 @@ export class RikoMemoryService extends Service {
     await store.setMemorySensitivity({ id, target: 'page', sensitivity, authority: 'management', reason })
   }
 
-  private async generateWikiPages(sessionId: string, transcript: string, settings: DreamSettings): Promise<WikiPage[]> {
-    const resolved = await this.ctx.credentials.resolve(credentialRef(settings.credentialRef)); if (!resolved) throw new ProviderError('credential-unconfigured')
-    const prompt = [
+  private async generateWikiPages(sessionId: string, transcript: string, settings: DreamSettings, store: MemoryProfileStore): Promise<WikiPage[]> {
+    const confirmationPolicyInstruction = this.config.candidateAutoConfirm === 'user_grounded'
+      ? 'Under the user_grounded policy, only a locally normal page whose full description is grounded in one complete user event may be auto-confirmed.'
+      : this.config.candidateAutoConfirm === 'all'
+        ? 'Under the all policy, locally normal, non-conflicting candidates may be auto-confirmed without user-event grounding; never infer sensitive facts or add claims.'
+        : 'Under the off policy, all extracted pages remain candidates for explicit management confirmation.'
+    const userGroundingInstructions = this.config.candidateAutoConfirm === 'user_grounded'
+      ? [
+        'User transcript lines may carry a grounding_event_ref. For a page grounded by exactly one such user event, include that exact reference as grounding_event_ref in the FILE frontmatter; the runtime will replace description with the source text only after validating scope, length, and sensitivity.',
+        'Without a grounding_event_ref, the legacy exact-description path remains available: copy one complete user event verbatim into description. Never invent or combine references. If a durable fact cannot use an eligible event, leave it as a concise candidate. Keep bodies under 1,200 characters.',
+      ]
+      : []
+    const compactPrompt = [
+      'Extract only durable facts, preferences, boundaries, goals, important experiences, relationships, or short-lived emotions. Do not record greetings, temporary activities, plans, or sensitive facts.',
+      'If no durable fact qualifies, return exactly NO_MEMORY and nothing else. Otherwise copy one complete non-sensitive user event into exactly one FILE block. Do not infer, explain, use Markdown fences, or output a second block.',
+      'Use this exact format and replace placeholders with the event text and reference:',
+      '<<<FILE path="wiki/concepts/memory.md">>>', '---', 'type: concept', 'title: 用户事实', 'description: EVENT_TEXT', `grounding_event_ref: session:${sessionId}/event:EVENT_SEQ`, 'sources:', `  - ${sessionId}`, 'timestamp: 2026-01-01T00:00:00.000Z', 'confidence: 0.8', 'status: candidate', 'consent: false', 'locked: false', '---', 'EVENT_TEXT', '<<<END>>>', '', 'Event transcript:', transcript,
+    ].join('\n')
+    const fullPrompt = [
       'You are the controlled Wiki compiler for a private companion assistant.',
       'Extract only durable user facts, preferences, boundaries, goals, important experiences, relationships, or short-lived emotions.',
-      'Do not infer sensitive facts, diagnoses, secrets, or instructions. Every extracted page is a candidate and requires explicit management confirmation.',
+      `Do not infer sensitive facts, diagnoses, secrets, or instructions. Every extracted page starts as a candidate. ${confirmationPolicyInstruction}`,
       'Return ONLY FILE blocks, never Markdown fences or JSON. Paths must stay under wiki/sources, wiki/entities, wiki/concepts, wiki/episodes, wiki/emotions, wiki/relationships, or wiki/synthesis.',
       'Use YAML frontmatter with type, title, description, sources, timestamp, confidence, status: candidate, consent: false, locked: false.',
-      'Generate at most one source summary and four concise candidate pages. Keep descriptions under 120 Chinese characters and bodies under 1,200 characters.',
+      'Generate at most one source summary and four candidate pages.',
+      ...userGroundingInstructions,
       'Use [[Page Title]] for a neutral relation, or [[supports::Page Title]], [[contradicts::Page Title]], [[refines::Page Title]], [[derived_from::Page Title]], or [[evidenced_by::Page Title]] for a typed relation. Never link to a session ID; keep session IDs only in sources.',
       'Do not treat a model-authored session ID or confirmation sentence as evidence. The only source of authority is the current session event stream.',
-      '', 'FILE protocol:', '<<<FILE path="wiki/entities/example.md">>>', '---', 'type: entity', 'title: Example', 'description: One sentence summary', 'sources:', `  - ${sessionId}`, 'timestamp: 2026-01-01T00:00:00.000Z', 'confidence: 0.8', 'status: candidate', 'consent: false', 'locked: false', '---', '', '正文。', '<<<END>>>', '', 'Conversation transcript:', transcript,
+      'FILE grammar: each page starts with the literal <<<FILE path="wiki/<folder>/<slug>.md">>> marker and ends with <<<END>>>. Use one closed YAML frontmatter block between --- markers.',
+      'The path folder must match type exactly: sources/source, entities/entity, concepts/concept, episodes/episode, emotions/emotion, relationships/relationship, or synthesis/synthesis.',
+      'Keep title and description on one line, quote YAML values containing punctuation, and include sources, timestamp, confidence, status: candidate, consent: false, and locked: false. Do not emit a template example or any prose outside FILE blocks.',
+      '', 'Conversation transcript:', transcript,
     ].join('\n')
-    const request = buildDreamRequest(settings, resolved.value, prompt)
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 120_000)
+    const configuredProviders: readonly DreamProviderSettings[] = [
+      { apiUrl: settings.apiUrl, model: settings.model, credentialRef: settings.credentialRef },
+      ...this.config.dreamFallbacks,
+    ]
+    // The management API can change the persisted primary model after startup,
+    // so de-duplicate against the effective settings rather than config.dreamModel.
+    const seenModels = new Set<string>()
+    const providers = configuredProviders.filter((provider) => {
+      const key = provider.model.trim().toLowerCase()
+      if (seenModels.has(key)) return false
+      seenModels.add(key)
+      return true
+    })
+    let lastFailure: ProviderError | undefined
+    for (const [index, provider] of providers.entries()) {
+      const startedAt = Date.now()
+      let pages: WikiPage[]
       try {
-        const response = await fetch(request.endpoint, { method: 'POST', headers: request.headers, body: request.body, signal: controller.signal })
-        if (response.status === 429 && attempt === 1) { await wait(250); continue }
-        if (!response.ok) throw new ProviderError(`http-${response.status}`)
-        let responseBody: unknown; try { responseBody = await response.json() } catch { throw new ProviderError('invalid-json') }
-        const text = extractDreamText(responseBody, request.protocol); if (!text) throw new ProviderError('empty-content'); return parseWikiOutput(text, sessionId)
-      } catch (error) { if (error instanceof ProviderError) throw error; if (error instanceof DOMException && error.name === 'AbortError') throw new ProviderError('timeout'); throw new ProviderError('network-error') } finally { clearTimeout(timeout) }
+        const resolved = await this.ctx.credentials.resolve(credentialRef(provider.credentialRef))
+        if (!resolved) throw new ProviderError('credential-unconfigured')
+        // Gemma tends to repeat the FILE template when given the larger Gemini budget; the compact
+        // prompt above is intentionally paired with a bounded response so one task stays atomic.
+        const isCompactProvider = /^gemma-/iu.test(provider.model.trim())
+        const maxTokens = isCompactProvider ? Math.min(settings.maxTokens, 512) : settings.maxTokens
+        const request = buildDreamRequest({ ...provider, maxTokens }, resolved.value, isCompactProvider ? compactPrompt : fullPrompt)
+        const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 60_000)
+        try {
+          const response = await fetch(request.endpoint, { method: 'POST', headers: request.headers, body: request.body, signal: controller.signal })
+          if (!response.ok) throw providerHttpError(response.status)
+          let responseBody: unknown; try { responseBody = await response.json() } catch { throw new ProviderError('invalid-json', true) }
+          const text = extractDreamText(responseBody, request.protocol)
+          if (!text) throw new ProviderError('empty-content', true)
+          const normalizedText = normalizeDreamFileFormatting(text)
+          if (normalizedText.trim() === 'NO_MEMORY') {
+            pages = []
+          } else {
+            const grounded = applyGroundingEventReferences(normalizedText, sessionId, store)
+            const parsedPages = parseWikiOutput(grounded.text, sessionId)
+            pages = parsedPages.map((page) => {
+              const replacement = grounded.replacements.get(page.description)
+              return replacement === undefined ? page : { ...page, description: replacement }
+            })
+          }
+        } catch (error) {
+          if (error instanceof ProviderError) throw error
+          if (error instanceof DOMException && error.name === 'AbortError') throw new ProviderError('timeout', true)
+          throw new ProviderError('network-error', true)
+        } finally { clearTimeout(timeout) }
+      } catch (error) {
+        const failure = error instanceof ProviderError ? error : new ProviderError('credential-resolution-failed')
+        lastFailure = failure
+        await store.recordDreamProviderAttempt({ model: provider.model, attempt: index + 1, durationMs: Date.now() - startedAt, outcome: 'failed', failureCategory: failure.reason })
+        if (!failure.retryable || index === providers.length - 1) throw failure
+        continue
+      }
+      const exactAnchoredCount = pages.filter(page => store.isDescriptionGroundedByUserEvent(sessionId, page.description)).length
+      await store.recordDreamProviderAttempt({ model: provider.model, attempt: index + 1, durationMs: Date.now() - startedAt, outcome: 'succeeded', candidateCount: pages.length, exactAnchoredCount })
+      return pages
     }
-    throw new ProviderError('http-429')
+    throw lastFailure ?? new ProviderError('provider-unavailable', false)
   }
 
   private async reflectObservations(sessionId: string, transcript: string, settings: DreamSettings, store: MemoryProfileStore): Promise<number> {
@@ -794,7 +883,41 @@ export class RikoMemoryService extends Service {
 
 export default RikoMemoryService
 
-class ProviderError extends Error { constructor(readonly reason: string) { super(`Dream provider failure: ${reason}`); this.name = 'ProviderError' } }
+class ProviderError extends Error { constructor(readonly reason: string, readonly retryable = false) { super(`Dream provider failure: ${reason}`); this.name = 'ProviderError' } }
+
+function providerHttpError(status: number): ProviderError {
+  const retryable = status === 408 || status === 429 || status >= 500 && status <= 599
+  return new ProviderError(`http-${status}`, retryable)
+}
+
+function applyGroundingEventReferences(text: string, sessionId: string, store: MemoryProfileStore): { readonly text: string; readonly replacements: ReadonlyMap<string, string> } {
+  const replacements = new Map<string, string>()
+  let replacementIndex = 0
+  const normalized = text.replace(/(<<<FILE\s+path="[^"]+">>>)([\s\S]*?)(<<<END>>>)/g, (whole, start: string, block: string, end: string) => {
+    const referenceMatch = /^[ \t]*grounding_event_ref[ \t]*:[ \t]*(.*?)[ \t]*$/im.exec(block)
+    if (!referenceMatch) return whole
+    const rawReference = referenceMatch[1]?.trim() ?? ''
+    const reference = rawReference.replace(/^(?:"([^"]*)"|'([^']*)')$/, (_match, doubleQuoted: string | undefined, singleQuoted: string | undefined) => doubleQuoted ?? singleQuoted ?? '')
+    const grounded = store.resolveDreamGroundingEvent(sessionId, reference)
+    let nextBlock = block
+    if (grounded !== undefined) {
+      const marker = `__DSH_GROUNDING_TEXT_${String(replacementIndex)}__`
+      replacementIndex += 1
+      replacements.set(marker, grounded.text)
+      if (/^[ \t]*description[ \t]*:/im.test(nextBlock)) nextBlock = nextBlock.replace(/^[ \t]*description[ \t]*:.*$/im, `description: ${marker}`)
+      else nextBlock = nextBlock.replace(/^(\r?\n?[ \t]*---[ \t]*\r?\n)/, `$1description: ${marker}\n`)
+    } else {
+      nextBlock = nextBlock.replace(/^[ \t]*sensitivity[ \t]*:.*$/gim, '').replace(/^(\r?\n?[ \t]*---[ \t]*\r?\n)/, '$1sensitivity: provisional_sensitive\n')
+    }
+    return `${start}${nextBlock}${end}`
+  })
+  return { text: normalized, replacements }
+}
+
+/** Remove provider-added Markdown fences while leaving the FILE protocol itself strict. */
+function normalizeDreamFileFormatting(text: string): string {
+  return text.replace(/^[ \t]*```(?:markdown|md|yaml|yml|text)?[ \t]*\r?\n/giu, '').replace(/^[ \t]*```[ \t]*$/gimu, '')
+}
 
 /**
  * Reject an invalid plugin configuration before any durable state is opened.
@@ -824,6 +947,23 @@ export function validateConfig(config: Config): void {
   if (ownerAdminToken && ownerAdminToken === apiToken) throw new Error('riko-memory ownerAdminToken must be distinct from apiToken')
   if (ownerAdminToken && Object.values(apiTokens).some(token => token === ownerAdminToken)) throw new Error('riko-memory ownerAdminToken must be distinct from apiTokens')
   if (!isCredentialRefName(config.dreamCredentialRef)) throw new Error('riko-memory dreamCredentialRef must be a credential reference')
+  const dreamFallbacks = config.dreamFallbacks ?? []
+  if (!Array.isArray(dreamFallbacks) || dreamFallbacks.length > 2) throw new Error('riko-memory dreamFallbacks must contain at most two providers')
+  const dreamModels = [config.dreamModel, ...dreamFallbacks.map(fallback => fallback.model)]
+  if (dreamModels.some(model => !model.trim())) throw new Error('riko-memory Dream model names must not be empty')
+  if (new Set(dreamModels.map(model => model.trim().toLowerCase())).size !== dreamModels.length) {
+    throw new Error('riko-memory Dream provider model names must be unique')
+  }
+  for (const [index, fallback] of dreamFallbacks.entries()) {
+    if (!fallback || typeof fallback !== 'object') throw new Error(`riko-memory dreamFallbacks[${index}] must be an object`)
+    if (!isCredentialRefName(fallback.credentialRef)) throw new Error(`riko-memory dreamFallbacks[${index}].credentialRef must be a credential reference`)
+    if (!fallback.model.trim()) throw new Error(`riko-memory dreamFallbacks[${index}].model must not be empty`)
+    let fallbackUrl: URL
+    try { fallbackUrl = new URL(fallback.apiUrl) } catch { throw new Error(`riko-memory dreamFallbacks[${index}].apiUrl must be a valid HTTPS URL`) }
+    if (fallbackUrl.protocol !== 'https:') throw new Error(`riko-memory dreamFallbacks[${index}].apiUrl must use HTTPS`)
+    if (fallbackUrl.username || fallbackUrl.password) throw new Error(`riko-memory dreamFallbacks[${index}].apiUrl must not contain an embedded credential`)
+    if (fallbackUrl.search || fallbackUrl.hash) throw new Error(`riko-memory dreamFallbacks[${index}].apiUrl must not contain a query or fragment`)
+  }
   if (!isCredentialRefName(embeddingCredentialRef)) throw new Error('riko-memory embeddingCredentialRef must be a credential reference')
   if (apiTokenProfile) normalizeProfileId(apiTokenProfile)
   if (!Number.isInteger(minObservationEvidence) || minObservationEvidence < 1) throw new Error('riko-memory minObservationEvidence must be an integer of at least 1')
@@ -839,6 +979,7 @@ export function validateConfig(config: Config): void {
   try { dreamUrl = new URL(config.dreamApiUrl) } catch { throw new Error('riko-memory dreamApiUrl must be a valid HTTPS URL') }
   if (dreamUrl.protocol !== 'https:') throw new Error('riko-memory dreamApiUrl must use HTTPS')
   if (dreamUrl.username || dreamUrl.password) throw new Error('riko-memory dreamApiUrl must not contain an embedded credential')
+  if (dreamUrl.search || dreamUrl.hash) throw new Error('riko-memory dreamApiUrl must not contain a query or fragment')
   if (embeddingProvider === 'openai-compatible') {
     let embeddingUrl: URL
     try { embeddingUrl = new URL(config.embeddingEndpoint ?? '') } catch { throw new Error('riko-memory embeddingEndpoint must be a valid HTTPS URL') }
@@ -985,27 +1126,31 @@ function managementSnapshot(snapshot: MemorySnapshot, store: MemoryProfileStore)
     ...(graph === undefined ? {} : { graph }),
   }
 }
-function wait(milliseconds: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, milliseconds)) }
 function latestEventSeq(evidence: string | undefined): number | undefined { if (!evidence) return undefined; let latest: number | undefined; for (const line of evidence.split('\n')) { try { const value = JSON.parse(line) as { seq?: unknown }; if (typeof value.seq === 'number' && Number.isInteger(value.seq)) latest = Math.max(latest ?? value.seq, value.seq) } catch { /* malformed legacy line does not advance the cursor */ } } return latest }
 function serializableText(value: unknown): string { return typeof value === 'string' ? value : '' }
 interface TranscriptMessage { readonly role: string; readonly source?: { readonly kind?: string }; readonly content: readonly { readonly type: string; readonly text?: string }[] }
 function transcriptText(messages: readonly TranscriptMessage[], maxChars: number): string { const lines: string[] = []; for (const message of messages) { if (message.role === 'user' && message.source?.kind !== undefined && message.source.kind !== 'user') continue; const text = message.content.filter(block => block.type === 'text').map(block => serializableText(block.text)).join('\n').trim(); if (text) lines.push(`${message.role}: ${text}`) } return truncate(lines.join('\n\n'), maxChars) }
 
 function transcriptFromEvidence(lines: readonly string[], maxChars: number): string {
-  const messages: TranscriptMessage[] = []
+  const rendered: string[] = []
   for (const line of lines) {
     try {
-      const event = JSON.parse(line) as { type?: unknown; data?: unknown }
+      const event = JSON.parse(line) as { type?: unknown; sessionId?: unknown; seq?: unknown; data?: unknown }
       const role = event.type === 'user/message' ? 'user' : event.type === 'assistant/message' ? 'assistant' : undefined
       const message = event.data && typeof event.data === 'object' ? (event.data as { message?: unknown }).message : undefined
       const content = message && typeof message === 'object' && Array.isArray((message as { content?: unknown }).content) ? (message as { content: Array<{ type?: unknown; text?: unknown }>; source?: { kind?: unknown } }).content : []
       const sourceKind = message && typeof message === 'object' && typeof (message as { source?: { kind?: unknown } }).source?.kind === 'string' ? String((message as { source: { kind: string } }).source.kind) : undefined
       if (role === 'user' && sourceKind !== undefined && sourceKind !== 'user') continue
       const text = content.filter(block => block.type === 'text' && typeof block.text === 'string').map(block => block.text as string)
-      if (role && text.length > 0) messages.push({ role, ...(sourceKind === undefined ? {} : { source: { kind: sourceKind } }), content: text.map(value => ({ type: 'text', text: value })) })
+      if (role && text.length > 0) {
+        const eventRef = role === 'user' && sourceKind === 'user' && typeof event.sessionId === 'string' && Number.isSafeInteger(event.seq)
+          ? ` [grounding_event_ref=session:${event.sessionId}/event:${String(event.seq)}]`
+          : ''
+        rendered.push(`${role}${eventRef}: ${text.join('\n').trim()}`)
+      }
     } catch { /* malformed retained L0 lines do not become provider input */ }
   }
-  return transcriptText(messages, maxChars)
+  return truncate(rendered.join('\n\n'), maxChars)
 }
 
 /**
@@ -1014,7 +1159,82 @@ function transcriptFromEvidence(lines: readonly string[], maxChars: number): str
  * @param session - Owning session, or its identifier.
  * @returns The parsed pages; a response with no valid block raises a provider failure.
  */
-export function parseWikiOutput(text: string, session: Pick<Session, 'id'> | string): WikiPage[] { const sessionId = typeof session === 'string' ? session : String(session.id); const pages: WikiPage[] = []; for (const match of text.matchAll(/<<<FILE\s+path="([^"]+)">>>([\s\S]*?)<<<END>>>/g)) { const path = match[1]?.trim(); const block = match[2]; if (!path || block === undefined || block.length > 30_000) continue; try { const parsed = parseWikiMarkdown(block.trim(), path); const description = truncate((parsed.description || firstBodySentence(parsed.body) || parsed.title).replace(/\s+/g, ' ').trim(), 120); const body = truncate(parsed.body.replace(/\s+/g, ' ').trim(), 1_200); const title = compactGeneratedTitle(parsed.type, parsed.title, description, body); const identity = contentHash(`${parsed.type}\n${title.toLocaleLowerCase()}\n${description.toLocaleLowerCase()}\n${body.toLocaleLowerCase()}`).slice(0, 10); const normalizedPath = `wiki/${pageFolder(parsed.type)}/${pageSlug(title, identity)}-${identity}.md`; pages.push({ ...parsed, id: wikiPageId(normalizedPath), path: normalizedPath, title, description, body, sources: [sessionId], status: 'candidate', consent: false, locked: false, version: 1, updatedAt: new Date().toISOString() }) } catch { /* invalid FILE blocks are rejected, never partially stored */ } } if (pages.length === 0) throw new ProviderError('invalid-file-protocol'); return pages }
+export function parseWikiOutput(text: string, session: Pick<Session, 'id'> | string): WikiPage[] {
+  const sessionId = typeof session === 'string' ? session : String(session.id)
+  const pattern = /<<<FILE\s+path="([^"]+)">>>([\s\S]*?)<<<END>>>/g
+  const matches = [...text.matchAll(pattern)]
+  const fileStartCount = [...text.matchAll(/<<<FILE\b/g)].length
+  const fileEndCount = [...text.matchAll(/<<<END>>>/g)].length
+  if (matches.length === 0 || fileStartCount !== matches.length || fileEndCount !== matches.length) {
+    throw new ProviderError('invalid-file-protocol', true)
+  }
+
+  const pages: WikiPage[] = []
+  for (const match of matches) {
+    const path = match[1]?.trim()
+    const block = match[2]
+    if (!path || block === undefined || block.length > 30_000) throw new ProviderError('invalid-file-protocol', true)
+    let parsed: ReturnType<typeof parseWikiMarkdown>
+    try {
+      parsed = parseWikiMarkdown(block.trim(), normalizeDreamCandidatePath(path, block))
+    } catch {
+      throw new ProviderError('invalid-file-protocol', true)
+    }
+    const description = truncate((parsed.description || firstBodySentence(parsed.body) || parsed.title).replace(/\s+/g, ' ').trim(), 120)
+    const body = truncate(parsed.body.replace(/\s+/g, ' ').trim(), 1_200)
+    const title = compactGeneratedTitle(parsed.type, parsed.title, description, body)
+    const identity = contentHash([parsed.type, title.toLocaleLowerCase(), description.toLocaleLowerCase(), body.toLocaleLowerCase()].join('\n')).slice(0, 10)
+    const normalizedPath = 'wiki/' + pageFolder(parsed.type) + '/' + pageSlug(title, identity) + '-' + identity + '.md'
+    const hasSensitivityField = /^\s*sensitivity\s*:/im.test(block)
+    const requestedSensitivity = parsed.sensitivity ?? (hasSensitivityField ? 'provisional_sensitive' : 'normal')
+    const sensitivity = classifyMemorySensitivity([title, description, body].join('\n'), requestedSensitivity)
+    pages.push({
+      ...parsed,
+      id: wikiPageId(normalizedPath),
+      path: normalizedPath,
+      title,
+      description,
+      body,
+      sensitivity,
+      sources: [sessionId],
+      status: 'candidate',
+      consent: false,
+      locked: false,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+    })
+  }
+  return pages
+}
+
+function normalizeDreamCandidatePath(value: string, block: string): string {
+  const normalized = value.trim().replaceAll('\\', '/')
+  const parts = normalized.split('/')
+  if (parts.length !== 3 || parts[0] !== 'wiki') return value
+  const aliases: Readonly<Record<string, string>> = {
+    preference: 'concepts',
+    preferences: 'concepts',
+    fact: 'entities',
+    facts: 'entities',
+    event: 'episodes',
+    events: 'episodes',
+  }
+  const folder = parts[1]
+  const replacement = folder === undefined ? undefined : aliases[folder]
+  if (replacement === undefined) return value
+  const declaredType = /^\s*type\s*:\s*(source|entity|concept|episode|emotion|relationship|synthesis)\s*$/im.exec(block)?.[1]
+  const typeFolders: Readonly<Record<string, string>> = {
+    source: 'sources',
+    entity: 'entities',
+    concept: 'concepts',
+    episode: 'episodes',
+    emotion: 'emotions',
+    relationship: 'relationships',
+    synthesis: 'synthesis',
+  }
+  const canonicalFolder = declaredType === undefined ? replacement : typeFolders[declaredType] ?? replacement
+  return ['wiki', canonicalFolder, parts[2] ?? ''].join('/')
+}
 
 interface ExplicitCoreference {
   readonly entityId: string

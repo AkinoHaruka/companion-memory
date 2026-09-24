@@ -91,7 +91,7 @@ describe('external benchmark checkpoint', () => {
     const result = await executeBenchmarkItem({
       item: { ...item(), originalQuestion: 'What did I say?', retrievalQuery: adaptBenchmarkQuestion({ question: 'What did I say?' }).retrievalQuery },
       query: adaptBenchmarkQuestion({ question: 'What did I say?' }),
-      onCheckpoint: async checkpoint => { checkpoints.push(checkpoint.status) },
+      onCheckpoint: async (checkpoint) => { checkpoints.push(checkpoint.status) },
       handlers: {
         ingest: async () => { calls.push('ingest'); return {} },
         recall: async () => { calls.push('recall'); return { recallContext: 'context' } },

@@ -9,10 +9,8 @@ const repositoryRoot = resolve(packageDirectory, '../../..')
 
 describe('baseline execution contract', () => {
   it('runs the package TypeScript build and reconciles the current test report', () => {
-    const packageManager = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-    expect(() => execFileSync(packageManager, [
-      'exec',
-      'tsc',
+    const typeScriptBinary = join(repositoryRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc')
+    expect(() => execFileSync(typeScriptBinary, [
       '-b',
       'packages/bundle/riko-memory/tsconfig.json',
       '--pretty',
@@ -20,9 +18,6 @@ describe('baseline execution contract', () => {
     ], { cwd: repositoryRoot, stdio: 'pipe', timeout: 30_000, shell: process.platform === 'win32' })).not.toThrow()
 
     const progress = readFileSync(join(packageDirectory, 'docs', 'memory-v3-progress.md'), 'utf8')
-    const report = JSON.parse(readFileSync(join(packageDirectory, 'docs', 'spec-execution-report.json'), 'utf8')) as {
-      readonly suite: { readonly files: number; readonly failed: number; readonly success: boolean }
-    }
     expect(progress).toContain('pnpm exec tsc -p tsconfig.host.json --noEmit')
     expect(progress).toContain('pnpm exec vitest run packages/bundle/riko-memory/tests --reporter=dot')
     expect(progress).toContain('Any mandatory item with `FAIL` makes `Overall = FAIL`')
@@ -36,6 +31,10 @@ describe('baseline execution contract', () => {
       'Rollback',
       'Docs',
     ]) expect(progress).toContain(dimension)
+    if (process.env.DSH_RIKO_MEMORY_REFRESH_SPEC_REPORT === '1') return
+    const report = JSON.parse(readFileSync(join(packageDirectory, 'docs', 'spec-execution-report.json'), 'utf8')) as {
+      readonly suite: { readonly files: number; readonly failed: number; readonly success: boolean }
+    }
     expect(report.suite.files).toBeGreaterThan(40)
     expect(report.suite.failed).toBe(0)
     expect(report.suite.success).toBe(true)

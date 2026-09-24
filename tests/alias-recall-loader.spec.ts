@@ -36,7 +36,7 @@ afterEach(async () => {
 async function loadMemoryFixture(): Promise<string> {
   root = await mkdtemp(join(tmpdir(), 'dsh-riko-memory-alias-recall-'))
   const configPath = join(root, 'cordis.yml')
-  await writeFile(join(root, 'credentials.yaml'), 'version: 1\nrefs:\n  DSH_MEMORY_DREAM_API_KEY: fixture-secret\n')
+  await writeFile(join(root, 'credentials.yaml'), 'version: 1\nrefs:\n  DSH_MEMORY_DREAM_API_KEY: fixture-secret\n  GEMINI_API_KEY: fixture-secret\n')
   await writeFile(configPath, [
     '- name: fixture-dependencies',
     '- name: "@deepseek-ai/dsh-storage"',

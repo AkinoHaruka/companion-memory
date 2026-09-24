@@ -7,6 +7,17 @@ export const ANSWER_ENDPOINT_ENV = 'DSH_MEMORY_ANSWER_ENDPOINT'
 export const ANSWER_MODEL_ENV = 'DSH_MEMORY_ANSWER_MODEL'
 /** Optional environment variable supplying the answer provider bearer credential. */
 export const ANSWER_KEY_ENV = 'DSH_MEMORY_ANSWER_KEY'
+/** Text models admitted by the real Dream/answer acceptance campaigns. */
+export const SUPPORTED_TEXT_MODELS = ['gemini-3.5-flash-lite', 'gemma-4-26b-a4b-it'] as const
+export type SupportedTextModel = typeof SUPPORTED_TEXT_MODELS[number]
+
+/** Validate a campaign model without ever accepting an embedding model as a text lane. */
+export function assertSupportedTextModel(model: string, context = 'text model'): SupportedTextModel {
+  const normalized = model.trim()
+  if ((SUPPORTED_TEXT_MODELS as readonly string[]).includes(normalized)) return normalized as SupportedTextModel
+  throw new Error(`${context} must be one of: ${SUPPORTED_TEXT_MODELS.join(', ')}; received ${normalized || '<empty>'}`)
+}
+
 /** Environment variable setting the minimum delay between calls to an opt-in provider. */
 export const PROVIDER_MIN_INTERVAL_ENV = 'DSH_MEMORY_PROVIDER_MIN_INTERVAL_MS'
 /** Environment variable setting the maximum number of retries after a retryable response. */

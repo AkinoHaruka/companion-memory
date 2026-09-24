@@ -47,6 +47,7 @@ import {
 } from './recall.ts'
 import {
   contentHash,
+  pageFolder,
   type WikiCandidate,
   WikiIndex,
   WIKI_GRAPH_MAX_HOPS,
@@ -140,11 +141,11 @@ export interface MemoryStoreOptions {
    *
    * `off` keeps every Dream, extractor and reflection candidate pending until an explicit authority
    * action confirms it, as required by the "model and background outputs never auto-promote to canonical
-   * confirmed truth" invariant. `user_grounded` promotes a candidate when its description appears
-   * verbatim in a user-authored L0 event of the same scope, so the authority is the user's own statement
-   * rather than model output; conflicting and non-normal-sensitivity candidates stay pending. `all`
-   * auto-confirms every candidate regardless of grounding: it is an explicit deviation from that
-   * invariant, intended for controlled dogfooding only.
+   * confirmed truth" invariant. `user_grounded` promotes when the description matches one normalized
+   * user-authored L0 event in the same scope; canonical text fields are
+   * then rebuilt from that exact event, preventing semantic omissions in the stored page.
+   * Unclassified, non-normal-sensitivity, and conflicting candidates stay pending. `all` skips grounding
+   * and is an explicit deviation from that invariant, intended for controlled dogfooding only.
    */
   readonly candidateAutoConfirm?: 'off' | 'user_grounded' | 'all'
 }
@@ -404,10 +405,10 @@ export class MemoryProfileStore {
   private readonly purgeOwnerId: string
   private auditSequence = 0
 
-  constructor(private readonly domain: MemoryDomain | { table(name: string): unknown }, scope: MemoryScope, defaultSettings: DreamSettings = {
-    apiUrl: 'https://api.deepseek.com/api/v1/chat/completions',
-    credentialRef: 'DSH_MEMORY_DREAM_API_KEY',
-    model: 'deepseek-chat',
+  constructor(private readonly domain: MemoryDomain | { table(name: string): unknown }, scope: MemoryScope, private readonly defaultSettings: DreamSettings = {
+    apiUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    credentialRef: 'GEMINI_API_KEY',
+    model: 'gemini-3.5-flash-lite',
     maxTokens: 1200,
   }, private readonly residentMaxChars = 12_000, options: MemoryStoreOptions = {}) {
     this.scope = scope
@@ -427,7 +428,7 @@ export class MemoryProfileStore {
     this.reranker = options.reranker
     this.embeddingModel = normalizeOptionalModel(options.embeddingModel)
     this.candidateAutoConfirm = options.candidateAutoConfirm ?? 'off'
-    this.settings = { ...defaultSettings }
+    this.settings = { ...this.defaultSettings }
     this.ready = this.load()
   }
 
@@ -1106,6 +1107,46 @@ export class MemoryProfileStore {
    * @returns The resulting value.
    */
   async sessionEvidence(sessionId: string): Promise<string | undefined> { await this.waitReady(); const value = this.sessionLines.get(sessionId); return value && value.length > 0 ? `${value.join('\n')}\n` : undefined }
+
+  /** Resolve a Dream-supplied event reference only to short, user-authored, locally normal evidence in this session.
+   * @param sessionId The session currently being compiled.
+   * @param reference The untrusted event reference supplied by Dream.
+   * @returns The source event text when every boundary check passes.
+   */
+  resolveDreamGroundingEvent(sessionId: string, reference: string): { readonly text: string } | undefined {
+    const prefix = `session:${sessionId}/event:`
+    if (!reference.startsWith(prefix)) return undefined
+    const rawSeq = reference.slice(prefix.length)
+    if (!/^\d{1,16}$/.test(rawSeq)) return undefined
+    const eventSeq = Number(rawSeq)
+    if (!Number.isSafeInteger(eventSeq)) return undefined
+    for (const [index, line] of (this.sessionLines.get(sessionId) ?? []).entries()) {
+      const parsed = parseEvidenceLine(line)
+      if (parsed === undefined || parsed.sourceKind !== 'user' || (parsed.eventSeq ?? index) !== eventSeq) continue
+      if (parsed.text.length === 0 || parsed.text.length > 120) return undefined
+      const state = this.evidenceSensitivityState(sessionId, index)
+      if (state !== 'normal' && state !== 'unclassified') return undefined
+      if (classifyEvidenceSensitivity(parsed.text.normalize('NFKC')) !== 'normal') return undefined
+      return { text: parsed.text }
+    }
+    return undefined
+  }
+
+  /** Check whether a complete description exactly matches a user-authored L0 event in the supplied session.
+   * @param sessionId The session being compiled.
+   * @param description The candidate description.
+   * @returns Whether an exact event anchor exists.
+   */
+  isDescriptionGroundedByUserEvent(sessionId: string, description: string): boolean {
+    const claim = verbatimClaimForm(description)
+    if (description.length > 120 || claim.length < MIN_AUTO_CONFIRM_CLAIM_CHARS || classifyEvidenceSensitivity(description.normalize('NFKC')) !== 'normal') return false
+    return (this.sessionLines.get(sessionId) ?? []).some((line, index) => {
+      const parsed = parseEvidenceLine(line)
+      if (parsed === undefined || parsed.sourceKind !== 'user' || parsed.text.length === 0 || parsed.text.length > 120 || verbatimClaimForm(parsed.text) !== claim) return false
+      const state = this.evidenceSensitivityState(sessionId, index)
+      return (state === 'normal' || state === 'unclassified') && classifyEvidenceSensitivity(parsed.text.normalize('NFKC')) === 'normal'
+    })
+  }
   /** Persist the sensitivity classification for one index-aligned L0 event.
    *
    * An authoritative write may tighten at any time. Relaxing is judged against the explicit stored value,
@@ -1354,6 +1395,24 @@ export class MemoryProfileStore {
     })
   }
 
+  /** Persist a bounded provider-attempt audit without request content or credential data.
+   * @param input The model label and sanitized attempt measurements.
+   */
+  async recordDreamProviderAttempt(input: { readonly model: string; readonly attempt: number; readonly durationMs: number; readonly outcome: 'succeeded' | 'failed'; readonly failureCategory?: string; readonly candidateCount?: number; readonly exactAnchoredCount?: number }): Promise<void> {
+    await this.waitReady()
+    const model = input.model.replace(/bearer\s+[^\s]+/gi, '[redacted]').replace(/sk-[A-Za-z0-9_-]+/g, '[redacted]').replace(/[\r\n\t]/g, ' ').trim().slice(0, 80)
+    const failureCategory = input.failureCategory === undefined ? undefined : /^[a-z0-9-]{1,48}$/.test(input.failureCategory) ? input.failureCategory : 'provider-error'
+    await this.audit('dream-provider-attempt', {
+      model,
+      attempt: Math.max(1, Math.min(3, Math.trunc(input.attempt))),
+      durationMs: Math.max(0, Math.min(600_000, Math.trunc(input.durationMs))),
+      outcome: input.outcome,
+      ...(failureCategory === undefined ? {} : { failureCategory }),
+      ...(input.candidateCount === undefined ? {} : { candidateCount: Math.max(0, Math.trunc(input.candidateCount)) }),
+      ...(input.exactAnchoredCount === undefined ? {} : { exactAnchoredCount: Math.max(0, Math.trunc(input.exactAnchoredCount)) }),
+    })
+  }
+
   /** Persist a durable Dream job/cursor record for restart recovery.
    * @param job The job.
    */
@@ -1421,7 +1480,7 @@ export class MemoryProfileStore {
 
   /** Load durable state and resume only an interrupted `started` purge journal; `failed` journals are terminal until an explicit retry. */
   private async load(): Promise<void> {
-    const stored = this.table<StoredMemoryState>('profiles').get(storageScopeKey(this.scope)); if (stored && belongsToScope(stored, this.scope)) { this.state = pickState(stored); this.settings = { ...stored.settings } }
+    const stored = this.table<StoredMemoryState>('profiles').get(storageScopeKey(this.scope)); if (stored && belongsToScope(stored, this.scope)) { this.state = pickState(stored); this.settings = migrateLegacyDreamSettings(stored.settings, this.defaultSettings) }
     for (const [, record] of this.table<MemoryPageRecord>('pages').entries()) if (belongsToScope(record, this.scope)) this.pages.push(clonePage(record.page))
     for (const [, record] of this.table<MemoryCandidateRecord>('candidates').entries()) if (belongsToScope(record, this.scope)) this.candidates.push(cloneCandidate(record.candidate))
     for (const [, record] of this.table<MemorySourceRecord>('sources').entries()) if (belongsToScope(record, this.scope)) this.sources.push({ ...record.source })
@@ -2024,41 +2083,49 @@ export class MemoryProfileStore {
   /**
    * Promote a freshly merged candidate when the configured policy allows it.
    *
-   * `user_grounded` requires the candidate description to appear verbatim in a user-authored L0 event of
-   * this scope, so the admitting authority stays the user's own statement and never model output; `all`
-   * skips that check. Conflicting candidates and non-normal sensitivity always stay pending, and every
-   * promotion records the rule plus its grounding reference so the admission stays explainable.
+   * `user_grounded` requires the candidate description to match one user-authored L0 event in this scope,
+   * then writes that exact event text into every canonical text field so model-authored edits cannot alter it.
+   * `all` skips grounding. Candidates without explicit normal sensitivity, with locally detected private
+   * content, or with conflicts stay pending. Every promotion records the rule and grounding reference.
    * @param candidate The candidate the Dream merge just stored or refreshed.
    * @returns True when the candidate became canonical.
    */
   private async autoConfirmCandidate(candidate: WikiCandidate | undefined): Promise<boolean> {
     if (candidate === undefined || this.candidateAutoConfirm === 'off' || candidate.status !== 'candidate') return false
-    const sensitivity = candidate.page.sensitivity
-    if (sensitivity !== undefined && sensitivity !== 'normal') return false
-    const groundingRef = this.candidateGroundingRef(candidate)
-    if (this.candidateAutoConfirm === 'user_grounded' && groundingRef === undefined) return false
-    this.commitPage(this.normalizeIncomingPage({ ...candidate.page, status: 'confirmed', consent: true, locked: true }, true))
+    if (candidate.page.sensitivity !== 'normal') return false
+    const candidateText = `${candidate.page.title}\n${candidate.page.description}\n${candidate.page.body}`
+    if (classifyEvidenceSensitivity(candidateText.normalize('NFKC')) !== 'normal') return false
+    const grounding = this.candidateGrounding(candidate)
+    if (this.candidateAutoConfirm === 'user_grounded' && grounding === undefined) return false
+    if (grounding !== undefined && grounding.sensitivity !== 'normal' && grounding.sensitivity !== 'unclassified') return false
+    const groundedPage = this.candidateAutoConfirm === 'user_grounded' && grounding !== undefined
+      ? pageGroundedByUserEvent(candidate.page, grounding.text, grounding.observedAt)
+      : candidate.page
+    const groundedText = `${groundedPage.title}\n${groundedPage.description}\n${groundedPage.body}`
+    if (classifyEvidenceSensitivity(groundedText.normalize('NFKC')) !== 'normal') return false
+    this.commitPage(this.normalizeIncomingPage({ ...groundedPage, status: 'confirmed', consent: true, locked: true }, true))
     this.candidates = this.candidates.filter(item => item.id !== candidate.id)
     this.markSuccess()
-    await this.audit('candidate-auto-confirmed', { id: candidate.id, mode: this.candidateAutoConfirm, ...(groundingRef === undefined ? {} : { groundingRef }) })
+    await this.audit('candidate-auto-confirmed', { id: candidate.id, mode: this.candidateAutoConfirm, ...(grounding === undefined ? {} : { groundingRef: grounding.ref }) })
     return true
   }
 
   /**
-   * First user-authored L0 evidence ref whose text contains the candidate description verbatim.
+   * First user-authored L0 event whose full text grounds the candidate description.
    * @param candidate The pending candidate to ground.
-   * @returns The evidence reference, or undefined when no user statement carries the claim.
+   * @returns The evidence reference and exact source text, or undefined when no user statement carries the claim.
    */
-  private candidateGroundingRef(candidate: WikiCandidate): string | undefined {
-    const claim = verbatimClaimForm(candidate.page.description)
-    if (claim.length < MIN_AUTO_CONFIRM_CLAIM_CHARS) return undefined
+  private candidateGrounding(candidate: WikiCandidate): { ref: string; text: string; sensitivity: EvidenceSensitivityState; observedAt?: string } | undefined {
+    const description = verbatimClaimForm(candidate.page.description)
+    if (description.length < MIN_AUTO_CONFIRM_CLAIM_CHARS) return undefined
     for (const sessionId of candidate.sourceConversations) {
       const lines = this.sessionLines.get(sessionId)
       if (lines === undefined) continue
       for (const [index, line] of lines.entries()) {
         const parsed = parseEvidenceLine(line)
         if (parsed === undefined || parsed.sourceKind !== 'user' || parsed.text.length === 0) continue
-        if (verbatimClaimForm(parsed.text).includes(claim)) return `session:${sessionId}/event:${String(parsed.eventSeq ?? index)}`
+        const eventText = verbatimClaimForm(parsed.text)
+        if (eventText === description) return { ref: `session:${sessionId}/event:${String(parsed.eventSeq ?? index)}`, text: parsed.text, sensitivity: this.evidenceSensitivityState(sessionId, index), ...(parsed.observedAt === undefined ? {} : { observedAt: parsed.observedAt }) }
       }
     }
     return undefined
@@ -2346,6 +2413,7 @@ function normalizeApiUrl(value: string): string {
   try { url = new URL(value.trim()) } catch { throw new Error('Dream apiUrl must be a valid HTTPS URL') }
   if (url.protocol !== 'https:') throw new Error('Dream apiUrl must use HTTPS')
   if (url.username || url.password) throw new Error('Dream apiUrl must not contain an embedded credential')
+  if (url.search || url.hash) throw new Error('Dream apiUrl must not contain a query or fragment')
   return url.toString().replace(/\/$/, '')
 }
 function normalizeMaxTokens(value: number): number { if (!Number.isInteger(value) || value < 128 || value > 32_000) throw new Error('Dream maxTokens must be an integer between 128 and 32000'); return value }
@@ -2520,6 +2588,46 @@ function lexicalScoreForPage(query: string, page: WikiPage): number { return lex
 
 /** Shortest claim that may be grounded verbatim in a user statement; shorter claims match by accident. */
 const MIN_AUTO_CONFIRM_CLAIM_CHARS = 8
+const LEGACY_DEFAULT_DREAM_API_URLS = new Set([
+  'https://api.deepseek.com/api/v1/chat/completions',
+  'https://api.deepseek.com/chat/completions',
+])
+const LEGACY_DEFAULT_DREAM_MODELS = new Set(['deepseek-chat', 'deepseek-flash'])
+const LEGACY_DEFAULT_DREAM_CREDENTIAL_REF = 'DSH_MEMORY_DREAM_API_KEY'
+
+/** Move legacy-default Dream fields independently while preserving custom values. */
+function migrateLegacyDreamSettings(stored: DreamSettings, defaults: DreamSettings): DreamSettings {
+  const migrateApiUrl = LEGACY_DEFAULT_DREAM_API_URLS.has(stored.apiUrl)
+  const migrateModel = LEGACY_DEFAULT_DREAM_MODELS.has(stored.model)
+  if (!migrateApiUrl && !migrateModel) return { ...stored }
+  return {
+    ...stored,
+    apiUrl: migrateApiUrl ? defaults.apiUrl : stored.apiUrl,
+    credentialRef: migrateApiUrl && stored.credentialRef === LEGACY_DEFAULT_DREAM_CREDENTIAL_REF ? defaults.credentialRef : stored.credentialRef,
+    model: migrateModel ? defaults.model : stored.model,
+  }
+}
+
+/**
+ * Build a neutral canonical page from the exact user event that grounded a candidate description.
+ * @param page Candidate source reference and locally normalized sensitivity.
+ * @param sourceText Exact original user event text.
+ * @param observedAt The timestamp attached to that user event, when available.
+ * @returns A page whose content and classification do not retain Dream-authored metadata.
+ */
+function pageGroundedByUserEvent(page: WikiPage, sourceText: string, observedAt?: string): WikiPage {
+  const text = sourceText.trim()
+  const normalizedText = text.toLocaleLowerCase()
+  const type: WikiPageType = 'concept'
+  const identity = contentHash([type, normalizedText, normalizedText, normalizedText].join('\n')).slice(0, 10)
+  const path = `wiki/${pageFolder(type)}/${pageSlug(text, identity)}-${identity}.md`
+  return {
+    id: wikiPageId(path), path, type, title: text, description: text, body: text, sources: [...page.sources], tags: [],
+    timestamp: normalizeOptionalTemporalInstant(observedAt) ?? new Date().toISOString(), confidence: 0.5,
+    ...(page.sensitivity === undefined ? {} : { sensitivity: page.sensitivity }),
+    status: page.status, consent: page.consent, locked: page.locked, version: page.version, updatedAt: new Date().toISOString(),
+  }
+}
 
 /** NFKC, case-folded, whitespace-collapsed form used for verbatim grounding checks. */
 function verbatimClaimForm(value: string): string { return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim() }

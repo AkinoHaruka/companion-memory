@@ -1,6 +1,6 @@
 # Query-time Recall v1
 
-Recall v1 is an additive, opt-in read path for memories that are not present in the bounded Resident Snapshot.
+Recall v1 is an additive read path for memories that are not present in the bounded Resident Snapshot. The plugin flag defaults to off; the Web overlay enables it by default and accepts `DSH_MEMORY_RECALL_ENABLED=false` to disable it.
 
 ## Configuration
 

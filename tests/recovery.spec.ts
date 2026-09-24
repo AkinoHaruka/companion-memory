@@ -65,6 +65,7 @@ describe('Dream restart recovery', () => {
       const wiki = await fetchLive(`${firstBase}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
       expect((await wiki.json() as { lastError?: string }).lastError).toContain('http-429')
     }, { timeout: 15_000, interval: 50 })
+    expect(providerFetch).toHaveBeenCalledTimes(1)
     expect(await (await fetchLive(`${firstBase}/resident`, { headers: { 'x-dsh-memory-profile': 'standard' } })).text()).toContain('已经确认的长期偏好。')
 
     await first.fiber.dispose()
@@ -76,7 +77,7 @@ describe('Dream restart recovery', () => {
     // Startup recovery replays the persisted Dream through the same in-flight set before the fixture
     // answers HTTP, so the drain covers the replay this call count is asserting on.
     await drainInFlight(restartedBase)
-    await vi.waitFor(() => expect(providerFetch).toHaveBeenCalledTimes(3), { timeout: 15_000, interval: 50 })
+    await vi.waitFor(() => expect(providerFetch).toHaveBeenCalledTimes(2), { timeout: 15_000, interval: 50 })
     await vi.waitFor(async () => {
       const candidates = await fetchLive(`${restartedBase}/candidates`, { headers: { 'x-dsh-memory-profile': 'standard' } })
       expect((await candidates.json() as { candidates: Array<{ page: { sources: string[]; status: string; consent: boolean } }> }).candidates).toEqual([expect.objectContaining({ page: expect.objectContaining({ sources: ['restart-session'], status: 'candidate', consent: false }) })])

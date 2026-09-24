@@ -23,12 +23,19 @@ import {
 import { startLiveHarness, drainInFlight, evidenceDrainBudgetMs, readPersistedEvidence, testAgent, type LiveHarness } from './live-harness.ts'
 import { fetchLive } from './live-http.ts'
 
-/** Environment variable selecting the real Dream chat-completions endpoint for a campaign. */
+/** Environment variable selecting the real Dream endpoint; Google native and compatible protocols are inferred from its shape. */
 export const DREAM_ENDPOINT_ENV = 'DSH_MEMORY_DREAM_ENDPOINT'
 /** Environment variable supplying the credential written to the campaign's disposable credentials file. */
 export const DREAM_KEY_ENV = 'DSH_MEMORY_DREAM_KEY'
 /** Optional path for a durable per-scenario campaign checkpoint. */
 export const CAMPAIGN_CHECKPOINT_ENV = 'DSH_MEMORY_CAMPAIGN_CHECKPOINT'
+
+type CandidateAutoConfirmPolicy = 'off' | 'user_grounded' | 'all'
+
+function normalizedCandidateAutoConfirmPolicy(): CandidateAutoConfirmPolicy {
+  const value = process.env.DSH_MEMORY_CANDIDATE_AUTO_CONFIRM?.trim()
+  return value === 'user_grounded' || value === 'all' ? value : 'off'
+}
 
 const FIXTURE_DREAM_API_URL = 'https://api.test/api/v1/chat/completions'
 const REAL_PROVIDER_ROUTE_TIMEOUT_MS = 90_000
@@ -172,6 +179,7 @@ export function campaignCheckpointKey(options: CorpusRunOptions = {}): string {
     answerEndpoint: options.answerProvider?.endpoint?.trim() || process.env.DSH_MEMORY_ANSWER_ENDPOINT?.trim() || '',
     answerModel: options.answerProvider?.model?.trim() || process.env.DSH_MEMORY_ANSWER_MODEL?.trim() || '',
     answerMode: options.answerGenerator === undefined ? 'environment' : 'custom',
+    candidateAutoConfirm: normalizedCandidateAutoConfirmPolicy(),
   }
   return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
 }
@@ -261,7 +269,13 @@ export async function executeCompanion(scenario: CompanionScenario, options: Cor
   const campaignMode = configuredDreamApiUrl !== undefined && configuredDreamApiUrl !== FIXTURE_DREAM_API_URL
   const dreamApiUrl = configuredDreamApiUrl || FIXTURE_DREAM_API_URL
   const dreamApiKey = options.dreamApiKey ?? process.env[DREAM_KEY_ENV]
+  const configuredCandidatePolicy = process.env.DSH_MEMORY_CANDIDATE_AUTO_CONFIRM?.trim()
+  const candidatePolicyConfig = configuredCandidatePolicy === 'off' || configuredCandidatePolicy === 'user_grounded' || configuredCandidatePolicy === 'all'
+    ? []
+    : ['    candidateAutoConfirm: off']
   const config = [
+    // Keep the historical candidate-pending corpus baseline unless the live-run override supplies a policy.
+    ...candidatePolicyConfig,
     '    recallEnabled: true',
     '    purgeEnabled: true',
     '    recallGraphEnabled: true',
@@ -627,8 +641,12 @@ export async function runCompanionCorpus(options: CorpusRunOptions = {}): Promis
   const checkpointKey = campaignCheckpointKey(options)
   const restored = checkpointPath === undefined ? [] : await loadCampaignCheckpoint(checkpointPath, checkpointKey)
   const scenarioIds = new Set(companionCorpus.map(scenario => scenario.id))
-  const byScenario = new Map(restored.filter(outcome => scenarioIds.has(outcome.scenario.id)).map(outcome => [outcome.scenario.id, outcome]))
-  let outcomes = companionCorpus.flatMap(scenario => {
+  const byScenario = new Map(
+    restored
+      .filter(outcome => scenarioIds.has(outcome.scenario.id))
+      .map(outcome => [outcome.scenario.id, outcome]),
+  )
+  let outcomes = companionCorpus.flatMap((scenario) => {
     const outcome = byScenario.get(scenario.id)
     return outcome === undefined ? [] : [outcome]
   })
@@ -637,7 +655,7 @@ export async function runCompanionCorpus(options: CorpusRunOptions = {}): Promis
     const restoredOutcome = byScenario.get(scenario.id)
     if (restoredOutcome !== undefined && isCompletedCampaignOutcome(restoredOutcome)) continue
     byScenario.set(scenario.id, await executeCompanion(scenario, { ...options, providerGate }))
-    outcomes = companionCorpus.flatMap(current => {
+    outcomes = companionCorpus.flatMap((current) => {
       const outcome = byScenario.get(current.id)
       return outcome === undefined ? [] : [outcome]
     })

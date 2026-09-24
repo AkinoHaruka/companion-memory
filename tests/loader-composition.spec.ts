@@ -40,8 +40,10 @@ afterEach(async () => {
 
 async function loadMemoryFixture(memoryConfig: readonly string[] = []): Promise<string> {
   root = await mkdtemp(join(tmpdir(), 'dsh-riko-memory-wave-'))
+  const debounceConfig = memoryConfig.find(line => /^\s*debounceMs\s*:/.test(line))
+  const extraConfig = memoryConfig.filter(line => !/^\s*debounceMs\s*:/.test(line))
   const configPath = join(root, 'cordis.yml')
-  await writeFile(join(root, 'credentials.yaml'), 'version: 1\nrefs:\n  DSH_MEMORY_DREAM_API_KEY: fixture-secret\n')
+  await writeFile(join(root, 'credentials.yaml'), 'version: 1\nrefs:\n  DSH_MEMORY_DREAM_API_KEY: fixture-secret\n  GEMINI_API_KEY: fixture-secret\n')
   await writeFile(configPath, [
     '- name: fixture-dependencies',
     '- name: "@deepseek-ai/dsh-storage"',
@@ -72,9 +74,9 @@ async function loadMemoryFixture(memoryConfig: readonly string[] = []): Promise<
     '  config:',
     '    ownerNamespace: test-owner',
     '    ownerAdminToken: owner-admin-token',
-    '    debounceMs: 60000',
+    ...(debounceConfig === undefined ? ['    debounceMs: 60000'] : [debounceConfig]),
     '    dreamIntervalMs: 3600000',
-    ...memoryConfig,
+    ...extraConfig,
     '',
   ].join('\n'))
   const dependencies = {
@@ -282,6 +284,249 @@ describe('real Loader composition', () => {
       expect((await page.json() as { sensitivity: string }).sensitivity).toBe('sensitive')
       const audits = await fetchLive(`${base}/audits`, { headers: { 'x-dsh-memory-profile': 'standard' } })
       expect((await audits.json() as { audits: Array<{ event: string; detail?: { to?: string; authority?: string } }> }).audits).toEqual(expect.arrayContaining([expect.objectContaining({ event: 'memory-sensitivity-rejected', detail: expect.objectContaining({ to: 'normal', authority: 'model_proposal' }) })]))
+    } finally {
+      globalThis.fetch = nativeFetch
+    }
+  })
+
+  it('defaults Dream candidates to exact user-grounded auto-confirmation and classifies sensitivity locally', { timeout: 60_000 }, async () => {
+    const base = await loadMemoryFixture(['    dreamApiUrl: https://api.test/api/v1/chat/completions', '    debounceMs: 0', '    recallEnabled: true'])
+    if (!context) throw new Error('fixture context is unavailable')
+    const statements = ['我喜欢“周末跑步”\\计划。', '我的邮箱是 riko@example.com', '项目编号 ABCD', '我喜欢晨间散步。']
+    const file = (path: string, title: string, description: string, body: string, sensitivity?: string, groundingEventRef?: string): string => [
+      `<<<FILE path="${path}">>>`, '---', 'type: concept', `title: ${title}`, `description: ${description}`, ...(groundingEventRef === undefined ? [] : [`grounding_event_ref: ${groundingEventRef}`]), 'sources:', '  - forged-session', 'timestamp: 2026-09-19T00:00:00.000Z', 'confidence: 0.9', ...(sensitivity === undefined ? [] : [`sensitivity: ${sensitivity}`]), 'status: candidate', 'consent: false', 'locked: false', '---', body, '<<<END>>>',
+    ].join('\n')
+    const outputFor = (groundingEventRef: string): string => [
+      file('wiki/concepts/grounded.md', '周末运动偏好', '模型概括的跑步偏好', '模型生成的候选正文', undefined, groundingEventRef),
+      file('wiki/concepts/partial.md', '跑步片段', '周末跑步', '周末跑步'),
+      file('wiki/concepts/private.md', '邮箱信息', '模型概括的个人资料', statements[1]!, 'normal', [...dreamRequestBody.matchAll(/grounding_event_ref=(session:[^\]]+)/g)][1]?.[1]),
+      file('wiki/concepts/identifier.md', '项目编号', statements[2]!, statements[2]!),
+      file('wiki/concepts/malformed-sensitivity.md', '晨间散步', statements[3]!, statements[3]!, 'unknown'),
+      file('wiki/concepts/wrong-session-ref.md', '错误会话锚点', statements[0]!, statements[0]!, undefined, 'session:some-other-session/event:1'),
+    ].join('\n')
+    const nativeFetch = globalThis.fetch
+    let dreamRequestBody = ''
+    const providerFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === 'https://api.test/api/v1/chat/completions') {
+        dreamRequestBody = String(init?.body ?? '')
+        const prompt = JSON.parse(dreamRequestBody) as { messages: Array<{ content: string }> }
+        const groundingEventRef = /grounding_event_ref=(session:[^\]]+)/.exec(prompt.messages[0]?.content ?? '')?.[1]
+        if (!groundingEventRef) throw new Error('Dream prompt omitted L0 grounding event references')
+        return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: outputFor(groundingEventRef) } }] }), { headers: { 'content-type': 'application/json' } }))
+      }
+      return nativeFetch(input, init)
+    })
+    globalThis.fetch = providerFetch as typeof fetch
+    try {
+      const session = context.sessions.create(SessionId('default-policy-session'), { meta: { agentPreset: 'standard' } })
+      for (const text of statements) session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+      session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      await vi.waitFor(async () => {
+        expect(providerFetch.mock.calls.some(call => String(call[0]) === 'https://api.test/api/v1/chat/completions')).toBe(true)
+        const response = await fetchLive(`${base}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+        const current = await response.json() as { pages: Array<{ description: string; status: string }>; candidates: unknown[] }
+        expect(current.pages).toEqual(expect.arrayContaining([expect.objectContaining({ description: statements[0], status: 'confirmed' })]))
+        expect(current.candidates).toHaveLength(5)
+      }, { timeout: waitTimeoutMs, interval: waitIntervalMs })
+      const wiki = await fetchLive(`${base}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const snapshot = await wiki.json() as { pages: Array<{ description: string; status: string }>; candidates: Array<{ page: { description?: string; sensitivity: string; status: string } }> }
+      expect(snapshot.pages).toEqual(expect.arrayContaining([expect.objectContaining({ description: statements[0], status: 'confirmed' })]))
+      expect(snapshot.candidates).toHaveLength(5)
+      expect(snapshot.candidates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ page: expect.objectContaining({ description: '周末跑步', sensitivity: 'normal', status: 'candidate' }) }),
+        expect.objectContaining({ page: expect.objectContaining({ sensitivity: 'sensitive', status: 'candidate' }) }),
+        expect.objectContaining({ page: expect.objectContaining({ sensitivity: 'provisional_sensitive', status: 'candidate' }) }),
+      ]))
+      expect(snapshot.candidates.filter(candidate => candidate.page.sensitivity === 'provisional_sensitive')).toHaveLength(3)
+      expect(dreamRequestBody).toContain('grounding_event_ref')
+      expect(dreamRequestBody).toContain('runtime will replace description with the source text only after validating scope, length, and sensitivity')
+      const audits = await fetchLive(`${base}/audits`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const auditRecords = (await audits.json() as { audits: Array<{ event: string; detail?: { mode?: string; groundingRef?: string } }> }).audits
+      expect(auditRecords.filter(audit => audit.event === 'candidate-auto-confirmed')).toEqual([
+        expect.objectContaining({ detail: expect.objectContaining({ mode: 'user_grounded', groundingRef: expect.stringMatching(/^session:default-policy-session\/event:/) }) }),
+      ])
+
+      const agent = { id: session.id, session, ctx: context } as unknown as Agent
+      context.emit('agent/created', { agent, source: 'startup' })
+      const prompt = await context.systemPrompt.assemble()
+      expect(prompt.contexts.find(entry => entry.name === 'riko-memory')?.text).toContain(statements[0])
+
+      const recalledStep = await agentEvents(context, agent).waterfall('agent/pre-step', {
+        messages: [createUserMessage({ content: [{ type: 'text', text: '你还记得我说过我喜欢周末跑步吗？' }], source: { kind: 'user' } })],
+        turn: 2,
+        step: 1,
+        signal: new AbortController().signal,
+      }, () => Promise.resolve({ kind: 'enter' as const, messages: [] }))
+      if (recalledStep.kind !== 'enter') throw new Error('expected proactive recall to enter')
+      const recalledMessages = recalledStep.messages as ReadonlyArray<{
+        readonly source: { readonly kind?: string; readonly plugin?: string }
+        readonly content: readonly { readonly type?: string; readonly text?: string }[]
+      }>
+      expect(recalledMessages.some(message => message.source.kind === 'plugin'
+        && message.source.plugin === '@deepseek-ai/dsh-riko-memory'
+        && message.content.some(block => block.type === 'text'
+          && typeof block.text === 'string'
+          && block.text.includes(statements[0]!)))).toBe(true)
+    } finally {
+      globalThis.fetch = nativeFetch
+    }
+  })
+
+  it('fails over in order, anchors referenced L0 text, and preserves Resident when a later task is denied', { timeout: 60_000 }, async () => {
+    const base = await loadMemoryFixture([
+      '    dreamApiUrl: https://primary.test/v1/chat/completions',
+      '    dreamModel: primary-model',
+      '    dreamFallbacks:',
+      '      - apiUrl: https://fallback-one.test/v1/chat/completions',
+      '        model: fallback-one',
+      '        credentialRef: DSH_MEMORY_DREAM_API_KEY',
+      '      - apiUrl: https://fallback-two.test/v1/chat/completions',
+      '        model: fallback-two',
+      '        credentialRef: DSH_MEMORY_DREAM_API_KEY',
+      '    debounceMs: 0',
+      '    recallEnabled: true',
+    ])
+    if (!context) throw new Error('fixture context is unavailable')
+    const nativeFetch = globalThis.fetch
+    const calls: Array<{ endpoint: string; model: string; session: string }> = []
+    const providerFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const endpoint = String(input)
+      if (!endpoint.startsWith('https://primary.test/') && !endpoint.startsWith('https://fallback-one.test/') && !endpoint.startsWith('https://fallback-two.test/')) return nativeFetch(input, init)
+      const request = JSON.parse(String(init?.body ?? '{}')) as { model?: string; messages?: Array<{ content?: string }> }
+      const prompt = request.messages?.[0]?.content ?? ''
+      const session = prompt.includes('session:fallback-collision-session') ? 'fallback-collision-session' : prompt.includes('session:fallback-failed-session') ? 'fallback-failed-session' : prompt.includes('session:fallback-pending-session') ? 'fallback-pending-session' : 'fallback-success-session'
+      calls.push({ endpoint, model: request.model ?? '', session })
+      if (session === 'fallback-collision-session' && endpoint.startsWith('https://fallback-two.test/')) {
+        const content = ['<<<FILE path="wiki/concepts/collision-pending.md">>>', '---', 'type: concept', 'title: 重名后切换到第二备选', 'description: 按规则回退到第二个唯一模型', 'sources:', '  - forged-session', 'timestamp: 2026-09-19T00:00:00.000Z', 'confidence: 0.8', 'status: candidate', 'consent: false', 'locked: false', '---', '模型生成的待确认内容。', '<<<END>>>'].join('\n')
+        return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'content-type': 'application/json' } }))
+      }
+      if (session === 'fallback-collision-session') return Promise.resolve(new Response('{}', { status: 503 }))
+      if (endpoint.startsWith('https://primary.test/') && session === 'fallback-success-session') {
+        const partialPage = '<<<FILE path="wiki/concepts/partial-primary.md">>>\n---\ntype: concept\ntitle: 部分页面不应写入\ndescription: 部分页面不应写入\n---\nprimary partial output\n<<<END>>>'
+        const invalidPage = '<<<FILE path="wiki/concepts/invalid-primary.md">>>\nnot frontmatter\n<<<END>>>'
+        const content = `${partialPage}\n${invalidPage}`
+        return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'content-type': 'application/json' } }))
+      }
+      if (endpoint.startsWith('https://primary.test/')) return Promise.resolve(new Response('{}', { status: 503 }))
+      if (endpoint.startsWith('https://fallback-two.test/')) return Promise.resolve(new Response('{}', { status: 200 }))
+      if (session === 'fallback-failed-session') return Promise.resolve(new Response('{}', { status: 401 }))
+      if (session === 'fallback-pending-session') {
+        const content = ['<<<FILE path="wiki/concepts/pending-only.md">>>', '---', 'type: concept', 'title: 待确认候选', 'description: 模型提议的公园散步习惯', 'sources:', '  - forged-session', 'timestamp: 2026-09-19T00:00:00.000Z', 'confidence: 0.8', 'status: candidate', 'consent: false', 'locked: false', '---', '模型整理的候选内容。', '<<<END>>>'].join('\n')
+        return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'content-type': 'application/json' } }))
+      }
+      const eventRef = /grounding_event_ref=(session:[^\]]+)/.exec(prompt)?.[1]
+      if (!eventRef) throw new Error('Dream prompt omitted L0 event references')
+      const content = [
+        '<<<FILE path="wiki/concepts/fallback-grounded.md">>>',
+        '---',
+        'type: concept',
+        'title: 周末运动偏好',
+        'description: 模型概括的偏好',
+        `grounding_event_ref: ${eventRef}`,
+        'sources:',
+        '  - forged-session',
+        'timestamp: 2026-09-19T00:00:00.000Z',
+        'confidence: 0.9',
+        'status: candidate',
+        'consent: false',
+        'locked: false',
+        '---',
+        '模型生成的正文',
+        '<<<END>>>',
+      ].join('\n')
+      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'content-type': 'application/json' } }))
+    })
+    globalThis.fetch = providerFetch as typeof fetch
+    try {
+      const successful = context.sessions.create(SessionId('fallback-success-session'), { meta: { agentPreset: 'standard' } })
+      const statement = '我喜欢周末登山。'
+      successful.append('user/message', createUserMessage({ content: [{ type: 'text', text: statement }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+      successful.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      await vi.waitFor(async () => {
+        const response = await fetchLive(`${base}/audits`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+        const value = await response.json() as { audits: Array<{ event: string; detail?: { outcome?: string; failureCategory?: string } }> }
+        expect(value.audits.filter(item => item.event === 'dream-provider-attempt')).toHaveLength(2)
+        expect(value.audits.some(item => item.event === 'dream-provider-attempt' && item.detail?.failureCategory === 'invalid-file-protocol')).toBe(true)
+        expect(value.audits.filter(item => item.event === 'candidate-auto-confirmed')).toHaveLength(1)
+      }, { timeout: waitTimeoutMs, interval: waitIntervalMs })
+      const beforeFailure = await fetchLive(`${base}/resident`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const priorResident = await beforeFailure.text()
+      expect(priorResident).toContain(statement)
+
+      const pending = context.sessions.create(SessionId('fallback-pending-session'), { meta: { agentPreset: 'standard' } })
+      pending.append('user/message', createUserMessage({ content: [{ type: 'text', text: '我有时会去公园散步。' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+      pending.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      await vi.waitFor(async () => {
+        const response = await fetchLive(`${base}/audits`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+        const value = await response.json() as { audits: Array<{ event: string }> }
+        expect(value.audits.filter(item => item.event === 'dream-provider-attempt')).toHaveLength(4)
+        expect(value.audits.filter(item => item.event === 'dream-succeeded')).toHaveLength(2)
+      }, { timeout: waitTimeoutMs, interval: waitIntervalMs })
+
+      const denied = context.sessions.create(SessionId('fallback-failed-session'), { meta: { agentPreset: 'standard' } })
+      denied.append('user/message', createUserMessage({ content: [{ type: 'text', text: '我习惯用纸笔整理想法。' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+      denied.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      await vi.waitFor(async () => {
+        const response = await fetchLive(`${base}/audits`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+        const value = await response.json() as { audits: Array<{ event: string; detail?: { failureCategory?: string } }> }
+        expect(value.audits.filter(item => item.event === 'dream-provider-attempt')).toHaveLength(6)
+        expect(value.audits.some(item => item.event === 'dream-failed')).toBe(true)
+      }, { timeout: waitTimeoutMs, interval: waitIntervalMs })
+      expect(calls.map(call => call.model)).toEqual(['primary-model', 'fallback-one', 'primary-model', 'fallback-one', 'primary-model', 'fallback-one'])
+      expect(calls.map(call => call.session)).toEqual(['fallback-success-session', 'fallback-success-session', 'fallback-pending-session', 'fallback-pending-session', 'fallback-failed-session', 'fallback-failed-session'])
+      expect(calls.every(call => !call.endpoint.includes('fallback-two'))).toBe(true)
+      const finalResident = await fetchLive(`${base}/resident`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      expect(await finalResident.text()).toBe(priorResident)
+      const wiki = await fetchLive(`${base}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const snapshot = await wiki.json() as { pages: Array<{ description: string; status: string }>; candidates: Array<{ page: { title: string; description: string; status: string } }> }
+      expect(snapshot.pages).toEqual(expect.arrayContaining([expect.objectContaining({ description: statement, status: 'confirmed' })]))
+      expect(snapshot.candidates.map(candidate => candidate.page.description)).not.toContain('我习惯用纸笔整理想法。')
+      expect(snapshot.candidates.map(candidate => candidate.page.description)).not.toContain('部分页面不应写入')
+      expect(snapshot.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ page: expect.objectContaining({ title: '待确认候选', status: 'candidate' }) })]))
+      const audits = await fetchLive(`${base}/audits`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const records = (await audits.json() as { audits: Array<{ event: string; detail?: { model?: string; outcome?: string; failureCategory?: string; candidateCount?: number; exactAnchoredCount?: number } }> }).audits
+      expect(records.filter(item => item.event === 'dream-provider-attempt').map(item => item.detail)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ model: 'primary-model', outcome: 'failed', failureCategory: 'http-503' }),
+        expect.objectContaining({ model: 'fallback-one', outcome: 'succeeded', candidateCount: 1, exactAnchoredCount: 1 }),
+        expect.objectContaining({ model: 'fallback-one', outcome: 'succeeded', candidateCount: 1, exactAnchoredCount: 0 }),
+        expect.objectContaining({ model: 'fallback-one', outcome: 'failed', failureCategory: 'http-401' }),
+      ]))
+
+      const updatedSettings = await fetchLive(`${base}/config`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer owner-admin-token', 'content-type': 'application/json', 'x-dsh-memory-profile': 'standard' },
+        body: JSON.stringify({ model: 'fallback-one' }),
+      })
+      expect(updatedSettings.status).toBe(200)
+      const collision = context.sessions.create(SessionId('fallback-collision-session'), { meta: { agentPreset: 'standard' } })
+      collision.append('user/message', createUserMessage({ content: [{ type: 'text', text: '请记录：重复模型名时只调用一次。' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+      collision.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      await vi.waitFor(async () => {
+        const response = await fetchLive(`${base}/audits`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+        const value = await response.json() as { audits: Array<{ event: string; detail?: { model?: string; outcome?: string } }> }
+        expect(value.audits.filter(item => item.event === 'dream-provider-attempt')).toHaveLength(8)
+        expect(value.audits.filter(item => item.event === 'dream-succeeded'), JSON.stringify(value.audits.filter(item => item.event.startsWith('dream-')))).toHaveLength(3)
+      }, { timeout: waitTimeoutMs, interval: waitIntervalMs })
+      expect(calls.filter(call => call.session === 'fallback-collision-session')).toEqual([
+        { endpoint: 'https://primary.test/v1/chat/completions', model: 'fallback-one', session: 'fallback-collision-session' },
+        { endpoint: 'https://fallback-two.test/v1/chat/completions', model: 'fallback-two', session: 'fallback-collision-session' },
+      ])
+      const updatedWiki = await fetchLive(`${base}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
+      const updatedSnapshot = await updatedWiki.json() as { candidates: Array<{ page: { title: string; status: string } }> }
+      expect(updatedSnapshot.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ page: expect.objectContaining({ title: '重名后切换到第二备选', status: 'candidate' }) })]))
+
+      const agent = testAgent(successful)
+      context.emit('agent/created', { agent, source: 'startup' })
+      const prompt = await context.systemPrompt.assemble()
+      expect(prompt.contexts.find(entry => entry.name === 'riko-memory')?.text).toContain(statement)
+      const recalledStep = await agentEvents(context, agent).waterfall('agent/pre-step', {
+        messages: [createUserMessage({ content: [{ type: 'text', text: '你还记得我周末喜欢做什么运动吗？' }], source: { kind: 'user' } })],
+        turn: 2,
+        step: 1,
+        signal: new AbortController().signal,
+      }, () => Promise.resolve({ kind: 'enter' as const, messages: [] }))
+      if (recalledStep.kind !== 'enter') throw new Error('expected proactive recall to enter')
+      expect((recalledStep.messages as Array<{ source: { kind?: string; plugin?: string }; content: Array<{ type?: string; text?: string }> }>).some(message => message.source.kind === 'plugin' && message.source.plugin === '@deepseek-ai/dsh-riko-memory' && message.content.some(block => block.type === 'text' && block.text?.includes(statement)))).toBe(true)
     } finally {
       globalThis.fetch = nativeFetch
     }
@@ -632,7 +877,7 @@ describe('real Loader composition', () => {
       expect(await rejectedCredentialWrite.text()).not.toContain(credentialRef)
     }
     const unchangedConfig = await fetchLive(`${base}/config`, { headers: { 'x-dsh-memory-profile': 'standard' } })
-    expect((await unchangedConfig.json() as { dreamCredentialRef: string }).dreamCredentialRef).toBe('DSH_MEMORY_DREAM_API_KEY')
+    expect((await unchangedConfig.json() as { dreamCredentialRef: string }).dreamCredentialRef).toBe('GEMINI_API_KEY')
     const automaticWiki = await fetchLive(`${base}/wiki`, { headers: { 'x-dsh-memory-profile': 'standard' } })
     expect((await automaticWiki.json() as { records: Array<{ content: string }> }).records).toHaveLength(0)
     const agent = { id: session.id, session, ctx: context } as unknown as Agent

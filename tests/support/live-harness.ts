@@ -25,8 +25,8 @@ const DEFAULT_DREAM_API_KEY = 'fixture-secret'
 
 /**
  * Optional `candidateAutoConfirm` override for live runs, e.g.
- * `DSH_MEMORY_CANDIDATE_AUTO_CONFIRM=user_grounded`. Unset keeps the plugin default, so the
- * companion corpus keeps measuring the pending-candidate boundary it is written against.
+ * `DSH_MEMORY_CANDIDATE_AUTO_CONFIRM=off`. Unset keeps the plugin default; a per-fixture setting may
+ * explicitly pin benchmark semantics while this environment variable remains the top-level override.
  * @returns One config line when the variable names a supported policy, otherwise nothing.
  */
 function candidateAutoConfirmLines(): string[] {
@@ -123,11 +123,12 @@ export async function awaitLiveReady(context: Context): Promise<void> {
  * Start one isolated Loader composition with deterministic local storage.
  * @param config - Memory plugin YAML fields.
  * @param rootOverride - Caller-owned storage root for sequential restart tests.
- * @param dreamApiKey - Credential written to `DSH_MEMORY_DREAM_API_KEY`; defaults to the fixture value.
+ * @param dreamApiKey - Fixture credential written to both legacy and Gemini Dream references; defaults to the fixture value.
  * @returns A ready composition; disposal removes only a harness-owned root.
  */
 export async function startLiveHarness(
   config: readonly string[] = [], rootOverride?: string, dreamApiKey = DEFAULT_DREAM_API_KEY,
+  additionalCredentials: Readonly<Record<string, string>> = {},
 ): Promise<LiveHarness> {
   const root = rootOverride ?? await mkdtemp(join(tmpdir(), 'dsh-riko-memory-live-'))
   const context = new Context()
@@ -139,13 +140,9 @@ export async function startLiveHarness(
     }
   }
   try {
-    const credentials = [
-      'version: 1',
-      'refs:',
-      `  DSH_MEMORY_DREAM_API_KEY: ${dreamApiKey === DEFAULT_DREAM_API_KEY ? dreamApiKey : JSON.stringify(dreamApiKey)}`,
-      '  DSH_MEMORY_BGE_KEY: bge-local',
-      '',
-    ].join('\n')
+    const credentialRefs = new Map<string, string>([['DSH_MEMORY_DREAM_API_KEY', dreamApiKey], ['GEMINI_API_KEY', dreamApiKey], ['DSH_MEMORY_BGE_KEY', 'bge-local']])
+    for (const [name, value] of Object.entries(additionalCredentials)) credentialRefs.set(name, value)
+    const credentials = ['version: 1', 'refs:', ...[...credentialRefs.entries()].map(([name, value]) => `  ${name}: ${JSON.stringify(value)}`), ''].join('\n')
     await writeFile(join(root, 'credentials.yaml'), credentials)
     const configPath = join(root, `cordis-${String(Date.now())}-${String(Math.random()).slice(2)}.yml`)
     await writeFile(configPath, [
@@ -179,8 +176,8 @@ export async function startLiveHarness(
       '    ownerNamespace: test-owner',
       '    debounceMs: 60000',
       '    dreamIntervalMs: 3600000',
-      ...candidateAutoConfirmLines(),
       ...config,
+      ...candidateAutoConfirmLines(),
       '',
     ].join('\n'))
 

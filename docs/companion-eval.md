@@ -136,9 +136,9 @@ Set these process variables before the run:
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `DSH_MEMORY_DREAM_ENDPOINT` | Yes | None | HTTPS Dream chat-completions endpoint assigned to `dreamApiUrl`; the fixture endpoint is used only when this variable is absent. |
+| `DSH_MEMORY_DREAM_ENDPOINT` | Yes | None | HTTPS Dream endpoint assigned to `dreamApiUrl`; Google native `generateContent` and compatible endpoint shapes are selected by the runtime. The fixture endpoint is used only when this variable is absent. |
 | `DSH_MEMORY_DREAM_KEY` | Yes | None | Dream credential written to the disposable `DSH_MEMORY_DREAM_API_KEY` reference for each harness. |
-| `DSH_MEMORY_DREAM_MODEL` | No | Harness default `deepseek-chat` | Dream model override. |
+| `DSH_MEMORY_DREAM_MODEL` | No | Harness default `gemini-3.5-flash-lite` | Dream model override; the current qualified text-model set is `gemini-3.5-flash-lite` and `gemma-4-26b-a4b-it`. Gemma 4 31B is excluded after failing the 3/3 Dream acceptance gate. |
 | `DSH_MEMORY_ANSWER_ENDPOINT` | Yes | None | OpenAI-compatible final-answer chat-completions endpoint. |
 | `DSH_MEMORY_ANSWER_MODEL` | Yes | None | Model name that selects the OpenAI-compatible answer request mode. |
 | `DSH_MEMORY_ANSWER_KEY` | No | No authorization header | Optional bearer credential for the final-answer endpoint. |

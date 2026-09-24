@@ -9,12 +9,16 @@
         apiPath: !!js process.env.DSH_MEMORY_API_PATH ?? '/memory/v1'
         apiToken: !!js process.env.DSH_MEMORY_API_TOKEN ?? ''
         apiTokens: !!js JSON.parse(process.env.DSH_MEMORY_API_TOKENS_JSON ?? '{}')
-        dreamApiUrl: !!js process.env.DSH_MEMORY_DREAM_API_URL ?? 'https://api.deepseek.com/chat/completions'
-        dreamCredentialRef: !!js process.env.DSH_MEMORY_DREAM_CREDENTIAL_REF ?? 'DSH_MEMORY_DREAM_API_KEY'
-        dreamModel: !!js process.env.DSH_MEMORY_DREAM_MODEL ?? 'deepseek-chat'
+        dreamApiUrl: !!js process.env.DSH_MEMORY_DREAM_API_URL ?? 'https://generativelanguage.googleapis.com/v1beta'
+        dreamCredentialRef: !!js process.env.DSH_MEMORY_DREAM_CREDENTIAL_REF ?? 'GEMINI_API_KEY'
+        dreamModel: !!js process.env.DSH_MEMORY_DREAM_MODEL ?? 'gemini-3.5-flash-lite'
+        dreamFallbacks: !!js JSON.parse(process.env.DSH_MEMORY_DREAM_FALLBACKS_JSON ?? '[{"apiUrl":"https://generativelanguage.googleapis.com/v1beta","model":"gemma-4-26b-a4b-it","credentialRef":"' + (process.env.DSH_MEMORY_DREAM_CREDENTIAL_REF ?? 'GEMINI_API_KEY') + '"}]')
         dreamMaxTokens: !!js Number(process.env.DSH_MEMORY_DREAM_MAX_TOKENS ?? 1200)
         dreamIntervalMs: !!js Number(process.env.DSH_MEMORY_DREAM_INTERVAL_MS ?? 3600000)
         debounceMs: !!js Number(process.env.DSH_MEMORY_DEBOUNCE_MS ?? 5000)
         maxResidentChars: !!js Number(process.env.DSH_MEMORY_MAX_RESIDENT_CHARS ?? 12000)
         maxSessionChars: !!js Number(process.env.DSH_MEMORY_MAX_SESSION_CHARS ?? 40000)
+        candidateAutoConfirm: !!js process.env.DSH_MEMORY_CANDIDATE_AUTO_CONFIRM ?? 'user_grounded'
+        recallEnabled: !!js process.env.DSH_MEMORY_RECALL_ENABLED !== 'false'
+        reflectionEnabled: false
         demoEnabled: !!js process.env.DSH_MEMORY_DEMO_ENABLED === 'true'

@@ -79,7 +79,10 @@ const STAGE_ORDER: readonly BenchmarkStage[] = ['pending', 'ingested', 'recalled
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue)
   if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, stableValue(entry)]))
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, stableValue(entry)])
+    return Object.fromEntries(entries)
   }
   return value
 }
@@ -99,7 +102,10 @@ export function createBenchmarkCheckpoint(identity: BenchmarkRunIdentity, now = 
   }
 }
 
-export async function loadBenchmarkCheckpoint(path: string, identity: BenchmarkRunIdentity): Promise<BenchmarkCheckpointDocument | undefined> {
+export async function loadBenchmarkCheckpoint(
+  path: string,
+  identity: BenchmarkRunIdentity,
+): Promise<BenchmarkCheckpointDocument | undefined> {
   const text = await readFile(path, 'utf8').catch((error: unknown) => {
     if ((error as { code?: string }).code === 'ENOENT') return undefined
     throw error
@@ -110,7 +116,12 @@ export async function loadBenchmarkCheckpoint(path: string, identity: BenchmarkR
   if (parsed === null || typeof parsed !== 'object') throw new Error(`benchmark checkpoint is not an object: ${path}`)
   const document = parsed as Partial<BenchmarkCheckpointDocument>
   const expectedKey = benchmarkCampaignKey(identity)
-  if (document.schemaVersion !== EXTERNAL_BENCHMARK_CHECKPOINT_SCHEMA_VERSION || document.campaignKey !== expectedKey || document.identity === undefined || document.items === undefined) {
+  if (
+    document.schemaVersion !== EXTERNAL_BENCHMARK_CHECKPOINT_SCHEMA_VERSION ||
+    document.campaignKey !== expectedKey ||
+    document.identity === undefined ||
+    document.items === undefined
+  ) {
     throw new Error(`benchmark checkpoint fingerprint mismatch: ${path}; use a new checkpoint path`)
   }
   return document as BenchmarkCheckpointDocument
